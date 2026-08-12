@@ -59,6 +59,16 @@ The agreed North Star is:
 - `Pleased` and `concerned` also lack reviewed motion calibration. Full
   acceptance criteria 1-4 remain blocked until real assets are installed and
   visibly verified.
+- A stdlib-only candidate avatar pipeline now builds the exact layered runtime
+  payload: 14 complete native 320x240 RGB565-LE frames, a hash-bound
+  manifest, and a labeled PNG contact sheet. Build outputs are ignored and
+  reproducible.
+- The injected loader verifies payload size, order, offsets, and hashes before
+  one upstream `load_avatar_set` call. It contains no deployment URL, token, or
+  archive path. Nothing has been loaded onto hardware.
+- Native loading requires the reviewed gateway adaptation and an app-only
+  firmware flash. Legacy 160x120 modes remain available for rollback, and the
+  set must be reloaded after restart unless persistence is later proven.
 - OpenClaw's managed MCP registry can consume remote Streamable HTTP servers
   with authentication headers, TLS verification, timeouts, and tool filters.
 - Pinned `stackchan-mcp` `0.17.0` already supplies loopback `/mcp`, bearer and
@@ -102,13 +112,17 @@ The next Codex session should:
 3. Discover the installed StackChan firmware version, exact hardware revision,
    official recovery image/path, and official-app compatibility requirement
    before proposing a flash.
-4. Prepare real face assets for review, then install them only with explicit
-   flash permission and verify every enabled face by human observation.
-5. Design—but do not deploy—the isolated service/container and TLS routes using
+4. When Louis returns, review the generated contact sheet, make the exact
+   payload available to the approved deployment, and runtime-load it without a
+   flash. Hold each face long enough for direct visual confirmation.
+5. Only after that observation, update `verified_faces` for the exact tested
+   payload and run the semantic acceptance tests. Generated assets alone do
+   not authorize this update.
+6. Design—but do not deploy—the isolated service/container and TLS routes using
    the discovered host constraints. Raw ports remain private.
-6. Prepare the minimal OpenClaw MCP server definition and reviewed tool
+7. Prepare the minimal OpenClaw MCP server definition and reviewed tool
    allowlist. Do not apply config until explicitly authorized.
-7. After visible faces pass, calibrate the remaining motions on real hardware
+8. After visible faces pass, calibrate the remaining motions on real hardware
    only with the required hardware permission.
 
 ## Unknowns That Must Not Be Guessed
@@ -118,6 +132,7 @@ The next Codex session should:
 - Final service manager/container packaging and reviewed resource limits.
 - Current StackChan firmware and official-app compatibility requirement.
 - Reviewed motion calibration for `pleased` and `concerned`.
+- Whether the runtime-loaded avatar set survives any device or gateway restart.
 
 ## Definition of a Good Handoff
 

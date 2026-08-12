@@ -84,6 +84,44 @@ recovery, but display rendering failed. Full acceptance criteria 1-4 remain
 blocked until real assets are installed and their face changes are confirmed
 by human observation.
 
+## Candidate Avatar Assets
+
+The repository includes a standard-library-only generator and validator for
+a native display-resolution runtime format. It creates 14 complete 320x240
+RGB565-LE frames in the required face, eye, and mouth order, plus a JSON
+manifest and a labeled PNG contact sheet:
+
+```sh
+python3 scripts/build_avatar_assets.py
+```
+
+Outputs are deterministic and written beneath the ignored
+`build/avatar-assets/` directory. They are review artifacts, not production
+visible-face evidence, and the measured calibration's `verified_faces` remains
+empty.
+
+The injection-based loader validates the local payload and manifest before
+making exactly one upstream `load_avatar_set` call:
+
+```python
+from stackchan.avatar_assets import load_validated_avatar_set
+
+load_validated_avatar_set(
+    call_tool,
+    payload_path="build/avatar-assets/xc-body-layered.rgb565le",
+    manifest_path="build/avatar-assets/xc-body-layered.manifest.json",
+    archive_path=deployment_archive_path,
+)
+```
+
+The caller must arrange for `archive_path` to identify those same validated
+bytes in the deployment environment. No endpoint, token, or archive path is
+provided by the helper. The native format uses the reviewed
+`layered-320x240` adaptation stored in
+`stackchan/stackchan-mcp-native-avatar.patch`. Firmware renders native frames
+at 1x while retaining the upstream 160x120 modes as rollback. Assets must be
+reloaded after gateway or device restart unless persistence is proven.
+
 ## Repository Layout
 
 ```text
@@ -91,6 +129,7 @@ contracts/   Versioned contracts between OpenClaw and the physical body
 docs/        Product, architecture, milestone, decisions, and handoff material
 examples/    Valid example payloads for the current contract
 gateway/     Intent validation, orchestration, and safe return
+scripts/     Repository checks and deterministic build entry points
 stackchan/   Symbolic recipes, calibration, and device adapter
 mcp/         Semantic descriptor and handler; no server yet
 references/  Temporary pinned study source; never a runtime dependency

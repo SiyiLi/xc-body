@@ -93,6 +93,19 @@ found no display change for the tested avatar names. The pinned revision and
 placeholder assets. `ok=true` therefore described LVGL asset application, not
 visible rendering.
 
+An offline, dependency-free pipeline now prepares a candidate replacement set
+for the native display-resolution runtime adaptation. It generates 14 complete
+320x240 RGB565-LE frames in the required order, validates total and per-frame
+hashes, enforces meaningful pairwise differences across the six face frames,
+and produces a labeled PNG contact sheet. Eye and mouth states are complete
+idle-style faces because layered frames replace the full display frame.
+
+An injection-based helper validates the local manifest and payload before one
+adapted upstream `load_avatar_set` call using `layered-320x240`. Native support
+requires the reviewed gateway change and a firmware flash; legacy 160x120 modes
+remain available for rollback. Runtime loading is not assumed to persist across
+restart, and generated assets do not change `verified_faces`.
+
 Fake and contract checks cover deterministic sequencing, error preservation,
 servo limits, and fail-closed visible-face preflight. Hardware evidence covers
 head movement and neutral recovery only. Full criteria 1-4 remain blocked until
@@ -121,13 +134,16 @@ No step below is authorized merely by being documented.
    Streamable HTTP and WSS connectivity.
 6. Verify low-level device health and small safe head motion. Raw/manual head
    checks do not count as semantic success.
-7. With explicit permission for any required flash, install real face assets
-   and confirm each face change by human observation.
-8. Calibrate and record the neutral pose, bounded durations, and physical
+7. With explicit deployment and hardware permission, runtime-load the reviewed
+   asset payload. A flash is not required for this upstream path.
+8. Hold each enabled face for human observation. Record the exact payload hash
+   and update `verified_faces` only for faces that are visibly confirmed.
+9. Calibrate and record the neutral pose, bounded durations, and physical
    recipes.
-9. Connect the semantic embodiment tools to OpenClaw.
-10. Add the minimal OpenClaw guidance required to select semantic intentions.
-11. Run every acceptance test and record exact versions.
+10. Connect the semantic embodiment tools to OpenClaw.
+11. Add the minimal OpenClaw guidance required to select semantic intentions.
+12. Run every acceptance test and record exact versions. Include runtime asset
+    reload checks after both gateway and device restart.
 
 ## Acceptance Tests
 

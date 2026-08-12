@@ -98,6 +98,22 @@ checked against upstream yaw `-90..90` and pitch `5..85` limits at calibration
 construction. Real hardware confirmed curious head movement and exact neutral
 recovery, but not visible expression rendering.
 
+Candidate runtime artwork is a separate, dependency-free preparation boundary.
+`stackchan/avatar_assets.py` deterministically produces and validates the exact
+14-frame layered payload: six face frames, three complete eye-state frames,
+and five complete mouth-state frames. Every frame is native 320x240
+RGB565-LE. The manifest binds exact ordering, offsets, total size, payload
+SHA-256, and
+per-frame SHA-256 values. Validation also rejects primary faces that differ by
+only a cosmetic pixel count.
+
+The loading helper accepts an injected MCP tool caller and deployment-selected
+paths. It validates local bytes before calling upstream `load_avatar_set` with
+`mode="layered-320x240"`. The companion adaptation adds that explicit mode to
+the pinned gateway and firmware, selects LVGL 1x scaling for native descriptors,
+and keeps legacy 160x120 modes unchanged. The caller remains responsible for
+making the exact validated bytes available at the deployment archive path.
+
 ### stackchan-mcp
 
 The pinned `0.17.0` revision was inspected at its exact git revision without
@@ -119,6 +135,8 @@ OpenClaw; raw movement tools remain behind that boundary.
 
 - Applies configured face and mouth assets; semantic success additionally
   requires evidence that the selected face is physically visible.
+- Can adopt a validated layered avatar set at runtime without a firmware flash;
+  persistence across reboot has not been established.
 - Drives head servos and LEDs.
 - Reports device state.
 - Microphone, camera, and touch-to-agent paths remain disabled or unused during
@@ -140,6 +158,8 @@ disturb unrelated workloads.
 - Do not expose the OpenClaw Gateway or device gateway without authentication.
 - Do not enable camera or microphone transmission or expose a capture endpoint
   during Milestone 1.
+- Treat generated avatar hashes and previews as build evidence, never as
+  human-visible verification.
 - Prefer allowlisting the minimal StackChan tool set visible to OpenClaw.
 - Keep raw low-level movement tools behind the semantic embodiment boundary once
   the deterministic recipes exist.

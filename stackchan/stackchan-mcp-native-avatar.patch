@@ -1,0 +1,241 @@
+diff --git a/firmware/main/boards/stackchan/avatar_set.cc b/firmware/main/boards/stackchan/avatar_set.cc
+index cc95730..79c9c4c 100644
+--- a/firmware/main/boards/stackchan/avatar_set.cc
++++ b/firmware/main/boards/stackchan/avatar_set.cc
+@@ -17 +17,2 @@ const lv_image_dsc_t* AvatarSet::GetFace(int face_index) const {
+-    if (!loaded_ || mode_ != Mode::kLayered) {
++    if (!loaded_ ||
++        (mode_ != Mode::kLayered && mode_ != Mode::kLayeredNative)) {
+@@ -27 +28,2 @@ const lv_image_dsc_t* AvatarSet::GetEyes(int eyes_index) const {
+-    if (!loaded_ || mode_ != Mode::kLayered) {
++    if (!loaded_ ||
++        (mode_ != Mode::kLayered && mode_ != Mode::kLayeredNative)) {
+@@ -37 +39,2 @@ const lv_image_dsc_t* AvatarSet::GetMouth(int mouth_index) const {
+-    if (!loaded_ || mode_ != Mode::kLayered) {
++    if (!loaded_ ||
++        (mode_ != Mode::kLayered && mode_ != Mode::kLayeredNative)) {
+@@ -67,2 +70,6 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-    const size_t expected =
+-        (mode == Mode::kLayered) ? kLayeredPayloadBytes : kMatrixPayloadBytes;
++    size_t expected = kMatrixPayloadBytes;
++    if (mode == Mode::kLayered) {
++        expected = kLayeredPayloadBytes;
++    } else if (mode == Mode::kLayeredNative) {
++        expected = kLayeredNativePayloadBytes;
++    }
+@@ -89 +96,5 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-    if (mode == Mode::kLayered) {
++    if (mode == Mode::kLayered || mode == Mode::kLayeredNative) {
++        const bool native = mode == Mode::kLayeredNative;
++        const int width = native ? kNativeImageWidth : kImageWidth;
++        const int height = native ? kNativeImageHeight : kImageHeight;
++        const size_t image_bytes = native ? kNativeImageBytes : kImageBytes;
+@@ -92 +103 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            InitImageHeader(&face_table_[i]);
++            InitImageHeader(&face_table_[i], width, height, image_bytes);
+@@ -94 +105 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            offset += kImageBytes;
++            offset += image_bytes;
+@@ -97 +108 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            InitImageHeader(&eyes_table_[i]);
++            InitImageHeader(&eyes_table_[i], width, height, image_bytes);
+@@ -99 +110 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            offset += kImageBytes;
++            offset += image_bytes;
+@@ -102 +113 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            InitImageHeader(&mouth_table_[i]);
++            InitImageHeader(&mouth_table_[i], width, height, image_bytes);
+@@ -104 +115 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            offset += kImageBytes;
++            offset += image_bytes;
+@@ -108 +119,2 @@ bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_
+-            InitImageHeader(&matrix_table_[i]);
++            InitImageHeader(
++                &matrix_table_[i], kImageWidth, kImageHeight, kImageBytes);
+@@ -136 +148,2 @@ void AvatarSet::Unload() {
+-void AvatarSet::InitImageHeader(lv_image_dsc_t* dsc) {
++void AvatarSet::InitImageHeader(
++    lv_image_dsc_t* dsc, int width, int height, size_t image_bytes) {
+@@ -140,3 +153,3 @@ void AvatarSet::InitImageHeader(lv_image_dsc_t* dsc) {
+-    dsc->header.w         = kImageWidth;
+-    dsc->header.h         = kImageHeight;
+-    dsc->header.stride    = kImageWidth * 2;
++    dsc->header.w         = width;
++    dsc->header.h         = height;
++    dsc->header.stride    = width * 2;
+@@ -144 +157 @@ void AvatarSet::InitImageHeader(lv_image_dsc_t* dsc) {
+-    dsc->data_size = kImageBytes;
++    dsc->data_size = image_bytes;
+diff --git a/firmware/main/boards/stackchan/avatar_set.h b/firmware/main/boards/stackchan/avatar_set.h
+index 9d2e53f..2a59348 100644
+--- a/firmware/main/boards/stackchan/avatar_set.h
++++ b/firmware/main/boards/stackchan/avatar_set.h
+@@ -27,2 +27,3 @@ public:
+-        kLayered = 0,  // 14 symbols (face 6 + eyes 3 + mouth 5)
+-        kMatrix  = 1,  // 90 symbols (face 6 × eyes 3 × mouth 5)
++        kLayered = 0,        // 14 symbols at 160x120
++        kMatrix  = 1,         // 90 symbols at 160x120
++        kLayeredNative = 2,  // 14 symbols at native 320x240
+@@ -36,3 +37,2 @@ public:
+-    // Fixed geometry — matches firmware/scripts/avatar_convert/convert_avatars.py
+-    // (TARGET_W / TARGET_H) and the LVGL scale already applied in stackchan.cc.
+-    static constexpr int kImageWidth  = 160;
++    // Legacy geometry remains available for existing runtime/static sets.
++    static constexpr int kImageWidth = 160;
+@@ -39,0 +40,2 @@ public:
++    static constexpr int kNativeImageWidth = 320;
++    static constexpr int kNativeImageHeight = 240;
+@@ -41 +43,3 @@ public:
+-        static_cast<size_t>(kImageWidth) * static_cast<size_t>(kImageHeight) * 2;  // RGB565 LE
++        static_cast<size_t>(kImageWidth) * kImageHeight * 2;
++    static constexpr size_t kNativeImageBytes =
++        static_cast<size_t>(kNativeImageWidth) * kNativeImageHeight * 2;
+@@ -47 +51,4 @@ public:
+-        static_cast<size_t>(kMatrixSize) * kImageBytes;                          // 90 * 38400
++        static_cast<size_t>(kMatrixSize) * kImageBytes;
++    static constexpr size_t kLayeredNativePayloadBytes =
++        static_cast<size_t>(kNumFaces + kNumEyes + kNumMouths) *
++        kNativeImageBytes;
+@@ -117 +124,2 @@ private:
+-    static void InitImageHeader(lv_image_dsc_t* dsc);
++    static void InitImageHeader(
++        lv_image_dsc_t* dsc, int width, int height, size_t image_bytes);
+diff --git a/firmware/main/boards/stackchan/stackchan.cc b/firmware/main/boards/stackchan/stackchan.cc
+index 41630fd..83f77b4 100644
+--- a/firmware/main/boards/stackchan/stackchan.cc
++++ b/firmware/main/boards/stackchan/stackchan.cc
+@@ -4274 +4274,2 @@ private:
+-            avatar_set_.mode() == AvatarSet::Mode::kLayered) {
++            (avatar_set_.mode() == AvatarSet::Mode::kLayered ||
++             avatar_set_.mode() == AvatarSet::Mode::kLayeredNative)) {
+@@ -4291 +4292,2 @@ private:
+-            avatar_set_.mode() == AvatarSet::Mode::kLayered) {
++            (avatar_set_.mode() == AvatarSet::Mode::kLayered ||
++             avatar_set_.mode() == AvatarSet::Mode::kLayeredNative)) {
+@@ -4305 +4307,2 @@ private:
+-            avatar_set_.mode() == AvatarSet::Mode::kLayered) {
++            (avatar_set_.mode() == AvatarSet::Mode::kLayered ||
++             avatar_set_.mode() == AvatarSet::Mode::kLayeredNative)) {
+@@ -4351,0 +4355,3 @@ private:
++        const int scale = dsc->header.w == 320 && dsc->header.h == 240
++            ? 256 : 512;
++        lv_image_set_scale(avatar_img_, scale);
+@@ -4481,2 +4487,2 @@ private:
+-        // Center on the 320x240 LCD and upscale 160x120 -> ~320x240 (2x).
+-        // lv_image_set_scale uses 256 = 1.0x; 512 = 2.0x.
++        // RenderAvatarLocked selects 1x for native 320x240 descriptors and
++        // 2x for legacy/static 160x120 descriptors.
+@@ -7185,0 +7192,2 @@ public:
++        } else if (strcmp(mode_j->valuestring, "layered-320x240") == 0) {
++            mode_enum = AvatarSet::Mode::kLayeredNative;
+diff --git a/gateway/stackchan_mcp/capture_server.py b/gateway/stackchan_mcp/capture_server.py
+index a235f17..50d668c 100644
+--- a/gateway/stackchan_mcp/capture_server.py
++++ b/gateway/stackchan_mcp/capture_server.py
+@@ -219 +219 @@ async def stage_avatar_set(
+-    if mode not in ("layered", "matrix"):
++    if mode not in ("layered", "matrix", "layered-320x240"):
+diff --git a/gateway/stackchan_mcp/gateway.py b/gateway/stackchan_mcp/gateway.py
+index 68bd753..6ce38df 100644
+--- a/gateway/stackchan_mcp/gateway.py
++++ b/gateway/stackchan_mcp/gateway.py
+@@ -259 +259,2 @@ class Gateway:
+-        kimg_bytes = 160 * 120 * 2  # 38_400 — matches AvatarSet::kImageBytes
++        legacy_image_bytes = 160 * 120 * 2
++        native_image_bytes = 320 * 240 * 2
+@@ -261,2 +262,3 @@ class Gateway:
+-            "layered": 14 * kimg_bytes,   # 537_600
+-            "matrix":  90 * kimg_bytes,   # 3_456_000
++            "layered": 14 * legacy_image_bytes,
++            "matrix": 90 * legacy_image_bytes,
++            "layered-320x240": 14 * native_image_bytes,
+diff --git a/gateway/stackchan_mcp/stdio_server.py b/gateway/stackchan_mcp/stdio_server.py
+index 91a4131..77b8840 100644
+--- a/gateway/stackchan_mcp/stdio_server.py
++++ b/gateway/stackchan_mcp/stdio_server.py
+@@ -889 +889 @@ async def _dispatch_mcp_tool(
+-        if mode not in ("layered", "matrix"):
++        if mode not in ("layered", "matrix", "layered-320x240"):
+@@ -2775 +2775,3 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
+-                    "totalling 3,456,000 bytes. Returns ok / checksum / "
++                    "totalling 3,456,000 bytes; layered-320x240 mode = "
++                    "14 native frames totalling 2,150,400 bytes. Returns ok / "
++                    "checksum / "
+@@ -2790 +2792 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
+-                            "enum": ["layered", "matrix"],
++                            "enum": ["layered", "matrix", "layered-320x240"],
+@@ -2793 +2795,2 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
+-                                "'matrix' (90 frames, ~3.3 MB)."
++                                "'matrix' (90 frames, ~3.3 MB), or "
++                                "'layered-320x240' (14 frames, ~2.1 MB)."
+diff --git a/gateway/tests/test_gateway.py b/gateway/tests/test_gateway.py
+index 2f849c7..956accd 100644
+--- a/gateway/tests/test_gateway.py
++++ b/gateway/tests/test_gateway.py
+@@ -84,0 +85,66 @@ def test_get_gateway_singleton():
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    ("mode", "size"),
++    (
++        ("layered", 14 * 160 * 120 * 2),
++        ("matrix", 90 * 160 * 120 * 2),
++        ("layered-320x240", 14 * 320 * 240 * 2),
++    ),
++)
++async def test_load_avatar_set_accepts_supported_payload_sizes(
++    monkeypatch, tmp_path, mode, size
++):
++    import stackchan_mcp.gateway as gw_mod
++
++    payload = tmp_path / "avatar.rgb565le"
++    payload.write_bytes(b"x" * size)
++    gateway = Gateway()
++    gateway._capture_app = object()
++    monkeypatch.setattr(
++        gw_mod,
++        "stage_avatar_set",
++        lambda app, staged_mode, data: _stage_result(
++            app, staged_mode, data, mode, size
++        ),
++    )
++
++    class FakeEsp32:
++        async def send_avatar_set_fetch(self, **kwargs):
++            assert kwargs["mode"] == mode
++            assert kwargs["expected_size"] == size
++            return {"ok": True, "checksum": kwargs["checksum"]}
++
++    gateway.esp32 = FakeEsp32()
++    result = await gateway.load_avatar_set(str(payload), mode)
++
++    assert result["ok"] is True
++    assert result["bytes_transferred"] == size
++
++
++async def _stage_result(app, staged_mode, data, expected_mode, expected_size):
++    assert app is not None
++    assert staged_mode == expected_mode
++    assert len(data) == expected_size
++    return "short-id", "token", "sha256:test"
++
++
++@pytest.mark.asyncio
++async def test_load_avatar_set_rejects_wrong_native_payload_size(tmp_path):
++    payload = tmp_path / "avatar.rgb565le"
++    payload.write_bytes(b"x" * (14 * 160 * 120 * 2))
++    gateway = Gateway()
++    gateway._capture_app = object()
++
++    result = await gateway.load_avatar_set(
++        str(payload), "layered-320x240"
++    )
++
++    assert result == {
++        "ok": False,
++        "error": (
++            "size_mismatch: got=537600 expected=2150400 "
++            "(mode=layered-320x240)"
++        ),
++    }
++
++

@@ -181,3 +181,17 @@
 - **Consequence:** Head motion measurements remain calibration evidence, but
   full criteria 1-4 are blocked until real face assets are installed and
   visibly verified.
+
+## D-018: Prepare Layered Runtime Assets Without Granting Verification
+
+- **Status:** Accepted for Milestone 1 preparation
+- **Date:** 2026-08-11
+- **Decision:** Generate an exact 14-frame native 320x240 RGB565-LE payload
+  with dependency-free deterministic code. Bind it to a manifest and validate
+  it before any injected upstream `load_avatar_set` call.
+- **Reason:** Native panel resolution removes the upstream 160x120-to-320x240
+  scaling compromise while keeping artwork reproducible and reviewable.
+- **Consequence:** Generated previews and hashes are not human-visible evidence.
+  Production `verified_faces` stays empty until Louis holds and directly
+  confirms each runtime-loaded face. Reload after restart remains required
+  unless persistence is separately proven.

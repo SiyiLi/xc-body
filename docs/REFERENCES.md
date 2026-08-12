@@ -26,6 +26,14 @@ of the selected symbol without proving a human-visible display change. Real
 assets must be installed and each enabled face must be confirmed by human
 observation before semantic use.
 
+The inspected upstream runtime contract supports replacement after a compatible
+firmware build is installed. The reviewed adaptation adds
+`layered-320x240`: 14 ordered native RGB565 little-endian frames—six faces,
+three eyes, and five mouths—for 2,150,400 bytes total. The device fetches the
+payload, verifies Content-Length and SHA-256, and adopts it in PSRAM. Existing
+`layered` and `matrix` 160x120 modes remain unchanged for rollback. Runtime
+persistence is not established, so deployment must reload after restart.
+
 Known upstream cautions to verify against the pinned revision:
 
 - Large abrupt head reversals may stress or hang the servo bus.
