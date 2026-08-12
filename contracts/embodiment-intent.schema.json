@@ -23,11 +23,8 @@
       ]
     },
     "speech": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "maxLength": 240,
+      "description": "Optional compatibility field; speech is disabled in Milestone 1.",
+      "type": "null",
       "default": null
     }
   }
