@@ -50,39 +50,79 @@ Every expressive recipe returns to `idle` under embodiment-layer control after
 a reviewed bounded duration. `idle` is already idle, and no high-level caller
 can disable safe return or choose its timing.
 
+For the coherent v1 Milestone 1 API, `speech` is optional but may only be JSON
+`null`. Omitting it and supplying `null` are equivalent. Any non-null value is
+rejected before device execution because speech is disabled in this slice.
+
 See `contracts/embodiment-intent.schema.json` for the machine-readable contract.
 
 ## Initial Physical Vocabulary
 
-| Intention | Face | Movement | Milestone 1 speech |
+| Intention | Face mapping | Movement | Milestone 1 speech |
 | --- | --- | --- | --- |
-| `idle` | Neutral | Relaxed calibrated center | None |
-| `curious` | Thinking or attentive | Small upward tilt and restrained side glance | Disabled initially |
-| `pleased` | Happy | One small nod | Disabled initially |
-| `concerned` | Sad or concerned | Small head tilt followed by stillness | Disabled initially |
+| `idle` | `idle`; not visibly verified | `(0,43,30)` | None |
+| `curious` | `thinking`; not visibly verified | `(3,45,30)`, then idle | Disabled |
+| `pleased` | `happy`; not visibly verified | Blocked: not calibrated | Disabled |
+| `concerned` | `sad`; not visibly verified | Blocked: not calibrated | Disabled |
 
-Exact angles, speeds, durations, and face assets must be chosen only after
-observing the real hardware. They must remain inside upstream safety limits and
-must not use large abrupt reversals.
+The measured curious pose reached yaw `1`, pitch `44` before settling back to
+exact neutral yaw `0`, pitch `43`. Calibrated integer speed `30` represents
+upstream `low`. New values must remain inside upstream yaw `-90..90` and pitch
+`5..85` limits and must not use large abrupt reversals.
+
+## Current Code and Discovery Boundary
+
+The dependency-free semantic core now preflights the complete requested recipe,
+executes against an injected device port, and attempts idle in `finally` after
+each expressive request. If expression and idle both fail, both failures are
+preserved. Calibration records upstream avatar-name mappings separately from
+human-visible face verification. Any unverified face rejects the full recipe
+before a client call. An explicit measured factory preserves idle and curious
+motion but marks no face visibly verified. The adapter enforces upstream servo
+limits and leaves pleased and concerned motion incomplete.
+
+An injected synchronous wrapper translates the pinned daemon's MCP tool result
+shapes into the existing `StackChanClient` protocol. The import-safe cloud
+runner loads its URL and bearer token only from arguments/environment, opens an
+MCP SDK session, and runs synchronous embodiment in a worker thread. It returns
+only a machine-readable semantic result. No MCP SDK is imported at module load.
+A real `curious` call through the cloud daemon returned command success, moved
+the head, and recovered exact neutral yaw `0`, pitch `43`. Human observation
+found no display change for the tested avatar names. The pinned revision and
+`firmware-v1.16.0` tag identify all 14 static avatar descriptors as 1x1 black
+placeholder assets. `ok=true` therefore described LVGL asset application, not
+visible rendering.
+
+Fake and contract checks cover deterministic sequencing, error preservation,
+servo limits, and fail-closed visible-face preflight. Hardware evidence covers
+head movement and neutral recovery only. Full criteria 1-4 remain blocked until
+real assets are installed and visually verified. Disconnect, gateway-restart,
+and recovery portions still require dedicated validation.
+
+Read-only discovery is complete for the OpenClaw MCP client surface, the shared
+rendezvous constraints, and pinned `stackchan-mcp` `0.17.0`. The evidence
+supports an isolated cloud service using remote Streamable HTTP MCP plus an
+authenticated outbound device WSS connection. No service, route, certificate,
+firewall rule, package, OpenClaw config, or firmware was changed.
 
 ## Prepared Execution Order
 
 No step below is authorized merely by being documented.
 
-1. Inspect the OpenClaw host: version, launch method, MCP support, and
-   configuration boundary.
-2. Perform a read-only inventory of the cloud rendezvous host, including its
-   existing workload isolation, service manager or container runtime, reverse
-   proxy, TLS termination, routes, firewall, health checks, and resource
-   headroom. Do not disturb unrelated workloads.
-3. Record the StackChan model, installed firmware version, official recovery
+1. Record the StackChan model, installed firmware version, official recovery
    path, and whether official-app compatibility must be preserved.
-4. Inspect the pinned `stackchan-mcp` revision and choose the least invasive
-   firmware path.
-5. Run gateway and contract tests without hardware.
-6. Establish authenticated MCP Streamable HTTP and WSS connectivity through
-   the isolated XC Body deployment.
-7. Verify low-level device health, face switching, and small safe head motion.
+2. Add and test the semantic-core adapter to the pinned `stackchan-mcp` daemon
+   surface using a fake transport; keep raw controls private.
+3. Prepare the isolated service/container and public TLS route for review. Do
+   not modify the rendezvous or expose raw ports without explicit permission.
+4. Prepare the minimal OpenClaw remote MCP definition, authentication header,
+   TLS settings, timeouts, and semantic-only tool allowlist for review.
+5. With explicit deployment/config authorization, establish authenticated MCP
+   Streamable HTTP and WSS connectivity.
+6. Verify low-level device health and small safe head motion. Raw/manual head
+   checks do not count as semantic success.
+7. With explicit permission for any required flash, install real face assets
+   and confirm each face change by human observation.
 8. Calibrate and record the neutral pose, bounded durations, and physical
    recipes.
 9. Connect the semantic embodiment tools to OpenClaw.
@@ -91,12 +131,13 @@ No step below is authorized merely by being documented.
 
 ## Acceptance Tests
 
-1. A manual OpenClaw request for `curious` produces the reviewed curious recipe.
+1. A manual OpenClaw request for `curious` produces the reviewed curious recipe,
+   including a human-visible attentive face.
 2. `pleased` produces exactly one small nod and the reviewed happy expression.
 3. `concerned` produces the reviewed restrained concerned recipe.
-4. Every expressive recipe returns to `idle` automatically after its reviewed
-   bounded duration; no high-level request can suppress or reschedule the
-   return.
+4. Every expressive recipe returns to a human-visible `idle` automatically
+   after its reviewed bounded duration; no high-level request can suppress or
+   reschedule the return.
 5. Repeating a request produces the same behavior rather than model-generated
    variation.
 6. An unsupported intent produces no physical movement and a clear error.
@@ -106,6 +147,9 @@ No step below is authorized merely by being documented.
 10. Restarting the gateway restores connectivity without device reconfiguration.
 11. No high-level request can bypass reviewed servo limits.
 12. The stock firmware recovery path remains documented and usable.
+13. A successful expression has both a successful command response and physical
+    state evidence. Face changes require human-visible confirmation; no camera
+    or vision system is required.
 
 ## Exit Criteria
 

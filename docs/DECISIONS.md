@@ -23,8 +23,9 @@
 - **Decision:** Pin `kisaragi-mochi/stackchan-mcp` as the initial hardware and
   gateway reference.
 - **Reason:** It targets the official K151/CoreS3 kit and already implements
-  authenticated connectivity, device status, safe head control, expressions,
-  LEDs, speech, listening, camera, and physical events.
+  authenticated connectivity, device status, safe head control, avatar-name
+  selection, LEDs, speech, listening, camera, and physical events. Bundled
+  avatar assets still require separate visible-render verification.
 - **Consequence:** Do not create a new firmware or device protocol unless a
   concrete missing capability is proven.
 
@@ -97,3 +98,86 @@
   exposes no caller control over return behavior or timing.
 - **Reason:** Safe servo state and deterministic behavior cannot depend on a
   follow-up model or caller request.
+
+## D-011: Use Python for the Transport-Independent Semantic Core
+
+- **Status:** Accepted for Milestone 1
+- **Date:** 2026-08-11
+- **Decision:** Implement the pure semantic core in dependency-free Python
+  3.10+, matching the pinned upstream gateway's language floor.
+- **Consequence:** This narrows D-007 only for the core. Cloud deployment
+  packaging remains undecided until the host inventory and gateway integration
+  boundary are inspected.
+
+## D-012: Keep v1 Speech Explicitly Disabled
+
+- **Status:** Accepted for Milestone 1
+- **Date:** 2026-08-11
+- **Decision:** The optional v1 `speech` property accepts only JSON `null`.
+  Omission and `null` are equivalent; non-null values fail validation before
+  any device call.
+- **Reason:** A null-only compatibility field keeps the example stable without
+  advertising speech that this milestone slice cannot execute.
+
+## D-013: Reuse the Pinned Shared Daemon Surface
+
+- **Status:** Accepted for Milestone 1
+- **Date:** 2026-08-11
+- **Decision:** Adapt the semantic embodiment layer to the pinned
+  `stackchan-mcp` `0.17.0` shared Streamable HTTP daemon rather than creating a
+  second gateway or device protocol.
+- **Evidence:** Exact-revision inspection confirmed loopback `/mcp`, bearer and
+  allowed-host validation, authenticated ESP32 WSS, bounded device-command
+  serialization, and health/status endpoints.
+- **Consequence:** OpenClaw sees a semantic-only tool surface. Raw head, face,
+  and LED controls remain behind the XC Body adapter.
+
+## D-014: Keep Deployment Changes Behind a Separate Approval Gate
+
+- **Status:** Accepted for Milestone 1
+- **Date:** 2026-08-11
+- **Decision:** Read-only discovery may inform code and documentation, but
+  creating the service/container, public TLS route, firewall changes, secrets,
+  or OpenClaw MCP configuration requires separate explicit authorization.
+- **Reason:** The rendezvous host carries unrelated workloads, and discovery
+  found no existing public XC Body route that can be safely assumed or reused.
+
+## D-015: Opt In to Partial Measured Calibration
+
+- **Status:** Accepted for the prepared real E2E slice
+- **Date:** 2026-08-11
+- **Decision:** Encode measured K151/CoreS3 values in an explicit factory. Idle
+  maps to `idle` and `(0,43,30)`; curious maps to `thinking` and `(3,45,30)`
+  before returning to idle. Speed `30` represents upstream `low`. The factory
+  records no visibly verified faces.
+- **Reason:** Deployment must deliberately choose motion calibration and
+  visible-face evidence, and recipe completeness must be checked before device
+  work.
+- **Consequence:** All production semantic intentions fail with zero upstream
+  calls until their mapped face assets are installed and visibly verified.
+  `Pleased` and `concerned` also require measured and reviewed motions.
+
+## D-016: Inject the Synchronous Upstream Tool Boundary
+
+- **Status:** Accepted for Milestone 1
+- **Date:** 2026-08-11
+- **Decision:** Implement `StackChanClient` through an injected synchronous MCP
+  tool callable. The runnable cloud boundary owns the MCP SDK session and async
+  coordination; semantic orchestration remains synchronous.
+- **Reason:** Result translation and device sequencing stay fake-testable while
+  the cloud process can reuse the pinned daemon without another protocol.
+
+## D-017: Reject Command Success as Visible-Render Evidence
+
+- **Status:** Accepted correction
+- **Date:** 2026-08-11
+- **Decision:** Do not accept a semantic expression from command response alone.
+  Require physical state evidence; face changes require human-visible
+  confirmation without adding camera or vision scope.
+- **Evidence:** A real `curious` run moved the head and recovered neutral, but
+  produced no visible display change. The pinned revision and
+  `firmware-v1.16.0` tag contain 1x1 black placeholder avatar assets. Firmware
+  success only confirmed that LVGL applied the selected asset.
+- **Consequence:** Head motion measurements remain calibration evidence, but
+  full criteria 1-4 are blocked until real face assets are installed and
+  visibly verified.

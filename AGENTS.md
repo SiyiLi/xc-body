@@ -60,7 +60,12 @@ not infer host configuration that has not been inspected.
 
 ## Validation Standard
 
-Every implementation change must identify the Milestone 1 acceptance criterion
-it satisfies. Prefer fake-device or contract tests before touching hardware.
-After hardware testing, record the exact firmware, gateway, OpenClaw, and source
-versions used.
+- Keep first-party Python at 88 columns or fewer.
+- Keep Markdown prose at 80 columns or fewer. URLs, commands, and diagrams may
+  exceed the limit when wrapping would reduce clarity.
+- Run the repository line-length check before reporting success.
+- Every implementation change must identify the Milestone 1 acceptance
+  criterion it satisfies.
+- Prefer fake-device or contract tests before touching hardware.
+- After hardware testing, record the exact firmware, gateway, OpenClaw, and
+  source versions used.

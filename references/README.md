@@ -8,4 +8,9 @@ Do not edit the submodule casually. XC Body should first consume the upstream
 gateway and firmware as-is. A fork or patch is justified only by a reproduced
 missing capability or defect that blocks an accepted XC Body milestone.
 
+The pinned revision and upstream `firmware-v1.16.0` tag mark
+`avatar_images.cc` as placeholder content: all 14 static descriptors are 1x1
+black pixels. Avatar command success is not visible-render evidence. See the
+source evidence and acceptance consequence in `../docs/REFERENCES.md`.
+
 See `../docs/REFERENCES.md` for its role and the other research references.

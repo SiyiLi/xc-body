@@ -39,7 +39,50 @@ A new coding session should read these files in order:
 6. [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 The initial machine-readable command boundary is
-[`contracts/embodiment-intent.schema.json`](contracts/embodiment-intent.schema.json).
+[`contracts/embodiment-intent.schema.json`][intent-contract].
+
+## Milestone 1 Semantic Bridge
+
+The repository now includes a dependency-free Python 3.10+ semantic core, one
+transport-neutral `embody` MCP tool descriptor/handler, and a synchronous
+client bridge for the pinned upstream StackChan MCP daemon. The boundary loads
+the tracked v1 schema, validates each request, selects an immutable symbolic
+recipe, invokes an injected device port, and makes a mandatory
+safe-return-to-idle attempt after every expressive intent. A full recipe is
+checked for calibration before the first device call.
+
+The opt-in `measured_k151_cores3_calibration()` factory preserves reviewed
+motion evidence. Neutral maps to upstream avatar name `idle` and head command
+`(0,43,30)`. Curious maps to `thinking` and `(3,45,30)` before returning to the
+exact neutral command. Speed `30` represents upstream `low`. Head movement was
+visually confirmed; the curious pose reached `(1,44)` before settling at
+`(0,43)`.
+
+Avatar-name mapping is separate from visible-face verification. The measured
+factory maps `idle`, `thinking`, `happy`, and `sad`, but verifies none as
+visible. The pinned source and `firmware-v1.16.0` tag use placeholder 1x1 black
+assets, and real hardware showed no display change. A successful firmware
+response therefore proves only that LVGL accepted an asset, not that a person
+could see an expression.
+
+The import-safe runner accepts the `curious` shortcut or one v1 semantic intent
+JSON object. It accepts no raw face, servo, speed, or return controls. With the
+current measured calibration, every semantic intent fails during local recipe
+preflight, before configuration loading or MCP session creation. Raw/manual
+head checks remain outside this semantic success path.
+
+Run the dependency-free tests from the repository root:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+The checks cover deterministic translation, mandatory idle return, rejection
+before movement, honest device failures, servo limits, and visible-face
+preflight. Real hardware has verified measured head movement and neutral
+recovery, but display rendering failed. Full acceptance criteria 1-4 remain
+blocked until real assets are installed and their face changes are confirmed
+by human observation.
 
 ## Repository Layout
 
@@ -47,7 +90,11 @@ The initial machine-readable command boundary is
 contracts/   Versioned contracts between OpenClaw and the physical body
 docs/        Product, architecture, milestone, decisions, and handoff material
 examples/    Valid example payloads for the current contract
-references/  Pinned upstream source used for study and reuse
+gateway/     Intent validation, orchestration, and safe return
+stackchan/   Symbolic recipes, calibration, and device adapter
+mcp/         Semantic descriptor and handler; no server yet
+references/  Temporary pinned study source; never a runtime dependency
+tests/       Responsibility-grouped standard-library tests
 ```
 
 ## Project Boundary
@@ -66,8 +113,12 @@ working here unless the user explicitly requests a cross-project change.
 - The `stackchan-mcp` gitlink is pinned to
   `804af573ba8f577f63efbd39f6e8a9c7f57b4647`; the local submodule is currently
   uninitialized.
-- Milestone 1 uses a separate always-on cloud rendezvous host, subject to a
-  read-only inventory before deployment.
+- Milestone 1 uses a separate always-on cloud rendezvous host. Read-only
+  discovery is complete; deployment, TLS routing, secrets, firewall changes,
+  and OpenClaw MCP configuration remain unapproved and unapplied.
 - No firmware has been flashed for this project.
-- Runtime language and packaging remain intentionally undecided until the VM
-  inventory and pinned upstream reuse boundary are inspected.
+- The transport-independent semantic core uses dependency-free Python 3.10+.
+  Deployment packaging remains intentionally undecided until the host inventory
+  and pinned upstream reuse boundary are inspected.
+
+[intent-contract]: contracts/embodiment-intent.schema.json

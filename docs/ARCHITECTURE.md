@@ -6,10 +6,16 @@ OpenClaw and StackChan run on separate hosts and connect outbound to an
 always-on cloud rendezvous. The rendezvous host may also run unrelated
 workloads, which must remain isolated from XC Body.
 
-The VM's reverse proxy, TLS provider, firewall, open ports, and package or
-container state have not yet been inventoried for XC Body. Runtime language and
-packaging remain undecided until that read-only inventory and the pinned
-upstream reuse boundary are inspected.
+A read-only inventory confirmed that the rendezvous host has Docker and enough
+headroom for a separately isolated XC Body service. Existing workloads and
+ports must remain untouched. No existing public reverse-proxy/TLS route suitable
+for XC Body was found, so endpoint naming, certificate termination, and firewall
+changes remain explicit future deployment decisions rather than assumptions.
+Nothing on the host was changed during discovery.
+
+The transport-independent semantic core is dependency-free Python 3.10+, which
+matches the pinned upstream gateway's language floor. Deployment packaging is
+not selected yet.
 
 ## Preferred Milestone 1 Shape
 
@@ -28,11 +34,13 @@ official StackChan K151/CoreS3             │ │ - semantic embodiment     │
                                            └───────────────────────────────┘
 ```
 
-OpenClaw connects outbound and authenticated to the XC Body MCP HTTP surface.
-StackChan also initiates its authenticated WSS connection outbound, so the home
-router needs no inbound device route. WSS should preferably use public TCP 443
-through the VM's existing or selected reverse proxy. Raw gateway ports 8765,
-8766, and 8767 must not be publicly exposed.
+OpenClaw's managed MCP registry supports remote Streamable HTTP servers with
+headers, TLS verification, timeouts, and tool filtering, so it can connect
+outbound and authenticated to the XC Body MCP HTTP surface without an OpenClaw
+runtime patch. StackChan also initiates its authenticated WSS connection
+outbound, so the home router needs no inbound device route. A future deployment
+should terminate both paths on a reviewed public TLS route, preferably TCP 443.
+Raw gateway ports 8765, 8766, and 8767 must not be publicly exposed.
 
 Cloud-only through the rendezvous is the simplest canonical Milestone 1 proof
 unless inventory evidence changes the choice. In this milestone, "anywhere"
@@ -69,19 +77,48 @@ proof and should not be implemented speculatively.
 - Reports real device success or failure.
 - Later owns continuity and restraint state, but not during Milestone 1.
 
+The implemented slice includes one transport-neutral semantic `embody` tool,
+an injected synchronous device port, a fail-closed adapter, and an upstream MCP
+client wrapper. The cloud runner confines MCP SDK async behavior to its session
+boundary and executes the synchronous semantic path in a worker thread. URL
+and bearer token values have no code defaults. Importing the runner starts no
+session and performs no environment reads.
+
+Calibration remains explicit and immutable. Upstream avatar-name mapping and
+human-visible face verification are separate facts. A complete recipe,
+including mandatory idle return, resolves both facts before device work. An
+unverified face raises a typed visible-face verification error with zero client
+calls. The runner applies the measured calibration preflight before endpoint
+configuration or MCP session creation.
+
+The reviewed deployment factory preserves measured idle and curious motion and
+maps four upstream avatar names, but its visibly verified face set is empty.
+Pleased and concerned motion also remains incomplete. Servo commands are
+checked against upstream yaw `-90..90` and pitch `5..85` limits at calibration
+construction. Real hardware confirmed curious head movement and exact neutral
+recovery, but not visible expression rendering.
+
 ### stackchan-mcp
 
-- Owns the device WebSocket connection.
-- Provides the shared Streamable HTTP daemon/gateway used by the isolated XC
-  Body service.
-- Exposes existing hardware capabilities through MCP without exposing raw
-  device ports publicly.
-- Enforces established device and servo safety limits.
-- Provides the initial firmware and gateway implementation.
+The pinned `0.17.0` revision was inspected at its exact git revision without
+initializing the submodule. Its gateway requires Python 3.10+ and already
+provides the required shared-daemon primitives:
+
+- loopback Streamable HTTP MCP at `/mcp`;
+- bearer authentication and allowed-host checks;
+- authenticated ESP32 WebSocket connectivity;
+- a bounded queue that serializes device-bound commands;
+- health and status surfaces;
+- existing hardware tools and servo safety limits.
+
+XC Body should adapt this surface rather than duplicate its gateway or device
+protocol. The semantic layer must expose only reviewed intention tools to
+OpenClaw; raw movement tools remain behind that boundary.
 
 ### StackChan
 
-- Renders faces and mouth state.
+- Applies configured face and mouth assets; semantic success additionally
+  requires evidence that the selected face is physically visible.
 - Drives head servos and LEDs.
 - Reports device state.
 - Microphone, camera, and touch-to-agent paths remain disabled or unused during

@@ -17,8 +17,11 @@ The agreed North Star is:
 - GitHub origin: <https://github.com/SiyiLi/xc-body.git>
 - OpenClaw and StackChan connect outbound to a separate always-on cloud
   rendezvous for Milestone 1.
-- The rendezvous deployment state has not yet been inventoried for XC Body.
-- Unrelated workloads on the shared host must remain isolated from XC Body.
+- Read-only rendezvous discovery found Docker and sufficient headroom for an
+  isolated XC Body service. Existing workloads and ports must remain untouched.
+- No suitable active public reverse-proxy/TLS route was observed for XC Body;
+  deployment route, certificate, and firewall changes remain undecided and
+  require explicit authorization.
 - No OpenClaw configuration has been changed for XC Body.
 - No StackChan firmware has been flashed for XC Body.
 - No camera or microphone path is in scope, and no capture endpoint is to be
@@ -27,8 +30,41 @@ The agreed North Star is:
 - The selected upstream reference is `kisaragi-mochi/stackchan-mcp`, pinned at
   `804af573ba8f577f63efbd39f6e8a9c7f57b4647`; the local submodule is currently
   uninitialized.
-- Runtime language and packaging are intentionally undecided until the VM
-  inventory and pinned upstream reuse boundary are inspected.
+- Deployment packaging remains undecided. The inventory supports an isolated
+  container/service, but no deployment was created.
+- A dependency-free Python 3.10+ semantic core now provides strict v1 request
+  validation, immutable symbolic recipes, injected device execution, and a
+  mandatory idle attempt after expressive intents. Deployment packaging is
+  still undecided.
+- The v1 optional `speech` field is null-only. One transport-neutral semantic
+  `embody` MCP descriptor/handler and an injected upstream MCP client wrapper
+  are tested through fake calls.
+- A real cloud-to-device `curious` command moved the head and returned it to
+  exact neutral. It did not visibly change the display, so the full semantic
+  behavior did not pass.
+- Reviewed measured calibration exists as an explicit deployment factory.
+  Idle maps to upstream name `idle` at yaw `0`, pitch `43`, speed `30`; curious
+  maps to `thinking` at command yaw `3`, pitch `45`, speed `30`, then exact
+  idle. The observed curious pose was yaw `1`, pitch `44` before settling to
+  `0`, `43`.
+- Upstream semantic faces map neutral to `idle`, attentive to `thinking`, happy
+  to `happy`, and concerned to `sad`. Visible support is a separate calibration
+  fact, and the measured factory marks zero faces visibly verified.
+- The pinned revision and `firmware-v1.16.0` tag contain 1x1 black placeholder
+  avatar assets. Firmware `ok=true` confirmed LVGL application, not visible
+  rendering. Human observation found no face change for tested avatar names.
+- Complete semantic recipes now fail before client calls when any face lacks
+  visible verification. The runner performs this preflight before loading
+  endpoint configuration or opening an MCP session.
+- `Pleased` and `concerned` also lack reviewed motion calibration. Full
+  acceptance criteria 1-4 remain blocked until real assets are installed and
+  visibly verified.
+- OpenClaw's managed MCP registry can consume remote Streamable HTTP servers
+  with authentication headers, TLS verification, timeouts, and tool filters.
+- Pinned `stackchan-mcp` `0.17.0` already supplies loopback `/mcp`, bearer and
+  host validation, authenticated device WSS, a bounded command queue, and
+  health/status endpoints. It was inspected remotely at the exact revision;
+  the local submodule remains uninitialized.
 
 ## User Preferences and Constraints
 
@@ -60,30 +96,28 @@ These are inspiration only. Do not import their feature scope into Milestone 1.
 The next Codex session should:
 
 1. Read the repository in the order specified by `AGENTS.md`.
-2. With explicit permission, perform a read-only inventory of the OpenClaw host
-   and cloud rendezvous host before proposing changes.
-3. Inventory existing workload boundaries, service or container layout,
-   reverse-proxy routes, TLS termination, firewall, health checks, and resource
-   headroom without disturbing unrelated workloads.
-4. Inspect the pinned `stackchan-mcp` revision only enough to verify the
-   intended Streamable HTTP gateway and firmware path.
-5. Discover the installed StackChan firmware version and recovery path before
-   proposing a flash.
-6. Confirm the authenticated outbound MCP HTTP and WSS paths using inventory
-   evidence rather than assumed domains, ports, or infrastructure.
-7. Propose the smallest cloud-only implementation slice and fake-device test
-   story before coding.
+2. Review the completed read-only OpenClaw, rendezvous, and upstream
+   discovery recorded here and in `docs/ARCHITECTURE.md`. Do not repeat or
+   mutate it.
+3. Discover the installed StackChan firmware version, exact hardware revision,
+   official recovery image/path, and official-app compatibility requirement
+   before proposing a flash.
+4. Prepare real face assets for review, then install them only with explicit
+   flash permission and verify every enabled face by human observation.
+5. Design—but do not deploy—the isolated service/container and TLS routes using
+   the discovered host constraints. Raw ports remain private.
+6. Prepare the minimal OpenClaw MCP server definition and reviewed tool
+   allowlist. Do not apply config until explicitly authorized.
+7. After visible faces pass, calibrate the remaining motions on real hardware
+   only with the required hardware permission.
 
 ## Unknowns That Must Not Be Guessed
 
-- OpenClaw version, launch method, and MCP configuration.
-- Cloud host package and container state, service manager, reverse-proxy type
-  and routes, TLS provider, firewall state, and currently open ports.
-- Existing workload resource use and capacity available to an isolated XC Body
-  service.
-- Domain ownership and the credentials that will be provisioned for XC Body.
+- Exact public domain, certificate/TLS termination choice, and credentials that
+  will be provisioned for XC Body.
+- Final service manager/container packaging and reviewed resource limits.
 - Current StackChan firmware and official-app compatibility requirement.
-- Exact neutral servo pose and visually attractive expression recipes.
+- Reviewed motion calibration for `pleased` and `concerned`.
 
 ## Definition of a Good Handoff
 

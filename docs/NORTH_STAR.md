@@ -41,4 +41,4 @@ The long-term success criterion is not the number of supported APIs. It is:
 
 - **OpenClaw:** mind, identity, memory, tools, schedules, judgment.
 - **StackChan:** expressive home body and public physical presence.
-- **Stick S3 / XC Buddy:** future portable, private channel; outside Milestone 1.
+- **Stick S3 / XC Buddy:** future portable, private channel; deferred.
