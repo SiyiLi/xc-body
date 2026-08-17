@@ -7,11 +7,12 @@
 - Repository: <https://github.com/kisaragi-mochi/stackchan-mcp>
 - Local path: `references/stackchan-mcp`
 - Pinned gitlink: `804af573ba8f577f63efbd39f6e8a9c7f57b4647`
-- Local checkout state: uninitialized
+- Local checkout state: initialized at the pinned revision
 - Upstream license: MIT License (as recorded at the pinned revision).
-- Role: temporary study source for firmware, gateway behavior, hardware
-  vocabulary, safety, and reconnect behavior. It is never a runtime dependency
-  or vendored implementation.
+- Role: pinned source used to review and verify the tracked gateway/firmware
+  adaptation. The deployed image is built from that pinned source plus
+  `stackchan/stackchan-mcp-native-avatar.patch`; the submodule itself is not
+  imported by XC Body at runtime.
 
 Capabilities relevant to Milestone 1 include device status, head movement,
 avatar-name selection, blinking, mouth control, LEDs, gateway authentication,
@@ -43,8 +44,8 @@ Known upstream cautions to verify against the pinned revision:
 - The referenced release avatar symbols are placeholder 1x1 black assets, not
   visible expression artwork.
 
-The implementation must not import or execute this submodule. Treat it as
-read-only.
+XC Body code must not import this submodule directly. Treat it as read-only and
+apply the tracked patch only in a clean build workspace.
 
 **Removal gate:** after every required Milestone 1 gateway and device behavior
 has been adapted and verified locally, remove the submodule gitlink,

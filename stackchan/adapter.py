@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
-from typing import Protocol
+from typing import Callable, Protocol
 
 from stackchan.recipes import RecipeStep
 
@@ -82,6 +83,7 @@ class StackChanCalibration:
 
     faces: Mapping[str, str]
     motions: Mapping[str, Sequence[HeadMove]]
+    hold_seconds: Mapping[str, float] | None = None
     verified_faces: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
@@ -89,9 +91,11 @@ class StackChanCalibration:
         motions = MappingProxyType(
             {name: tuple(moves) for name, moves in self.motions.items()}
         )
+        hold_seconds = MappingProxyType(dict(self.hold_seconds or {}))
         verified_faces = frozenset(self.verified_faces)
         object.__setattr__(self, "faces", faces)
         object.__setattr__(self, "motions", motions)
+        object.__setattr__(self, "hold_seconds", hold_seconds)
         object.__setattr__(self, "verified_faces", verified_faces)
         if any(
             not isinstance(value, str) or not value.strip()
@@ -107,6 +111,23 @@ class StackChanCalibration:
                 "calibration",
                 f"verified faces have no avatar mapping: {names}",
             )
+        unknown_holds = set(hold_seconds) - set(motions)
+        if unknown_holds:
+            names = ", ".join(sorted(repr(name) for name in unknown_holds))
+            raise CalibrationError(
+                "calibration", f"hold durations have no motion mapping: {names}"
+            )
+        for name, duration in hold_seconds.items():
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or not isfinite(float(duration))
+                or duration < 0
+            ):
+                raise CalibrationError(
+                    "calibration",
+                    f"hold duration {name!r} must be finite and nonnegative",
+                )
         for name, moves in motions.items():
             if not moves or any(not isinstance(move, HeadMove) for move in moves):
                 raise CalibrationError(
@@ -122,9 +143,12 @@ class StackChanAdapter:
         self,
         client: StackChanClient,
         calibration: StackChanCalibration | None,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self._client = client
         self._calibration = calibration
+        self._sleep = sleep
 
     def prepare(self, steps: tuple[RecipeStep, ...]) -> None:
         """Resolve the full recipe before the first upstream client call."""
@@ -159,6 +183,9 @@ class StackChanAdapter:
                 move.pitch,
                 move.speed,
             )
+        hold_seconds = calibration.hold_seconds.get(motion, 0.0)
+        if hold_seconds:
+            self._sleep(hold_seconds)
 
     def _require_calibration(self) -> StackChanCalibration:
         if self._calibration is None:

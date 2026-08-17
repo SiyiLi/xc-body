@@ -41,36 +41,43 @@ class MeasuredCalibrationTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            dict(calibration.hold_seconds),
+            {"restrained_side_glance": 10.0},
+        )
+        self.assertEqual(
             dict(calibration.motions),
             {
                 "relaxed_center": (HeadMove(0, 43, 30),),
                 "restrained_side_glance": (HeadMove(12, 50, 30),),
             },
         )
-        self.assertEqual(calibration.verified_faces, frozenset())
+        self.assertEqual(
+            calibration.verified_faces,
+            frozenset({"idle", "thinking", "happy", "sad"}),
+        )
 
-    def test_idle_and_curious_require_visible_face_verification(self):
+    def test_idle_and_curious_use_verified_faces_and_measured_motion(self):
         for intent in ("idle", "curious"):
             with self.subTest(intent=intent):
                 client = FakeClient()
                 device = StackChanAdapter(
-                    client, measured_k151_cores3_calibration()
+                    client,
+                    measured_k151_cores3_calibration(),
+                    sleep=lambda seconds: None,
                 )
 
-                with self.assertRaisesRegex(
-                    VisibleFaceVerificationError,
-                    "visible face verification",
-                ):
-                    embody({"version": "v1", "intent": intent}, device)
+                embody({"version": "v1", "intent": intent}, device)
 
-                self.assertEqual(client.calls, [])
+                self.assertTrue(client.calls)
 
     def test_uncalibrated_intents_fail_before_client_calls(self):
         for intent in ("pleased", "concerned"):
             with self.subTest(intent=intent):
                 client = FakeClient()
                 device = StackChanAdapter(
-                    client, measured_k151_cores3_calibration()
+                    client,
+                    measured_k151_cores3_calibration(),
+                    sleep=lambda seconds: None,
                 )
 
                 with self.assertRaises(CalibrationError):

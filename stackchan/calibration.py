@@ -6,7 +6,7 @@ from stackchan.adapter import HeadMove, StackChanCalibration
 
 
 def measured_k151_cores3_calibration() -> StackChanCalibration:
-    """Build measured motions and mappings with no visibly verified faces."""
+    """Build measured motions and mappings for verified native avatars."""
 
     return StackChanCalibration(
         faces={
@@ -21,5 +21,6 @@ def measured_k151_cores3_calibration() -> StackChanCalibration:
                 HeadMove(yaw=12, pitch=50, speed=30),
             ),
         },
-        verified_faces=frozenset(),
+        hold_seconds={"restrained_side_glance": 10.0},
+        verified_faces=frozenset({"idle", "thinking", "happy", "sad"}),
     )

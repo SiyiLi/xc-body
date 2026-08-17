@@ -310,10 +310,13 @@ class AvatarAssetTests(unittest.TestCase):
             decoded = json.loads(paths["manifest"].read_text())
             validate_avatar_set(paths["payload"].read_bytes(), decoded)
 
-    def test_production_verified_faces_remains_empty(self):
+    def test_production_verified_faces_match_physically_checked_assets(self):
         calibration = measured_k151_cores3_calibration()
 
-        self.assertEqual(calibration.verified_faces, frozenset())
+        self.assertEqual(
+            calibration.verified_faces,
+            frozenset({"idle", "thinking", "happy", "sad"}),
+        )
 
 
 if __name__ == "__main__":
