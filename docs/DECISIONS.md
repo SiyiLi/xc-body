@@ -147,7 +147,7 @@
 - **Status:** Accepted for the prepared real E2E slice
 - **Date:** 2026-08-11
 - **Decision:** Encode measured K151/CoreS3 values in an explicit factory. Idle
-  maps to `idle` and `(0,43,30)`; curious maps to `thinking` and `(3,45,30)`
+  maps to `idle` and `(0,43,30)`; curious maps to `thinking` and `(12,50,30)`
   before returning to idle. Speed `30` represents upstream `low`. The factory
   records no visibly verified faces.
 - **Reason:** Deployment must deliberately choose motion calibration and

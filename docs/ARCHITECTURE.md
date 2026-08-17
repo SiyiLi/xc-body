@@ -84,6 +84,12 @@ boundary and executes the synchronous semantic path in a worker thread. URL
 and bearer token values have no code defaults. Importing the runner starts no
 session and performs no environment reads.
 
+The long-lived semantic service admits one complete recipe at a time,
+including its bounded hold and mandatory idle return. Cancellation while
+queued causes no body work. Once a recipe starts, caller cancellation is
+reported only after that recipe finishes its idle attempt, and service shutdown
+drains active recipe work before closing the upstream session.
+
 Calibration remains explicit and immutable. Upstream avatar-name mapping and
 human-visible face verification are separate facts. A complete recipe,
 including mandatory idle return, resolves both facts before device work. An
@@ -92,11 +98,14 @@ calls. The runner applies the measured calibration preflight before endpoint
 configuration or MCP session creation.
 
 The reviewed deployment factory preserves measured idle and curious motion and
-maps four upstream avatar names, but its visibly verified face set is empty.
-Pleased and concerned motion also remains incomplete. Servo commands are
-checked against upstream yaw `-90..90` and pitch `5..85` limits at calibration
-construction. Real hardware confirmed curious head movement and exact neutral
-recovery, but not visible expression rendering.
+maps four visibly verified upstream avatar names. That verification is
+conditional on the exact reviewed native payload: each semantic process restores
+the configured archive and compares the returned checksum with the recorded
+SHA-256 before accepting requests. Pleased and concerned motion remains
+incomplete. Servo commands are checked against upstream yaw `-90..90` and pitch
+`5..85` limits at calibration construction. Historical hardware acceptance
+confirmed the faces, curious movement, and exact neutral recovery; incomplete
+version capture means that run is not a reproducible current deployment claim.
 
 Candidate runtime artwork is a separate, dependency-free preparation boundary.
 `stackchan/avatar_assets.py` deterministically produces and validates the exact
@@ -109,7 +118,9 @@ only a cosmetic pixel count.
 
 The loading helper accepts an injected MCP tool caller and deployment-selected
 paths. It validates local bytes before calling upstream `load_avatar_set` with
-`mode="layered-320x240"`. The companion adaptation adds that explicit mode to
+`mode="layered-320x240"`. Semantic readiness additionally requires the device
+result checksum to equal the reviewed payload digest, not merely a valid digest.
+The companion adaptation adds that explicit mode to
 the pinned gateway and firmware, selects LVGL 1x scaling for native descriptors,
 and keeps legacy 160x120 modes unchanged. The caller remains responsible for
 making the exact validated bytes available at the deployment archive path.
