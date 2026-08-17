@@ -25,10 +25,6 @@ class StackChanEventDispatcher:
         self._pending: Mapping[str, object] | None = None
         self._task: asyncio.Task[None] | None = None
 
-    @property
-    def active_task_count(self) -> int:
-        return int(self._task is not None)
-
     def dispatch(self, event: Mapping[str, object]) -> None:
         self._pending = event
         if self._task is None:
@@ -54,8 +50,7 @@ class StackChanEventDispatcher:
 
 async def handle_session_message(
     message: object,
-    machine: KnockWaitTell,
-    dispatcher: StackChanEventDispatcher | None = None,
+    dispatcher: StackChanEventDispatcher,
 ) -> None:
     """Queue one event without blocking the MCP session receive loop."""
 
@@ -68,9 +63,6 @@ async def handle_session_message(
             "stackchan/event params must be an object"
         )
     if not is_head_acknowledgment(params):
-        return
-    if dispatcher is None:
-        await asyncio.to_thread(machine.handle_stackchan_event, params)
         return
     dispatcher.dispatch(params)
 
@@ -126,7 +118,7 @@ def create_stackchan_client_session(
     event_dispatcher = StackChanEventDispatcher(machine)
 
     async def message_handler(message: object) -> None:
-        await handle_session_message(message, machine, event_dispatcher)
+        await handle_session_message(message, event_dispatcher)
 
     session = ClientSession(
         read_stream,

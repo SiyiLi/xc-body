@@ -8,14 +8,17 @@ workloads, which must remain isolated from XC Body.
 
 A read-only inventory confirmed that the rendezvous host has Docker and enough
 headroom for a separately isolated XC Body service. Existing workloads and
-ports must remain untouched. No existing public reverse-proxy/TLS route suitable
-for XC Body was found, so endpoint naming, certificate termination, and firewall
-changes remain explicit future deployment decisions rather than assumptions.
-Nothing on the host was changed during discovery.
+ports must remain untouched. Tencent blocks the unfiled `body.siyi.ai` domain,
+so the public device route is instead `wss://43.143.37.91`. An isolated Caddy
+proxy obtains and renews a short-lived public IP certificate; raw gateway ports
+remain private.
 
 The transport-independent semantic core is dependency-free Python 3.10+, which
-matches the pinned upstream gateway's language floor. Deployment packaging is
-not selected yet.
+matches the pinned upstream gateway's language floor. The deployment builds a
+`linux/amd64` runtime image from the exact application and upstream commits,
+reviewed avatar, and gateway patch. It publishes that image and the Caddy image
+to TC Artifactory; the VM pulls their exact digests and retains secrets only in
+its existing private environment.
 
 ## Preferred Milestone 1 Shape
 
@@ -38,9 +41,9 @@ OpenClaw's managed MCP registry supports remote Streamable HTTP servers with
 headers, TLS verification, timeouts, and tool filtering, so it can connect
 outbound and authenticated to the XC Body MCP HTTP surface without an OpenClaw
 runtime patch. StackChan also initiates its authenticated WSS connection
-outbound, so the home router needs no inbound device route. A future deployment
-should terminate both paths on a reviewed public TLS route, preferably TCP 443.
-Raw gateway ports 8765, 8766, and 8767 must not be publicly exposed.
+outbound, so the home router needs no inbound device route. The deployed route
+terminates public TLS on TCP 443. Raw gateway ports 8765, 8766, and 8767 must
+not be publicly exposed.
 
 Cloud-only through the rendezvous is the simplest canonical Milestone 1 proof
 unless inventory evidence changes the choice. In this milestone, "anywhere"
@@ -64,6 +67,7 @@ proof and should not be implemented speculatively.
 
 - Owns agent identity and reasoning.
 - Selects semantic intentions.
+- For an offer, supplies the exact short sentence that may be spoken aloud.
 - Does not own servo angles, timing, or animation details.
 
 ### XC Body embodiment layer
@@ -77,8 +81,8 @@ proof and should not be implemented speculatively.
 - Reports real device success or failure.
 - Later owns continuity and restraint state, but not during Milestone 1.
 
-The implemented slice includes one transport-neutral semantic `embody` tool,
-an injected synchronous device port, a fail-closed adapter, and an upstream MCP
+The implemented slice includes an executable semantic `embody` service, an
+injected synchronous device port, a fail-closed adapter, and an upstream MCP
 client wrapper. The cloud runner confines MCP SDK async behavior to its session
 boundary and executes the synchronous semantic path in a worker thread. URL
 and bearer token values have no code defaults. Importing the runner starts no
@@ -116,11 +120,11 @@ SHA-256, and
 per-frame SHA-256 values. Validation also rejects primary faces that differ by
 only a cosmetic pixel count.
 
-The loading helper accepts an injected MCP tool caller and deployment-selected
-paths. It validates local bytes before calling upstream `load_avatar_set` with
-`mode="layered-320x240"`. Semantic readiness additionally requires the device
-result checksum to equal the reviewed payload digest, not merely a valid digest.
-The companion adaptation adds that explicit mode to
+The generator validates local bytes and their manifest before writing them.
+At startup, each service calls upstream `load_avatar_set` with
+`mode="layered-320x240"`. Semantic readiness requires the device result
+checksum to equal the reviewed payload digest, not merely a valid digest. The
+companion adaptation adds that explicit mode to
 the pinned gateway and firmware, selects LVGL 1x scaling for native descriptors,
 and keeps legacy 160x120 modes unchanged. The caller remains responsible for
 making the exact validated bytes available at the deployment archive path.
@@ -140,34 +144,50 @@ maps deliberate consent to `touch/tap/head_pat` and
 injected tell port and clears the offer only after playback succeeds. No text
 summary or upstream `say` path exists.
 
-Duplicate playback is suppressed only while a thought ID remains in bounded
-recent-ID memory for the running process. Restart or ID eviction may replay it.
+The state machine suppresses duplicate playback while a thought ID remains in
+bounded recent-ID memory for the running process. The playback endpoint also
+uses `thought_id` for request idempotency. Restart or ID eviction may replay it.
 
 The running process holds at most one offer. Restart persistence, quiet hours,
 cooldowns, batching, and background-event selection remain outside Milestone 2
 so this slice does not grow into a second memory or policy system.
 
-The executable boundary is `gateway/pending_thought_service.py`. It exposes
-only `consider_thought` downstream over MCP stdio while keeping one persistent
-authenticated upstream StackChan MCP session open. One
+The OpenClaw-facing boundary is
+`gateway/openclaw_thought_service.py`. It exposes the same semantic decision
+name but accepts a short message instead of encoded bytes. On the OpenClaw
+host, it synthesizes the configured XC voice, normalizes it, encodes 16 kHz
+mono PCM into 60 ms Opus packets, and submits the strict prepared-audio
+contract over authenticated HTTPS. OpenClaw chooses the words; this producer
+owns only deterministic audio preparation.
+
+The body-facing boundaries are `gateway/pending_thought_service.py` for MCP
+stdio and `gateway/pending_thought_http_service.py` for authenticated
+Streamable HTTP. Both expose only `consider_thought` while keeping one
+persistent authenticated upstream StackChan MCP session open. One
 `PendingThoughtRuntime` owns the state machine and concrete body adapters for
 that session lifetime. Custom `stackchan/event` notifications are dispatched
 as tracked background work so playback cannot block the MCP receive loop, and
 shutdown drains that work before closing the upstream session.
 
+Both the stdio and HTTP boundaries restore the configured reviewed avatar and
+require its exact checksum before accepting work. They then bind readiness to
+the connected, initialized device session ID. A changed device session makes
+readiness false and causes body actions to fail before movement or playback.
+The HTTP boundary requires a distinct downstream bearer token when bound to a
+non-loopback interface. A loopback-only bind may omit that credential.
+
 Here, persistent means one session for the connected process lifetime, not an
 internal reconnect loop. An upstream transport loss terminates the current
 service. The runtime cannot be rebound because its machine and body are tied to
 the original session, and Milestone 2 deliberately has no cross-session pending
-state. A follow-up must define dependency pins and a launch supervisor, create
-a fresh runtime/session after disconnect, restore required avatar state before
-readiness, and test the exact state-loss behavior. The repository currently
-contains no reproducible service launch definition.
+state. Docker Compose starts a fresh runtime from the same TC image digest and
+restores the reviewed avatar on each process start. A follow-up must verify the
+exact pending-state loss after supervisor restart or disconnect.
 
 ### stackchan-mcp
 
-The pinned `0.17.0` revision was inspected at its exact git revision without
-initializing the submodule. Its gateway requires Python 3.10+ and already
+The pinned `0.17.0` revision is initialized and was inspected at its exact git
+revision. Its gateway requires Python 3.10+ and already
 provides the required shared-daemon primitives:
 
 - loopback Streamable HTTP MCP at `/mcp`;
@@ -191,6 +211,12 @@ OpenClaw; raw movement tools remain behind that boundary.
 - Reports device state.
 - Microphone, camera, and touch-to-agent paths remain disabled or unused during
   Milestone 1.
+
+The XC Body firmware patch also provides a USB-only maintenance boundary. A
+host tool can read connection state, persist the gateway URL and token, stream
+logs, and request a normal application reboot. The token is accepted as input
+but never returned. This path does not carry embodiment commands and does not
+replace the authenticated WebSocket gateway.
 
 ## Shared-VM Isolation Boundary
 

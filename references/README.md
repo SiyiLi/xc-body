@@ -2,7 +2,7 @@
 
 `stackchan-mcp` is pinned here as a Git submodule for study and initial reuse.
 The gitlink revision is `804af573ba8f577f63efbd39f6e8a9c7f57b4647`, and
-the local submodule is currently uninitialized.
+the local submodule is initialized at that exact revision.
 
 Do not edit the submodule casually. XC Body should first consume the upstream
 gateway and firmware as-is. A fork or patch is justified only by a reproduced

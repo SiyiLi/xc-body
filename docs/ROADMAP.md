@@ -13,14 +13,12 @@ were proven on the physical device.
 
 An OpenClaw background result may be ignored, remembered, or offered silently.
 StackChan waits for a deliberate head pat or stroke before playing
-OpenClaw-prepared audio. Historical physical acceptance passed on 2026-08-14;
-the incomplete version record means it is not a reproducible current deployment
-claim.
+OpenClaw-prepared audio. Complete: OpenClaw chose an offer, a physical head
+stroke acknowledged it, and the robot played clear speech.
 
 ## Milestone 3: Continuity and Restraint
 
-This is the current software focus. Pending thoughts survive restarts,
-cross-restart
+After Milestone 2 closes, pending thoughts survive restarts, cross-restart
 duplicate handling is defined, quiet hours and cooldowns are enforced, and
 reconnection restores authoritative state.
 

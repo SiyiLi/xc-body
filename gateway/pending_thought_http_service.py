@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import hmac
 import ipaddress
 import json
@@ -17,39 +16,39 @@ from typing import Any
 
 from gateway.pending_thought_runtime import PendingThoughtRuntime
 from gateway.pending_thought_service import (
+    PlaybackConfig,
     PendingThoughtServiceError,
     create_service_server,
     load_playback_config,
+    prepare_pending_runtime,
 )
 from gateway.semantic_e2e import RunnerConfigError, load_config
 from gateway.stackchan_event_session import wait_for_stackchan_event_tasks
 
 DOWNSTREAM_TOKEN_ENV = "XC_BODY_PENDING_HTTP_TOKEN"
 AUTH_FAILURE_MESSAGE = "Unauthorized: missing or invalid bearer token"
-NON_LOOPBACK_TOKEN_REQUIRED_MESSAGE = (
-    "refusing non-loopback pending-thought HTTP bind without "
-    f"{DOWNSTREAM_TOKEN_ENV}"
+TOKEN_REQUIRED_MESSAGE = (
+    f"refusing pending-thought HTTP service without {DOWNSTREAM_TOKEN_ENV}"
 )
 _AUTHENTICATED_PATHS = frozenset(("/mcp", "/readyz"))
 
 
 def is_loopback_bind_host(host: str) -> bool:
-    """Return whether a bind target is limited to the local machine."""
+    """Return whether one bind host is local-only."""
 
-    normalized = host.strip().lower()
-    if normalized == "localhost":
+    if host == "localhost":
         return True
     try:
-        return ipaddress.ip_address(normalized).is_loopback
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
 
 
 def validate_bind_safety(host: str, downstream_token: str) -> None:
-    """Reject an exposed service that has no downstream credential."""
+    """Require authentication when the HTTP service is network-visible."""
 
     if not downstream_token and not is_loopback_bind_host(host):
-        raise PendingThoughtServiceError(NON_LOOPBACK_TOKEN_REQUIRED_MESSAGE)
+        raise PendingThoughtServiceError(TOKEN_REQUIRED_MESSAGE)
 
 
 def load_downstream_token(
@@ -75,7 +74,6 @@ class _BearerAuthApp:
     def __init__(self, app: Any, downstream_token: str):
         self._app = app
         self._downstream_token = downstream_token
-        self.state = app.state
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if (
@@ -84,19 +82,13 @@ class _BearerAuthApp:
         ):
             provided = _header_value(scope, b"authorization")
             expected = f"Bearer {self._downstream_token}"
-            authorized = bool(self._downstream_token) and hmac.compare_digest(
-                provided,
-                expected,
+            authorized = not self._downstream_token or hmac.compare_digest(
+                provided, expected
             )
             if not authorized:
                 await _send_auth_failure(send)
                 return
         await self._app(scope, receive, send)
-
-    @property
-    def router(self) -> Any:
-        return self._app.router
-
 
 def _header_value(scope: Any, name: bytes) -> str:
     for raw_name, raw_value in scope.get("headers", []):
@@ -121,14 +113,12 @@ async def _send_auth_failure(send: Any) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-def _health_payload() -> dict[str, bool]:
-    return {"ok": True}
-
-
-def _readiness_payload(runtime: PendingThoughtRuntime) -> dict[str, object]:
+async def _readiness_payload(
+    runtime: PendingThoughtRuntime,
+) -> dict[str, object]:
     machine = runtime.machine
     return {
-        "ok": machine is not None,
+        "ok": await runtime.is_ready(),
         "pending_thought_id": (
             machine.pending_thought_id if machine is not None else None
         ),
@@ -137,16 +127,14 @@ def _readiness_payload(runtime: PendingThoughtRuntime) -> dict[str, object]:
 
 def build_app(
     config: Any,
+    playback_config: PlaybackConfig,
     *,
     host: str,
-    port: int,
     downstream_token: str = "",
 ) -> Any:
     """Build one process-wide runtime and its guarded HTTP MCP surface."""
 
     validate_bind_safety(host, downstream_token)
-    playback_config = load_playback_config()
-
     try:
         import httpx
         from mcp.client.streamable_http import streamable_http_client
@@ -173,10 +161,10 @@ def build_app(
     )
 
     async def healthz(_request: Any) -> Any:
-        return JSONResponse(_health_payload())
+        return JSONResponse({"ok": True})
 
     async def readyz(_request: Any) -> Any:
-        payload = _readiness_payload(runtime)
+        payload = await _readiness_payload(runtime)
         return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
     @asynccontextmanager
@@ -193,6 +181,11 @@ def build_app(
                 )
                 async with session:
                     await session.initialize()
+                    await prepare_pending_runtime(
+                        session,
+                        runtime,
+                        config.avatar_path,
+                    )
                     async with manager.run():
                         try:
                             yield
@@ -209,14 +202,12 @@ def build_app(
         Route("/readyz", endpoint=readyz, methods=["GET"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
-    app.state.runtime = runtime
-    app.state.host = host
-    app.state.port = port
     return _BearerAuthApp(app, downstream_token)
 
 
 async def run_http_service(
     config: Any,
+    playback_config: PlaybackConfig,
     *,
     host: str,
     port: int,
@@ -231,8 +222,8 @@ async def run_http_service(
 
     app = build_app(
         config,
+        playback_config,
         host=host,
-        port=port,
         downstream_token=downstream_token,
     )
     server = uvicorn.Server(
@@ -264,12 +255,18 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        config = load_config(url=args.url, environ=environ)
+        config = load_config(
+            url=args.url,
+            environ=environ,
+            require_avatar=True,
+        )
         downstream_token = load_downstream_token(environ)
         validate_bind_safety(args.host, downstream_token)
+        playback_config = load_playback_config(environ)
         asyncio.run(
             run_http_service(
                 config,
+                playback_config,
                 host=args.host,
                 port=args.port,
                 downstream_token=downstream_token,

@@ -230,7 +230,7 @@ diff --git a/gateway/stackchan_mcp/capture_server.py b/gateway/stackchan_mcp/cap
 index a235f17..4c7ae1a 100644
 --- a/gateway/stackchan_mcp/capture_server.py
 +++ b/gateway/stackchan_mcp/capture_server.py
-@@ -95,11 +95,29 @@ class _AvatarStaging:
+@@ -95,11 +95,30 @@ class _AvatarStaging:
  # against a misbehaving / malicious uploader without inviting unbounded
  # disk consumption on the gateway host.
  CAPTURE_MAX_BYTES = 8 * 1024 * 1024
@@ -239,6 +239,7 @@ index a235f17..4c7ae1a 100644
 +PREPARED_OPUS_MAX_PACKETS = 4096
 +PREPARED_OPUS_MAX_RECORDED_IDS = 1024
 +PREPARED_OPUS_FRAME_DURATION_MS = 60
++PREPARED_OPUS_PREFILL_PACKETS = 6
 +PREPARED_OPUS_START_DELAY_S = 0.05
 +PREPARED_OPUS_RESULTS_KEY = web.AppKey("prepared_opus_results", dict)
 +PREPARED_OPUS_LOCK_KEY = web.AppKey("prepared_opus_lock", asyncio.Lock)
@@ -270,7 +271,7 @@ index a235f17..4c7ae1a 100644
          raise ValueError(f"unknown avatar mode: {mode}")
 
      short_id = secrets.token_hex(8)
-@@ -432,6 +450,254 @@ async def handle_pcm(request: web.Request) -> web.Response:
+@@ -432,6 +451,261 @@ async def handle_pcm(request: web.Request) -> web.Response:
      return web.Response(text=json.dumps(result), content_type="application/json")
 
 
@@ -436,8 +437,15 @@ index a235f17..4c7ae1a 100644
 +            started = True
 +            await asyncio.sleep(PREPARED_OPUS_START_DELAY_S)
 +            loop = asyncio.get_running_loop()
-+            next_send_time = loop.time()
-+            for packet in packets:
++            prefill_count = min(
++                len(packets), PREPARED_OPUS_PREFILL_PACKETS
++            )
++            for packet in packets[:prefill_count]:
++                await esp32.send_audio_frame(packet)
++            next_send_time = loop.time() + (
++                PREPARED_OPUS_FRAME_DURATION_MS / 1000
++            )
++            for packet in packets[prefill_count:]:
 +                delay = next_send_time - loop.time()
 +                if delay > 0:
 +                    await asyncio.sleep(delay)
@@ -553,6 +561,50 @@ index 68bd753..6ce38df 100644
          }.get(mode)
          if expected is None:
              return {"ok": False, "error": f"unknown_mode: {mode}"}
+diff --git a/gateway/stackchan_mcp/esp32_client.py b/gateway/stackchan_mcp/esp32_client.py
+--- a/gateway/stackchan_mcp/esp32_client.py
++++ b/gateway/stackchan_mcp/esp32_client.py
+@@ -136,6 +136,7 @@ class ESP32Connection:
+         self._initialized = False
+         self._tools_discovered = False
+         self._avatar_render_sent = False
++        self._active_avatar_checksum = ""
+         # Phase 4.5 avatar: pending load_avatar_set calls waiting for the
+         # device's `avatar_set_loaded` reply. Keyed by expected checksum
+         # so that overlapping fetches (different sets) can be discriminated.
+@@ -280,7 +281,18 @@ class ESP32Connection:
++        if self._active_avatar_checksum == checksum:
++            return {
++                "ok": True,
++                "checksum": checksum,
++                "already_loaded": True,
++            }
++        previous = self._avatar_set_waiters.get(checksum)
++        if previous is not None and not previous.done():
++            try:
++                return await asyncio.wait_for(
++                    asyncio.shield(previous), timeout=timeout
++                )
++            except asyncio.TimeoutError:
++                return {"ok": False, "checksum": checksum, "error": "device_timeout"}
++            except asyncio.CancelledError:
++                return {"ok": False, "checksum": checksum, "error": "superseded"}
+         future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+-        # Last-writer-wins on duplicate checksum: cancel the previous waiter
+-        # so the same set being re-pushed doesn't strand callers.
+-        previous = self._avatar_set_waiters.pop(checksum, None)
+-        if previous is not None and not previous.done():
+-            previous.cancel()
+         self._avatar_set_waiters[checksum] = future
+@@ -312,6 +324,8 @@ class ESP32Connection:
+     def handle_avatar_set_loaded(self, payload: dict[str, Any]) -> None:
+         """Resolve a pending send_avatar_set_fetch by checksum."""
+         checksum = payload.get("checksum", "")
++        if payload.get("ok") is True:
++            self._active_avatar_checksum = checksum
+         future = self._avatar_set_waiters.pop(checksum, None)
+         if future is not None and not future.done():
+             future.set_result(payload)
 diff --git a/gateway/stackchan_mcp/stdio_server.py b/gateway/stackchan_mcp/stdio_server.py
 index 91a4131..77b8840 100644
 --- a/gateway/stackchan_mcp/stdio_server.py
@@ -595,7 +647,7 @@ diff --git a/gateway/tests/test_capture_server.py b/gateway/tests/test_capture_s
 index 91fecb3..6fb182f 100644
 --- a/gateway/tests/test_capture_server.py
 +++ b/gateway/tests/test_capture_server.py
-@@ -268,3 +268,267 @@ async def test_capture_tolerates_non_utf8_question(tmp_path, monkeypatch):
+@@ -268,3 +268,269 @@ async def test_capture_tolerates_non_utf8_question(tmp_path, monkeypatch):
              )
              resp = await client.post("/capture", data=mpwriter)
          assert resp.status == 200, await resp.text()
@@ -852,17 +904,19 @@ index 91fecb3..6fb182f 100644
 +
 +    monkeypatch.setattr(capture_server.asyncio, "sleep", record_sleep)
 +
++    packets = [f"packet-{index}".encode() for index in range(8)]
 +    await capture_server._play_prepared_opus(
 +        FakeGateway(),
-+        [b"first", b"second"],
++        packets,
 +    )
 +
 +    assert events == [
 +        ("tts", "start"),
-+        ("frame", b"first"),
-+        ("frame", b"second"),
++        *[("frame", packet) for packet in packets],
 +        ("tts", "stop"),
 +    ]
++    assert sleeps[0] == capture_server.PREPARED_OPUS_START_DELAY_S
++    assert len(sleeps) > 1
 diff --git a/gateway/tests/test_gateway.py b/gateway/tests/test_gateway.py
 index 2f849c7..956accd 100644
 --- a/gateway/tests/test_gateway.py
@@ -940,3 +994,353 @@ index 2f849c7..956accd 100644
  def test_vision_url_uses_explicit_url(monkeypatch):
      """VISION_URL overrides host/port construction for remote tunnels."""
      monkeypatch.setenv("VISION_URL", "https://stackchan.example.ts.net:8443/capture")
+diff --git a/firmware/main/CMakeLists.txt b/firmware/main/CMakeLists.txt
+index 01591f0..01c3bd7 100644
+--- a/firmware/main/CMakeLists.txt
++++ b/firmware/main/CMakeLists.txt
+@@ -1042,2 +1042,3 @@ idf_component_register(SRCS ${SOURCES}
+                         esp_driver_uart
++                        esp_driver_usb_serial_jtag
+                         esp_driver_spi
+diff --git a/firmware/main/boards/common/power_save_timer.cc b/firmware/main/boards/common/power_save_timer.cc
+index 522e64c..b0c3c42 100644
+--- a/firmware/main/boards/common/power_save_timer.cc
++++ b/firmware/main/boards/common/power_save_timer.cc
+@@ -5,3 +5,6 @@
+ #include <esp_log.h>
+-
++#if defined(CONFIG_BOARD_TYPE_STACKCHAN) && \
++    defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
++#include <driver/usb_serial_jtag.h>
++#endif
+ #define TAG "PowerSaveTimer"
+@@ -62,2 +65,12 @@ void PowerSaveTimer::OnShutdownRequest(std::function<void()> callback) {
+ void PowerSaveTimer::PowerSaveCheck() {
++#if defined(CONFIG_BOARD_TYPE_STACKCHAN) && \
++    defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
++    if (usb_serial_jtag_is_connected()) {
++        ticks_ = 0;
++        if (in_sleep_mode_) {
++            WakeUp();
++        }
++        return;
++    }
++#endif
+     auto& app = Application::GetInstance();
+diff --git a/firmware/main/boards/stackchan/config.json b/firmware/main/boards/stackchan/config.json
+index 2cfccf7..ae43d6a 100644
+--- a/firmware/main/boards/stackchan/config.json
++++ b/firmware/main/boards/stackchan/config.json
+@@ -10,2 +10,3 @@
+                 "CONFIG_CAMERA_GC0308_DVP_YUV422_320X240_20FPS=y",
++                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                 "CONFIG_STACKCHAN_SERVO_FEETECH=y"
+@@ -14,2 +15,2 @@
+     ]
+-}
+\ No newline at end of file
++}
+diff --git a/firmware/main/boards/stackchan/stackchan.cc b/firmware/main/boards/stackchan/stackchan.cc
+index 83f77b4..6dfc306 100644
+--- a/firmware/main/boards/stackchan/stackchan.cc
++++ b/firmware/main/boards/stackchan/stackchan.cc
+@@ -33,2 +33,3 @@ static inline bool ServoWritePosOk(int r) { return r > 0; }
+ #include "avatar_set.h"
++#include "usb_control.h"
+ #include "avatar_set_fetcher.h"
+@@ -7098,2 +7099,3 @@ public:
+         RegisterMcpTools();
++        StartStackChanUsbControl();
+     }
+diff --git a/firmware/main/boards/stackchan/usb_control.cc b/firmware/main/boards/stackchan/usb_control.cc
+new file mode 100644
+index 0000000..675c8d2
+--- /dev/null
++++ b/firmware/main/boards/stackchan/usb_control.cc
+@@ -0,0 +1,274 @@
++#include "usb_control.h"
++
++#include <cstdio>
++#include <cstring>
++#include <string>
++
++#include <cJSON.h>
++#include <esp_app_desc.h>
++#include <esp_log.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <wifi_manager.h>
++
++#include "application.h"
++#include "device_state_machine.h"
++#include "settings.h"
++
++namespace {
++
++constexpr char kRequestPrefix[] = "XC_BODY_REQUEST ";
++constexpr char kResponsePrefix[] = "XC_BODY_RESPONSE ";
++constexpr size_t kMaxRequestBytes = 1024;
++constexpr uint32_t kTaskStackSize = 6144;
++constexpr UBaseType_t kTaskPriority = tskIDLE_PRIORITY + 1;
++const char* const kTag = "StackChanUsb";
++
++bool IsString(const cJSON* value) {
++    return value != nullptr && cJSON_IsString(value) &&
++        value->valuestring != nullptr;
++}
++
++bool HasGatewayScheme(const std::string& value) {
++    return value.empty() || value.rfind("ws://", 0) == 0 ||
++        value.rfind("wss://", 0) == 0;
++}
++
++bool IsUrlForced() {
++#if defined(CONFIG_FORCE_DEFAULT_WEBSOCKET_URL) && \
++    defined(CONFIG_DEFAULT_WEBSOCKET_URL)
++    return CONFIG_DEFAULT_WEBSOCKET_URL[0] != '\0';
++#else
++    return false;
++#endif
++}
++
++bool IsFallbackUrlForced() {
++#if defined(CONFIG_FORCE_DEFAULT_WEBSOCKET_URL) && \
++    defined(CONFIG_DEFAULT_WEBSOCKET_FALLBACK_URL)
++    return CONFIG_DEFAULT_WEBSOCKET_FALLBACK_URL[0] != '\0';
++#else
++    return false;
++#endif
++}
++
++bool IsTokenForced() {
++#if defined(CONFIG_FORCE_DEFAULT_WEBSOCKET_URL) && \
++    defined(CONFIG_DEFAULT_WEBSOCKET_TOKEN)
++    return CONFIG_DEFAULT_WEBSOCKET_TOKEN[0] != '\0';
++#else
++    return false;
++#endif
++}
++
++cJSON* NewResponse(const char* command, bool ok) {
++    auto response = cJSON_CreateObject();
++    cJSON_AddStringToObject(response, "command", command);
++    cJSON_AddBoolToObject(response, "ok", ok);
++    return response;
++}
++
++void SendResponse(cJSON* response) {
++    char* json = cJSON_PrintUnformatted(response);
++    if (json != nullptr) {
++        std::printf("%s%s\n", kResponsePrefix, json);
++        std::fflush(stdout);
++        cJSON_free(json);
++    }
++    cJSON_Delete(response);
++}
++
++void SendError(const char* command, const char* error) {
++    auto response = NewResponse(command, false);
++    cJSON_AddStringToObject(response, "error", error);
++    SendResponse(response);
++}
++
++void AddGatewayStatus(cJSON* response) {
++    Settings settings("websocket", false);
++    cJSON_AddStringToObject(
++        response, "url", settings.GetString("url").c_str());
++    cJSON_AddStringToObject(
++        response,
++        "fallback_url",
++        settings.GetString("fallback_url").c_str());
++    cJSON_AddBoolToObject(
++        response,
++        "token_set",
++        !settings.GetString("token").empty());
++    cJSON_AddBoolToObject(response, "url_forced", IsUrlForced());
++    cJSON_AddBoolToObject(
++        response, "fallback_url_forced", IsFallbackUrlForced());
++    cJSON_AddBoolToObject(response, "token_forced", IsTokenForced());
++}
++
++void SendStatus() {
++    auto& app = Application::GetInstance();
++    auto& wifi = WifiManager::GetInstance();
++    auto response = NewResponse("status", true);
++    cJSON_AddStringToObject(
++        response,
++        "firmware",
++        esp_app_get_description()->version);
++    cJSON_AddStringToObject(
++        response,
++        "state",
++        DeviceStateMachine::GetStateName(app.GetDeviceState()));
++    cJSON_AddBoolToObject(response, "wifi_connected", wifi.IsConnected());
++    cJSON_AddStringToObject(response, "ssid", wifi.GetSsid().c_str());
++    cJSON_AddStringToObject(response, "ip", wifi.GetIpAddress().c_str());
++    cJSON_AddNumberToObject(response, "rssi", wifi.GetRssi());
++    AddGatewayStatus(response);
++    SendResponse(response);
++}
++
++bool GetOptionalString(
++    const cJSON* request,
++    const char* key,
++    bool& provided,
++    std::string& value) {
++    const cJSON* item = cJSON_GetObjectItemCaseSensitive(request, key);
++    provided = item != nullptr;
++    if (!provided) {
++        return true;
++    }
++    if (!IsString(item)) {
++        return false;
++    }
++    value = item->valuestring;
++    return true;
++}
++
++void SaveGatewayConfig(const cJSON* request) {
++    bool url_provided = false;
++    bool fallback_provided = false;
++    bool token_provided = false;
++    std::string url;
++    std::string fallback_url;
++    std::string token;
++    if (!GetOptionalString(
++            request, "url", url_provided, url) ||
++        !GetOptionalString(
++            request,
++            "fallback_url",
++            fallback_provided,
++            fallback_url) ||
++        !GetOptionalString(
++            request, "token", token_provided, token)) {
++        SendError("configure", "configuration values must be strings");
++        return;
++    }
++    if (!url_provided && !fallback_provided && !token_provided) {
++        SendError("configure", "no configuration value was provided");
++        return;
++    }
++    if ((url_provided && !HasGatewayScheme(url)) ||
++        (fallback_provided && !HasGatewayScheme(fallback_url))) {
++        SendError("configure", "gateway URLs must use ws:// or wss://");
++        return;
++    }
++    if ((url_provided && IsUrlForced()) ||
++        (fallback_provided && IsFallbackUrlForced()) ||
++        (token_provided && IsTokenForced())) {
++        SendError(
++            "configure",
++            "requested value is overridden by this firmware build");
++        return;
++    }
++
++    {
++        Settings settings("websocket", true);
++        auto save = [&settings](
++                        const char* key,
++                        bool provided,
++                        const std::string& value) {
++            if (!provided) {
++                return;
++            }
++            if (value.empty()) {
++                settings.EraseKey(key);
++            } else {
++                settings.SetString(key, value);
++            }
++        };
++        save("url", url_provided, url);
++        save("fallback_url", fallback_provided, fallback_url);
++        save("token", token_provided, token);
++    }
++
++    auto response = NewResponse("configure", true);
++    cJSON_AddStringToObject(response, "takes_effect", "after_reboot");
++    AddGatewayStatus(response);
++    SendResponse(response);
++}
++
++void ScheduleReboot() {
++    SendResponse(NewResponse("reboot", true));
++    Application::GetInstance().Schedule([]() {
++        Application::GetInstance().Reboot();
++    });
++}
++
++void HandleRequest(const char* json) {
++    cJSON* request = cJSON_Parse(json);
++    if (request == nullptr || !cJSON_IsObject(request)) {
++        cJSON_Delete(request);
++        SendError("unknown", "invalid JSON request");
++        return;
++    }
++    const cJSON* command =
++        cJSON_GetObjectItemCaseSensitive(request, "command");
++    if (!IsString(command)) {
++        cJSON_Delete(request);
++        SendError("unknown", "command must be a string");
++        return;
++    }
++
++    if (std::strcmp(command->valuestring, "status") == 0) {
++        SendStatus();
++    } else if (std::strcmp(command->valuestring, "configure") == 0) {
++        SaveGatewayConfig(request);
++    } else if (std::strcmp(command->valuestring, "reboot") == 0) {
++        ScheduleReboot();
++    } else {
++        SendError(command->valuestring, "unsupported command");
++    }
++    cJSON_Delete(request);
++}
++
++void UsbControlTask(void*) {
++    char line[kMaxRequestBytes];
++    ESP_LOGI(kTag, "USB maintenance control ready");
++    while (true) {
++        if (std::fgets(line, sizeof(line), stdin) == nullptr) {
++            clearerr(stdin);
++            vTaskDelay(pdMS_TO_TICKS(20));
++            continue;
++        }
++        size_t length = std::strlen(line);
++        while (length > 0 &&
++               (line[length - 1] == '\n' || line[length - 1] == '\r')) {
++            line[--length] = '\0';
++        }
++        if (std::strncmp(line, kRequestPrefix, sizeof(kRequestPrefix) - 1) !=
++            0) {
++            continue;
++        }
++        HandleRequest(line + sizeof(kRequestPrefix) - 1);
++    }
++}
++
++}  // namespace
++
++void StartStackChanUsbControl() {
++    BaseType_t created = xTaskCreate(
++        UsbControlTask,
++        "stackchan_usb",
++        kTaskStackSize,
++        nullptr,
++        kTaskPriority,
++        nullptr);
++    if (created != pdPASS) {
++        ESP_LOGE(kTag, "Failed to start USB maintenance control");
++    }
++}
+diff --git a/firmware/main/boards/stackchan/usb_control.h b/firmware/main/boards/stackchan/usb_control.h
+new file mode 100644
+index 0000000..7a605d9
+--- /dev/null
++++ b/firmware/main/boards/stackchan/usb_control.h
+@@ -0,0 +1,6 @@
++#ifndef STACKCHAN_USB_CONTROL_H_
++#define STACKCHAN_USB_CONTROL_H_
++
++void StartStackChanUsbControl();
++
++#endif  // STACKCHAN_USB_CONTROL_H_

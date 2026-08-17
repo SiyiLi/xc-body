@@ -26,8 +26,10 @@ In scope:
 - Upstream `stackchan/event` head-pat or head-stroke acknowledgment.
 - Bounded in-process duplicate suppression keyed by `thought_id`.
 - Fake-port tests for validation, transitions, duplicates, and failures.
-- One executable downstream MCP stdio service exposing only
+- Executable downstream MCP stdio and Streamable HTTP services exposing only
   `consider_thought`.
+- A local OpenClaw producer that converts its short spoken message into the
+  reviewed prepared-audio profile before calling the remote service.
 - One persistent authenticated upstream StackChan MCP session that receives
   device events and owns the pending-thought runtime for its lifetime.
 
@@ -81,11 +83,11 @@ See `contracts/pending-thought.schema.json` for the tracked schema.
 
 A second offer cannot replace the thought already awaiting acknowledgment. A
 tell failure leaves the offer pending so the failure is honest and retryable.
-The tell port receives `thought_id` and prepared audio, and must use the ID as
-its duplicate-suppression key. Completed outcomes are retained in a fixed-size
-in-process bound; the currently pending offer is never evicted. Suppression
-lasts only while an ID remains retained in the running process. Restart or ID
-eviction may replay it.
+The tell port receives `thought_id` and prepared audio and forwards the ID as
+the playback endpoint's idempotency key. Completed outcomes are retained in a
+fixed-size in-process bound; the currently pending offer is never evicted.
+Suppression lasts only while an ID remains retained in the running process.
+Restart or ID eviction may replay it.
 
 ## Upstream Event Boundary
 
@@ -107,24 +109,39 @@ Milestone 2 does not reinterpret arbitrary device events as consent.
 
 ## Executable Service
 
-`gateway/pending_thought_service.py` exposes only `consider_thought` over MCP
-stdio. It opens one persistent upstream StackChan MCP session, owns one
+The stdio and Streamable HTTP entry points expose only `consider_thought`. Each
+opens one persistent upstream StackChan MCP session, owns one
 `PendingThoughtRuntime` for that session lifetime, and continuously receives
 the custom `stackchan/event` notification.
 
 An accepted offer produces the reviewed silent knock: the `thinking` face,
-head pose `(12,50)` at low speed, a bounded hold, and return to neutral
+head pose `(12,50)` at low speed, a ten-second hold, and return to neutral
 `(0,43)` plus `idle`. Either accepted head gesture plays the prepared Opus
 packets. Retained recent IDs suppress duplicate playback within the running
 process; restart or ID eviction may replay it. There is no text-to-`say`
 fallback. Gesture work runs outside the MCP receive loop, and service shutdown
 waits for in-flight event work before closing the upstream session.
 
+Before either transport accepts work, the service restores the configured
+avatar archive, requires the exact reviewed checksum, and records the connected
+and initialized device session. Readiness and body actions recheck that session;
+a device reconnect therefore fails closed instead of using placeholder assets.
+The HTTP surface requires its separate downstream bearer token on a
+non-loopback bind. A loopback-only bind may omit it.
+
 The process keeps one upstream session while connected. It exits on transport
-loss rather than rebinding the session-owned runtime. Internal reconnect,
-dependency pins, and a reviewed launch/supervisor definition remain follow-up
-work; current documentation does not treat source files alone as a
-reproducible deployment.
+loss rather than rebinding the session-owned runtime. The tracked rendezvous
+deployment publishes the exact source, pinned StackChan revision, gateway
+patch, and reviewed avatar as one TC Artifactory runtime image. The VM runs
+that digest as the gateway and persistent pending-thought service. Internal
+reconnect and verified pending-state loss after supervisor restart remain
+follow-up work.
+
+OpenClaw does not call the binary contract directly. Its tracked local producer
+accepts the agent's decision and short message, uses the configured XC voice,
+normalizes the result, and emits 16 kHz mono, 60 ms Opus packets. The gateway
+prefills six packets into the device decoder queue before paced delivery so
+normal WAN scheduling jitter does not cut speech.
 
 ## Acceptance Tests
 
@@ -140,19 +157,24 @@ reproducible deployment.
 8. Invalid or overlong payloads fail before a body call.
 9. A batched real-device run proves knock, gesture, and playback integration.
 
-The persistent semantic service is an intentional prerequisite for this
-acceptance path: it serializes each complete recipe through idle and restores
-the reviewed avatar before readiness. The measured ten-second curious hold is
-also intentional acceptance hardening: it keeps the silent knock visible long
-enough for deliberate acknowledgment while preserving deterministic return to
-idle.
+The persistent pending-thought service is an intentional prerequisite for this
+acceptance path: it restores the reviewed avatar before readiness and keeps the
+event subscription alive while an offer waits. The measured ten-second hold
+keeps the silent knock visible while preserving deterministic return to idle.
 
 ## Exit Criteria
 
-The dependency-free state machine, contract, executable one-tool MCP service,
-persistent upstream session, and StackChan event routing are implemented and
-pass local fake-port and real-SDK transport tests. On 2026-08-14, Louis
-confirmed the full physical experience: silent offer, deliberate head gesture,
-and playback of OpenClaw-prepared audio through StackChan. Milestone 2 is
-complete. Restart persistence and cross-session recovery remain Milestone 3
-work.
+Milestone 2 is complete. OpenClaw selected `offer` and authored the spoken
+Chinese message. A physical head stroke triggered complete playback, and Louis
+confirmed that the speech was clear.
+
+The accepted versions were source candidate
+`e5e1fd68824fd80322896ddbaa7f23a06b34f2a7`, pinned StackChan
+`804af573ba8f577f63efbd39f6e8a9c7f57b4647`, firmware `2.2.6` image SHA-256
+`c12ffb705d71c3ece5d78f3f2369c590b230a4c388432b5616c3ebfe671f175c`,
+runtime image SHA-256
+`5f1764fa4bba8eba7ee60891a18b13994fd8d1ca7cc50abb887001202c5d19cc`,
+Caddy image SHA-256
+`98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a3411ad798f7a423a`,
+and OpenClaw `2026.7.1-2 (0790d9f)`. Restart persistence and cross-session
+recovery remain Milestone 3 work.

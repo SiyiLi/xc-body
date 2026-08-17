@@ -35,7 +35,7 @@ class SdkResult:
 class UpstreamClientTests(unittest.TestCase):
     def test_status_translates_structured_sdk_result(self):
         caller = RecordingCaller(
-            [SdkResult(structured_content={"device_connected": True})]
+            [SdkResult(structured_content={"connected": True})]
         )
 
         result = UpstreamStackChanClient(caller).get_status()

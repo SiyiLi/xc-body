@@ -211,4 +211,18 @@
   duplicates while that ID remains in bounded memory for the running process;
   restart or eviction may replay it. No text-to-`say` path exists. Restart
   persistence, batching, quiet hours, and selection policy remain Milestone 3
-  or later work.
+  or later work. A tracked local producer converts OpenClaw's chosen sentence
+  to the prepared-audio contract; the remote gateway never receives text.
+
+## D-020: Bind Milestone 2 Readiness to the Reviewed Device Session
+
+- **Status:** Accepted for Milestone 2
+- **Date:** 2026-08-17
+- **Decision:** Before serving, restore the exact reviewed avatar and record
+  the connected, initialized device session ID. Recheck that ID for readiness
+  and before body actions. Require a separate downstream HTTP bearer token for
+  non-loopback binds.
+- **Reason:** A reconnect must not report success while placeholder assets may
+  be active, and exposed service traffic must be authenticated.
+- **Consequence:** A device session change fails closed. Automatic reconnect,
+  restart persistence, and cross-session pending state remain Milestone 3.

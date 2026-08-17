@@ -1,0 +1,99 @@
+name: xc-body
+
+services:
+  gateway:
+    container_name: xc-body-gateway
+    image: ${XC_BODY_RUNTIME_IMAGE:?}
+    restart: unless-stopped
+    env_file:
+      - gateway.env
+    expose:
+      - "8765"
+      - "8766"
+      - "8767"
+    networks:
+      - xc-body
+    mem_limit: 384m
+    cpus: 0.50
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      HOME: /state
+      MCP_HTTP_ALLOWED_HOSTS: 43.143.37.91
+      PYTHONPATH: /opt/xc-body
+      STACKCHAN_NOTIFY_CONFIG: /opt/xc-body/deploy/notify.yml
+      VISION_URL: https://43.143.37.91/capture
+      XDG_CONFIG_HOME: /state/config
+    volumes:
+      - /data/xc-body/gateway-state:/state
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request as u;
+          u.urlopen('http://127.0.0.1:8767/healthz', timeout=5)
+      interval: 10s
+      timeout: 6s
+      retries: 12
+
+  pending:
+    container_name: xc-body-pending
+    image: ${XC_BODY_RUNTIME_IMAGE:?}
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    env_file:
+      - gateway.env
+    entrypoint: /opt/xc-body/deploy/run-pending-thought-service.sh
+    expose:
+      - "8770"
+    networks:
+      - xc-body
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  proxy:
+    container_name: xc-body-proxy
+    image: ${XC_BODY_CADDY_IMAGE:?}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      HOME: /state
+      XDG_CONFIG_HOME: /state/config
+      XDG_DATA_HOME: /state/data
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - xc-body
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /config:size=16m,mode=0755
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data/xc-body/caddy-state:/state
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  xc-body:
+    external: true
+    name: xc-body

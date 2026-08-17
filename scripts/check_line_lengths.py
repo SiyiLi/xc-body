@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_PARTS = {".git", "__pycache__"}
+EXCLUDED_PARTS = {".git", ".venv", "__pycache__"}
 REFERENCE_PREFIX = ROOT / "references" / "stackchan-mcp"
 MARKDOWN_EXEMPT_CHARS = frozenset("┌┐└┘│─▶▼▲")
 

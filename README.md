@@ -19,12 +19,9 @@ The product is guided by three qualities:
 
 ## Current Focus
 
-Milestones 1 and 2 have historical physical acceptance. The current software
-focus is **Milestone 3: Continuity and Restraint**: make deployment and recovery
-reproducible before adding broader behavior. The recorded physical runs proved
-native faces, deterministic head motion, prepared-audio playback, and safe
-return to idle, but their full firmware, gateway, OpenClaw, and source version
-set was not captured, so they are not a reproducible current deployment claim.
+Milestones 1 and 2 are complete. Production acceptance proved the full
+**Knock, Wait, Tell** interaction through OpenClaw and the physical robot.
+Milestone 3 is next but has not started.
 
 Milestone 2 adds a narrow initiative boundary: classify a background result as
 `ignore`, `remember`, or `offer`; offer silently; wait for a deliberate
@@ -34,11 +31,13 @@ remains in bounded recent-ID memory for the running process. Restart or
 eviction may replay it; durable restart persistence, quiet hours, microphone
 input, camera input, and background-event policy remain out of scope.
 
-The pending-thought boundary has a stdio service and a persistent HTTP
-service/proxy, each exposing only `consider_thought`. One process-owned runtime
-uses one upstream StackChan MCP session to receive device events. Local
-fake-port, full-suite, real-SDK transport, and physical prepared-audio
-knock/gesture/playback acceptance tests pass.
+The pending-thought boundary has stdio and persistent HTTP services, each
+exposing only `consider_thought`. One process-owned runtime uses one upstream
+StackChan MCP session to receive device events. Startup restores the exact
+reviewed avatar and binds readiness to the connected device session. A local
+OpenClaw-side producer turns the agent's short spoken message into normalized
+16 kHz mono Opus before submitting the existing pending-thought contract. Text
+never crosses the gateway or reaches the robot.
 
 ## Start Here
 
@@ -58,11 +57,11 @@ The tracked machine-readable boundaries are the manual embodiment
 
 ## Milestone 1 Semantic Bridge
 
-The repository now includes a dependency-free Python 3.10+ semantic core, one
-transport-neutral `embody` MCP tool descriptor/handler, and a synchronous
-client bridge for the pinned upstream StackChan MCP daemon. The boundary loads
-the tracked v1 schema, validates each request, selects an immutable symbolic
-recipe, invokes an injected device port, and makes a mandatory
+The repository now includes a dependency-free Python 3.10+ semantic core, an
+executable `embody` MCP service, and a synchronous client bridge for the pinned
+upstream StackChan MCP daemon. The boundary loads the tracked v1 schema,
+validates each request, selects an immutable symbolic recipe, invokes an
+injected device port, and makes a mandatory
 safe-return-to-idle attempt after every expressive intent. A full recipe is
 checked for calibration before the first device call.
 
@@ -112,38 +111,65 @@ Outputs are deterministic and written beneath the ignored
 visible-face evidence. The measured calibration's four verified names are valid
 only when runtime restoration confirms the exact physically reviewed payload.
 
-The injection-based loader validates the local payload and manifest before
-making exactly one upstream `load_avatar_set` call:
-
-```python
-from stackchan.avatar_assets import load_validated_avatar_set
-
-load_validated_avatar_set(
-    call_tool,
-    payload_path="build/avatar-assets/xc-body-layered.rgb565le",
-    manifest_path="build/avatar-assets/xc-body-layered.manifest.json",
-    archive_path=deployment_archive_path,
-)
-```
-
-The caller must arrange for `archive_path` to identify those same validated
-bytes in the deployment environment. No endpoint, token, or archive path is
-provided by the helper. The native format uses the reviewed
+The generator validates the local payload and manifest before writing them.
+Deployment must make those exact bytes available at the configured archive
+path. At startup, the service loads that archive and checks the device-reported
+checksum against the reviewed payload. The native format uses the reviewed
 `layered-320x240` adaptation stored in
 `stackchan/stackchan-mcp-native-avatar.patch`. Firmware renders native frames
 at 1x while retaining the upstream 160x120 modes as rollback. Assets must be
 reloaded after gateway or device restart unless persistence is proven.
 
+## USB Maintenance
+
+The tracked firmware patch adds a local USB maintenance channel for the
+CoreS3. It reports Wi-Fi and gateway state, updates the saved gateway URL and
+token, reboots through the normal application path, and streams existing
+firmware logs. It exposes no network listener and never reports the token.
+
+```sh
+scripts/stackchan_usb.py status
+scripts/stackchan_usb.py configure --url wss://43.143.37.91
+scripts/stackchan_usb.py reboot
+scripts/stackchan_usb.py monitor --seconds 30
+```
+
+`configure` preserves the saved token unless
+`XC_BODY_STACKCHAN_MCP_TOKEN` is already exported or `--token-env` names
+another populated environment variable. While a USB host is connected, the
+firmware keeps its normal power timer from shutting down the maintenance
+channel. The firmware must be built and flashed before these commands are
+available; flashing remains a separately approved hardware action.
+
+## Rendezvous VM Deployment
+
+Build, publish, and deploy the committed production images:
+
+```sh
+scripts/deploy.sh
+```
+
+The real deployment requires clean, committed runtime and deployment inputs. It
+regenerates and verifies the reviewed avatar, applies the tracked patch to the
+pinned StackChan revision, builds `linux/amd64` images, and pushes them to TC
+Artifactory. The VM pulls the exact image digests and runs only the gateway,
+pending-thought service, and Caddy proxy. Caddy serves the authenticated WSS,
+avatar, playback, gateway MCP, and XC Body MCP routes through
+`https://43.143.37.91`; raw service ports remain private. The controller also
+registers the local OpenClaw producer, which calls the authenticated remote
+`consider_thought` service. It does not flash firmware or reconfigure the
+firewall.
+
 ## Repository Layout
 
 ```text
 contracts/   Versioned contracts between OpenClaw and the physical body
+deploy/      Production image, Compose, proxy, and VM install definitions
 docs/        Product, architecture, milestone, decisions, and handoff material
 examples/    Valid example payloads for the current contract
 gateway/     Intent validation, orchestration, and safe return
 scripts/     Repository checks and deterministic build entry points
 stackchan/   Symbolic recipes, calibration, and device adapter
-mcp/         Transport-neutral semantic descriptor and handler
 references/  Temporary pinned study source; never a runtime dependency
 tests/       Responsibility-grouped standard-library tests
 ```
@@ -167,15 +193,16 @@ working here unless the user explicitly requests a cross-project change.
   raw gateway ports remain private and credentials are not stored here.
 - The app-only native-avatar firmware is flashed with private factory and
   tested rollback artifacts retained.
-- OpenClaw has local semantic and pending-thought tool registration; no
-  OpenClaw runtime/source patch was made.
+- OpenClaw runs the tracked local thought producer and uses the authenticated
+  remote pending-thought MCP route; no OpenClaw runtime/source patch was made.
 - The transport-independent semantic core uses dependency-free Python 3.10+.
-  Executable services also require MCP and HTTP/ASGI packages, but this
-  repository does not yet pin that complete dependency set or define a
-  reviewed service launch unit.
+  The tracked deployment builds one runtime image from Python 3.11, exact
+  pinned upstream source, and the gateway patch, then publishes its digest to
+  TC Artifactory.
 - Each executable service holds one upstream session while connected and exits
-  on transport loss. Internal reconnect, supervisor restart behavior, and
-  state recovery remain unverified follow-up work.
+  on transport loss. The pending-thought service becomes unready if the device
+  session changes. Internal reconnect, supervisor restart behavior, and state
+  recovery remain unverified follow-up work.
 
 [intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json

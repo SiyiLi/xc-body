@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -16,17 +15,15 @@ from gateway.embodiment import ExpressionAndIdleError, IntentRequestError
 from gateway.semantic_e2e import (
     RunnerConfig,
     RunnerConfigError,
+    RunnerExecutionError,
+    SessionToolCaller,
     _execute_sync,
+    _restore_reviewed_avatar,
     load_config,
 )
 from stackchan.adapter import StackChanAdapterError
-from stackchan.avatar_verification import (
-    AvatarVerificationError,
-    require_reviewed_avatar_load,
-)
 
 TOOL_NAME = "embody"
-AVATAR_PATH_ENV = "XC_BODY_AVATAR_ARCHIVE_PATH"
 _CONTRACT_PATH = (
     Path(__file__).resolve().parents[1]
     / "contracts"
@@ -41,8 +38,13 @@ class SemanticServiceError(RuntimeError):
 class _SerializedRecipeExecutor:
     """Run one complete recipe at a time and drain active work on shutdown."""
 
-    def __init__(self, call_tool: _SessionToolCaller):
+    def __init__(
+        self,
+        call_tool: SessionToolCaller,
+        verified_session_id: str | None = None,
+    ):
         self._call_tool = call_tool
+        self._verified_session_id = verified_session_id
         self._lock: asyncio.Lock | None = None
         self._tasks: set[asyncio.Task[dict[str, object]]] = set()
 
@@ -53,7 +55,12 @@ class _SerializedRecipeExecutor:
             self._lock = asyncio.Lock()
         async with self._lock:
             task = asyncio.create_task(
-                asyncio.to_thread(_execute_sync, payload, self._call_tool)
+                asyncio.to_thread(
+                    _execute_sync,
+                    payload,
+                    self._call_tool,
+                    verified_session_id=self._verified_session_id,
+                )
             )
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -85,21 +92,8 @@ class _SerializedRecipeExecutor:
             task.exception()
 
 
-class _SessionToolCaller:
-    def __init__(self, session: Any, loop: asyncio.AbstractEventLoop):
-        self._session = session
-        self._loop = loop
-
-    def __call__(self, name: str, arguments: Mapping[str, object]) -> object:
-        pending = asyncio.run_coroutine_threadsafe(
-            self._session.call_tool(name, arguments=arguments),
-            self._loop,
-        )
-        return pending.result()
-
-
 def create_service_server(
-    call_tool: _SessionToolCaller,
+    call_tool: SessionToolCaller,
     *,
     recipe_executor: _SerializedRecipeExecutor | None = None,
 ) -> Any:
@@ -162,15 +156,6 @@ def _error_content(text_content: Any, message: str) -> Any:
     )
 
 
-def _require_successful_avatar_load(result: object) -> None:
-    """Fail closed unless the device adopted the exact reviewed payload."""
-
-    try:
-        require_reviewed_avatar_load(result)
-    except AvatarVerificationError as exc:
-        raise SemanticServiceError(str(exc)) from exc
-
-
 async def run_service_streams(
     upstream_read: Any,
     upstream_write: Any,
@@ -191,22 +176,14 @@ async def run_service_streams(
     async with ClientSession(upstream_read, upstream_write) as session:
         await session.initialize()
         try:
-            loaded = await session.call_tool(
-                "load_avatar_set",
-                arguments={
-                    "archive_path": avatar_path,
-                    "mode": "layered-320x240",
-                    "timeout": 60,
-                },
+            verified_session_id = await _restore_reviewed_avatar(
+                session,
+                avatar_path,
             )
-        except Exception as exc:
-            raise SemanticServiceError(
-                "native avatar restore call failed "
-                f"({type(exc).__name__})"
-            ) from exc
-        _require_successful_avatar_load(loaded)
-        caller = _SessionToolCaller(session, asyncio.get_running_loop())
-        executor = _SerializedRecipeExecutor(caller)
+        except RunnerExecutionError as exc:
+            raise SemanticServiceError(str(exc)) from exc
+        caller = SessionToolCaller(session, asyncio.get_running_loop())
+        executor = _SerializedRecipeExecutor(caller, verified_session_id)
         server = create_service_server(caller, recipe_executor=executor)
         try:
             await server.run(
@@ -218,7 +195,7 @@ async def run_service_streams(
             await executor.drain()
 
 
-async def run_stdio_service(config: RunnerConfig, avatar_path: str) -> None:
+async def run_stdio_service(config: RunnerConfig) -> None:
     """Connect upstream over HTTP and expose embodiment over stdio."""
 
     try:
@@ -232,7 +209,7 @@ async def run_stdio_service(config: RunnerConfig, avatar_path: str) -> None:
 
     try:
         headers = {"Authorization": f"Bearer {config.token}"}
-        async with httpx.AsyncClient(headers=headers, timeout=60.0) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=150.0) as client:
             async with streamable_http_client(
                 config.url,
                 http_client=client,
@@ -241,7 +218,7 @@ async def run_stdio_service(config: RunnerConfig, avatar_path: str) -> None:
                     await run_service_streams(
                         *upstream_streams[:2],
                         *downstream_streams,
-                        avatar_path=avatar_path,
+                        avatar_path=config.avatar_path,
                     )
     except SemanticServiceError:
         raise
@@ -269,14 +246,12 @@ def main(
 ) -> int:
     args = _argument_parser().parse_args(argv)
     try:
-        values = os.environ if environ is None else environ
-        avatar_path = values.get(AVATAR_PATH_ENV, "").strip()
-        if not avatar_path:
-            raise SemanticServiceError(
-                f"avatar archive path is required via {AVATAR_PATH_ENV}"
-            )
-        config = load_config(url=args.url, environ=values)
-        asyncio.run(run_stdio_service(config, avatar_path))
+        config = load_config(
+            url=args.url,
+            environ=environ,
+            require_avatar=True,
+        )
+        asyncio.run(run_stdio_service(config))
     except (RunnerConfigError, SemanticServiceError) as exc:
         print(
             json.dumps(

@@ -24,10 +24,11 @@ from gateway.embodiment import (
 from stackchan.adapter import StackChanAdapter, VisibleFaceVerificationError
 from stackchan.avatar_verification import (
     AvatarVerificationError,
+    require_ready_device_session,
     require_reviewed_avatar_load,
 )
 from stackchan.calibration import measured_k151_cores3_calibration
-from stackchan.upstream_client import UpstreamStackChanClient
+from stackchan.upstream_client import ToolCaller, UpstreamStackChanClient
 
 URL_ENV = "XC_BODY_STACKCHAN_MCP_URL"
 TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
@@ -124,7 +125,7 @@ def load_config(
     )
 
 
-class _SessionToolCaller:
+class SessionToolCaller:
     def __init__(self, session: Any, loop: asyncio.AbstractEventLoop):
         self._session = session
         self._loop = loop
@@ -141,14 +142,16 @@ class _SessionToolCaller:
 
 def _execute_sync(
     payload: Mapping[str, object],
-    call_tool: _SessionToolCaller,
+    call_tool: ToolCaller,
     *,
+    verified_session_id: str | None = None,
     sleep=time.sleep,
 ) -> dict[str, object]:
     client = UpstreamStackChanClient(call_tool)
     device = StackChanAdapter(
         client,
         measured_k151_cores3_calibration(),
+        verified_session_id=verified_session_id,
         sleep=sleep,
     )
     recipe = embody(payload, device)
@@ -164,19 +167,34 @@ def _preflight_production_calibration(payload: Mapping[str, object]) -> None:
     )
 
 
-async def _restore_reviewed_avatar(session: Any, avatar_path: str) -> None:
-    """Restore and verify the exact payload behind visible-face evidence."""
+async def _restore_reviewed_avatar(session: Any, avatar_path: str) -> str:
+    """Restore the reviewed payload and bind it to one device session."""
 
     try:
+        initial_status = await session.call_tool(
+            "get_status",
+            arguments={},
+        )
+        session_id = require_ready_device_session(initial_status)
         loaded = await session.call_tool(
             "load_avatar_set",
             arguments={
                 "archive_path": avatar_path,
                 "mode": "layered-320x240",
-                "timeout": 60,
+                "timeout": 120,
             },
         )
         require_reviewed_avatar_load(loaded)
+        verified_status = await session.call_tool(
+            "get_status",
+            arguments={},
+        )
+        verified_session_id = require_ready_device_session(verified_status)
+        if verified_session_id != session_id:
+            raise AvatarVerificationError(
+                "StackChan device session changed during avatar restore"
+            )
+        return verified_session_id
     except AvatarVerificationError as exc:
         raise RunnerExecutionError(str(exc)) from exc
     except Exception as exc:
@@ -202,7 +220,7 @@ async def _run_with_mcp(
         headers = {"Authorization": f"Bearer {config.token}"}
         async with httpx.AsyncClient(
             headers=headers,
-            timeout=20.0,
+            timeout=150.0,
         ) as http_client:
             async with streamable_http_client(
                 config.url,
@@ -211,16 +229,17 @@ async def _run_with_mcp(
                 read_stream, write_stream = streams[:2]
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
-                    await _restore_reviewed_avatar(
+                    verified_session_id = await _restore_reviewed_avatar(
                         session,
                         config.avatar_path,
                     )
                     loop = asyncio.get_running_loop()
-                    caller = _SessionToolCaller(session, loop)
+                    caller = SessionToolCaller(session, loop)
                     return await asyncio.to_thread(
                         _execute_sync,
                         payload,
                         caller,
+                        verified_session_id=verified_session_id,
                     )
     except Exception as exc:
         if isinstance(exc, RunnerExecutionError):

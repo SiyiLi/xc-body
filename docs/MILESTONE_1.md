@@ -60,15 +60,15 @@ See `contracts/embodiment-intent.schema.json` for the machine-readable contract.
 
 | Intention | Face mapping | Movement | Milestone 1 speech |
 | --- | --- | --- | --- |
-| `idle` | `idle`; not visibly verified | `(0,43,30)` | None |
-| `curious` | `thinking`; not visibly verified | `(3,45,30)`, then idle | Disabled |
-| `pleased` | `happy`; not visibly verified | Blocked: not calibrated | Disabled |
-| `concerned` | `sad`; not visibly verified | Blocked: not calibrated | Disabled |
+| `idle` | `idle`; visibly verified | `(0,43,30)` | None |
+| `curious` | `thinking`; visibly verified | `(12,50,30)`, then idle | Disabled |
+| `pleased` | `happy`; visibly verified | Blocked: not calibrated | Disabled |
+| `concerned` | `sad`; visibly verified | Blocked: not calibrated | Disabled |
 
-The measured curious pose reached yaw `1`, pitch `44` before settling back to
-exact neutral yaw `0`, pitch `43`. Calibrated integer speed `30` represents
-upstream `low`. New values must remain inside upstream yaw `-90..90` and pitch
-`5..85` limits and must not use large abrupt reversals.
+The reviewed curious command is yaw `12`, pitch `50`, speed `30`, held for ten
+seconds before exact neutral yaw `0`, pitch `43`. Speed `30` represents upstream
+`low`. New values must remain inside upstream yaw `-90..90` and pitch `5..85`
+limits and must not use large abrupt reversals.
 
 ## Current Code and Discovery Boundary
 
@@ -78,20 +78,19 @@ each expressive request. If expression and idle both fail, both failures are
 preserved. Calibration records upstream avatar-name mappings separately from
 human-visible face verification. Any unverified face rejects the full recipe
 before a client call. An explicit measured factory preserves idle and curious
-motion but marks no face visibly verified. The adapter enforces upstream servo
-limits and leaves pleased and concerned motion incomplete.
+motion and marks `idle`, `thinking`, `happy`, and `sad` visibly verified for the
+exact reviewed native payload. The adapter enforces upstream servo limits and
+leaves pleased and concerned motion incomplete.
 
 An injected synchronous wrapper translates the pinned daemon's MCP tool result
 shapes into the existing `StackChanClient` protocol. The import-safe cloud
 runner loads its URL and bearer token only from arguments/environment, opens an
 MCP SDK session, and runs synchronous embodiment in a worker thread. It returns
 only a machine-readable semantic result. No MCP SDK is imported at module load.
-A real `curious` call through the cloud daemon returned command success, moved
-the head, and recovered exact neutral yaw `0`, pitch `43`. Human observation
-found no display change for the tested avatar names. The pinned revision and
-`firmware-v1.16.0` tag identify all 14 static avatar descriptors as 1x1 black
-placeholder assets. `ok=true` therefore described LVGL asset application, not
-visible rendering.
+A first real `curious` call exposed the pinned firmware's 1x1 black placeholder
+avatars. The later reviewed native-avatar adaptation loaded full 320x240 faces;
+human observation confirmed the mapped faces, curious movement, and exact
+neutral recovery.
 
 An offline, dependency-free pipeline now prepares a candidate replacement set
 for the native display-resolution runtime adaptation. It generates 14 complete
@@ -100,23 +99,27 @@ hashes, enforces meaningful pairwise differences across the six face frames,
 and produces a labeled PNG contact sheet. Eye and mouth states are complete
 idle-style faces because layered frames replace the full display frame.
 
-An injection-based helper validates the local manifest and payload before one
-adapted upstream `load_avatar_set` call using `layered-320x240`. Native support
-requires the reviewed gateway change and a firmware flash; legacy 160x120 modes
-remain available for rollback. Runtime loading is not assumed to persist across
-restart, and generated assets do not change `verified_faces`.
+The generator validates the local manifest and payload before writing them. At
+startup, each semantic entry point loads the deployment archive through adapted
+upstream `load_avatar_set` using `layered-320x240` and requires the
+device-reported checksum to match the reviewed payload. Verification is bound
+to that device session; a session change fails closed before body action.
+Native support requires the reviewed gateway change and a firmware flash;
+legacy 160x120 modes remain available for rollback. Runtime loading is not
+assumed to persist across restart.
 
 Fake and contract checks cover deterministic sequencing, error preservation,
-servo limits, and fail-closed visible-face preflight. Hardware evidence covers
-head movement and neutral recovery only. Full criteria 1-4 remain blocked until
-real assets are installed and visually verified. Disconnect, gateway-restart,
-and recovery portions still require dedicated validation.
+servo limits, and fail-closed visible-face preflight. Historical hardware
+evidence covers reviewed native faces, curious movement, and neutral recovery.
+Pleased and concerned remain disabled because their motions are not calibrated;
+restart recovery still requires a fully versioned acceptance run.
 
 Read-only discovery is complete for the OpenClaw MCP client surface, the shared
 rendezvous constraints, and pinned `stackchan-mcp` `0.17.0`. The evidence
 supports an isolated cloud service using remote Streamable HTTP MCP plus an
-authenticated outbound device WSS connection. No service, route, certificate,
-firewall rule, package, OpenClaw config, or firmware was changed.
+authenticated outbound device WSS connection. Later explicitly authorized work
+deployed the isolated service and app-only firmware; public route and service
+reproduction details remain incomplete.
 
 ## Prepared Execution Order
 

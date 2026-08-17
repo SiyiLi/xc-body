@@ -1,0 +1,31 @@
+FROM python:3.11-slim-bookworm
+
+RUN useradd --create-home --uid 1000 appuser
+
+COPY stackchan-gateway /tmp/stackchan-gateway
+RUN pip install --no-cache-dir /tmp/stackchan-gateway "uvicorn>=0.30,<1" \
+    && rm -rf /tmp/stackchan-gateway
+
+COPY app/gateway /opt/xc-body/gateway
+COPY app/stackchan /opt/xc-body/stackchan
+COPY app/contracts /opt/xc-body/contracts
+COPY app/deploy /opt/xc-body/deploy
+COPY avatar/xc-body-layered.rgb565le \
+    /opt/xc-body/xc-body-native-320.rgb565le
+
+ARG GIT_COMMIT=unknown
+ARG UPSTREAM_COMMIT=unknown
+ARG GIT_DIRTY=false
+ARG BUILT_AT=unknown
+LABEL org.opencontainers.image.revision=$GIT_COMMIT \
+      ai.siyi.xc-body.upstream-revision=$UPSTREAM_COMMIT \
+      ai.siyi.xc-body.dirty=$GIT_DIRTY \
+      org.opencontainers.image.created=$BUILT_AT
+
+ENV HOME=/state \
+    PYTHONPATH=/opt/xc-body \
+    XDG_CONFIG_HOME=/state/config
+
+USER appuser
+ENTRYPOINT ["stackchan-mcp"]
+CMD ["serve", "--transport", "streamable-http", "--no-mdns"]

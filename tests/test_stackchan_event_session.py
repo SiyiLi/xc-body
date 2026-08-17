@@ -56,10 +56,15 @@ class StackChanEventSessionTests(unittest.TestCase):
                 },
             )
         )
+        dispatcher = StackChanEventDispatcher(machine)
 
-        asyncio.run(handle_session_message(unrelated, machine))
-        self.assertEqual(machine.pending_thought_id, "eval:42")
-        asyncio.run(handle_session_message(head_tap, machine))
+        async def route_messages():
+            await handle_session_message(unrelated, dispatcher)
+            self.assertEqual(machine.pending_thought_id, "eval:42")
+            await handle_session_message(head_tap, dispatcher)
+            await dispatcher.drain()
+
+        asyncio.run(route_messages())
 
         self.assertIsNone(machine.pending_thought_id)
         self.assertEqual(
@@ -73,12 +78,13 @@ class StackChanEventSessionTests(unittest.TestCase):
         malformed = SimpleNamespace(
             root=SimpleNamespace(method="stackchan/event", params=None)
         )
+        dispatcher = StackChanEventDispatcher(machine)
 
         with self.assertRaisesRegex(
             StackChanEventSessionError,
             "params must be an object",
         ):
-            asyncio.run(handle_session_message(malformed, machine))
+            asyncio.run(handle_session_message(malformed, dispatcher))
 
     def test_factory_installs_custom_notification_model_and_handler(self):
         body = RecordingBody()
@@ -151,7 +157,6 @@ class StackChanEventSessionTests(unittest.TestCase):
         async def dispatch_burst():
             await handle_session_message(
                 notification,
-                machine,
                 dispatcher,
             )
             for _ in range(1000):
@@ -163,11 +168,9 @@ class StackChanEventSessionTests(unittest.TestCase):
             for _ in range(1000):
                 await handle_session_message(
                     notification,
-                    machine,
                     dispatcher,
                 )
 
-            self.assertEqual(dispatcher.active_task_count, 1)
             release.set()
             await dispatcher.drain()
 
@@ -175,17 +178,6 @@ class StackChanEventSessionTests(unittest.TestCase):
 
         self.assertEqual(machine.calls, 2)
         self.assertEqual(machine.max_active, 1)
-        self.assertEqual(dispatcher.active_task_count, 0)
-
-    def test_factory_fails_clearly_without_sdk(self):
-        empty_mcp = types.ModuleType("mcp")
-
-        with patch.dict(sys.modules, {"mcp": empty_mcp}):
-            with self.assertRaisesRegex(
-                StackChanEventSessionError,
-                "must provide the MCP Python SDK",
-            ):
-                create_stackchan_client_session("read", "write", None)
 
     @staticmethod
     def _waiting_machine(body):

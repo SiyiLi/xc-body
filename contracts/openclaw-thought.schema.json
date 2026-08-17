@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xc-body.local/contracts/openclaw-thought.v1.schema.json",
+  "title": "XC Body OpenClaw Thought",
+  "description": "A background result classified by OpenClaw for XC Body.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "thought_id",
+    "decision"
+  ],
+  "properties": {
+    "version": {
+      "const": "v1"
+    },
+    "thought_id": {
+      "description": "A stable opaque ID for duplicate suppression.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "ignore",
+        "remember",
+        "offer"
+      ]
+    },
+    "message": {
+      "description": "The short, non-private sentence XC will speak aloud.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "offer"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "required": [
+          "message"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "message"
+          ]
+        }
+      }
+    }
+  ]
+}

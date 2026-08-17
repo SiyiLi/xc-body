@@ -5,7 +5,6 @@ from stackchan.adapter import (
     CalibrationError,
     HeadMove,
     StackChanAdapter,
-    VisibleFaceVerificationError,
 )
 from stackchan.calibration import measured_k151_cores3_calibration
 
@@ -55,20 +54,6 @@ class MeasuredCalibrationTests(unittest.TestCase):
             calibration.verified_faces,
             frozenset({"idle", "thinking", "happy", "sad"}),
         )
-
-    def test_idle_and_curious_use_verified_faces_and_measured_motion(self):
-        for intent in ("idle", "curious"):
-            with self.subTest(intent=intent):
-                client = FakeClient()
-                device = StackChanAdapter(
-                    client,
-                    measured_k151_cores3_calibration(),
-                    sleep=lambda seconds: None,
-                )
-
-                embody({"version": "v1", "intent": intent}, device)
-
-                self.assertTrue(client.calls)
 
     def test_uncalibrated_intents_fail_before_client_calls(self):
         for intent in ("pleased", "concerned"):

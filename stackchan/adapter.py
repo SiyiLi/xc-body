@@ -144,10 +144,12 @@ class StackChanAdapter:
         client: StackChanClient,
         calibration: StackChanCalibration | None,
         *,
+        verified_session_id: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self._client = client
         self._calibration = calibration
+        self._verified_session_id = verified_session_id
         self._sleep = sleep
 
     def prepare(self, steps: tuple[RecipeStep, ...]) -> None:
@@ -174,6 +176,14 @@ class StackChanAdapter:
         status = self._call("get_status", self._client.get_status)
         if status.get("connected") is not True:
             raise DeviceUnavailableError("get_status", "device is not connected")
+        if self._verified_session_id is not None and (
+            status.get("initialized") is not True
+            or status.get("session_id") != self._verified_session_id
+        ):
+            raise DeviceUnavailableError(
+                "get_status",
+                "reviewed avatar is not ready for the current device session",
+            )
         self._call("set_avatar", self._client.set_avatar, avatar)
         for move in moves:
             self._call(

@@ -1,0 +1,26 @@
+{
+	default_sni 43.143.37.91
+}
+
+43.143.37.91 {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+	handle_path /xc-body/* {
+		reverse_proxy pending:8770
+	}
+	handle_path /gateway-mcp/* {
+		reverse_proxy gateway:8767
+	}
+	handle /avatar_set/* {
+		reverse_proxy gateway:8766
+	}
+	handle /opus {
+		reverse_proxy gateway:8766
+	}
+	handle {
+		reverse_proxy gateway:8765
+	}
+}

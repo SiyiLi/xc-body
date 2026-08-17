@@ -32,6 +32,7 @@ class StackChanUpstreamPatchTests(unittest.TestCase):
         self.assertIn("PREPARED_OPUS_MAX_PACKET_BYTES", added)
         self.assertIn("PREPARED_OPUS_MAX_PACKETS", added)
         self.assertIn("PREPARED_OPUS_FRAME_DURATION_MS = 60", added)
+        self.assertIn("PREPARED_OPUS_PREFILL_PACKETS = 6", added)
         self.assertIn('int.from_bytes(payload[offset : offset + 2], "big")', added)
         self.assertIn("_validate_prepared_opus_packet(packet)", added)
         self.assertIn("_opus_packet_duration_ms(packet)", added)
@@ -61,6 +62,8 @@ class StackChanUpstreamPatchTests(unittest.TestCase):
         self.assertIn("next_send_time - loop.time()", added)
         self.assertIn("await asyncio.sleep(delay)", added)
         self.assertIn("PREPARED_OPUS_FRAME_DURATION_MS / 1000", added)
+        self.assertIn("packets[:prefill_count]", added)
+        self.assertIn("packets[prefill_count:]", added)
 
     def test_patch_carries_upstream_style_opus_tests(self):
         added = added_lines_for("gateway/tests/test_capture_server.py")

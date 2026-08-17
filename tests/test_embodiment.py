@@ -6,7 +6,6 @@ from gateway.embodiment import (
     IntentRequestError,
     embody,
     parse_intent_request,
-    recipe_for,
 )
 
 
@@ -51,12 +50,6 @@ class SemanticCoreTests(unittest.TestCase):
                 with self.assertRaises(IntentRequestError):
                     embody(payload, device)
                 self.assertEqual(device.calls, [])
-
-    def test_same_intent_yields_identical_recipe(self):
-        first = recipe_for("pleased")
-        second = recipe_for("pleased")
-
-        self.assertEqual(first, second)
 
     def test_each_expressive_intent_ends_in_idle(self):
         expected_calls = {

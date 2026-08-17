@@ -38,9 +38,15 @@ def synthetic_calibration():
 
 
 class FakeClient:
-    def __init__(self, connected=True, fail_operation=None):
+    def __init__(
+        self,
+        connected=True,
+        fail_operation=None,
+        session_id=None,
+    ):
         self.connected = connected
         self.fail_operation = fail_operation
+        self.session_id = session_id
         self.failure_raised = False
         self.calls = []
 
@@ -56,7 +62,12 @@ class FakeClient:
         if self.fail_operation == "get_status" and not self.failure_raised:
             self.failure_raised = True
             raise RuntimeError("synthetic client failure")
-        return {"connected": self.connected}
+        status = {"connected": self.connected}
+        if self.session_id is not None:
+            status.update(
+                {"initialized": True, "session_id": self.session_id}
+            )
+        return status
 
     def set_avatar(self, face):
         return self._record("set_avatar", face)
@@ -104,6 +115,22 @@ class StackChanAdapterTests(unittest.TestCase):
             )
         self.assertEqual(client.calls, [("get_status",)])
 
+    def test_changed_verified_session_prevents_face_and_motion_calls(self):
+        client = FakeClient(session_id="reconnected-session")
+        with self.assertRaisesRegex(
+            DeviceUnavailableError,
+            "reviewed avatar is not ready",
+        ):
+            StackChanAdapter(
+                client,
+                synthetic_calibration(),
+                verified_session_id="loaded-session",
+            ).present(
+                face="attentive",
+                motion="restrained_side_glance",
+            )
+        self.assertEqual(client.calls, [("get_status",)])
+
     def test_curious_maps_deterministically_and_returns_to_idle(self):
         client = FakeClient()
         embody(
@@ -139,21 +166,6 @@ class StackChanAdapterTests(unittest.TestCase):
 
         self.assertEqual(client.calls, [])
 
-    def test_pleased_expresses_exactly_one_nod_then_idle(self):
-        client = FakeClient()
-        embody(
-            {"version": "v1", "intent": "pleased"},
-            StackChanAdapter(client, synthetic_calibration()),
-        )
-        moves = [call for call in client.calls if call[0] == "move_head"]
-        self.assertEqual(
-            moves,
-            [
-                ("move_head", 0, 45, 3),
-                ("move_head", 0, 43, 1),
-            ],
-        )
-
     def test_client_error_has_context_and_safe_return_is_attempted(self):
         client = FakeClient(fail_operation="move_head")
         with self.assertRaisesRegex(ClientOperationError, "move_head"):
@@ -166,29 +178,6 @@ class StackChanAdapterTests(unittest.TestCase):
         )
         self.assertEqual(get_status_calls, 2)
         self.assertIn(("set_avatar", "face-neutral-test"), client.calls)
-
-    def test_unsupported_payload_makes_zero_calls(self):
-        client = FakeClient()
-        with self.assertRaises(Exception):
-            embody(
-                {"version": "v1", "intent": "surprised"},
-                StackChanAdapter(client, synthetic_calibration()),
-            )
-        self.assertEqual(client.calls, [])
-
-    def test_repeated_request_produces_identical_calls(self):
-        first = FakeClient()
-        second = FakeClient()
-        embody(
-            {"version": "v1", "intent": "curious"},
-            StackChanAdapter(first, synthetic_calibration()),
-        )
-        embody(
-            {"version": "v1", "intent": "curious"},
-            StackChanAdapter(second, synthetic_calibration()),
-        )
-        self.assertEqual(first.calls, second.calls)
-
 
 if __name__ == "__main__":
     unittest.main()

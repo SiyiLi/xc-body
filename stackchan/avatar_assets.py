@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import struct
 import zlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
 
@@ -45,14 +45,13 @@ PIXEL_FORMAT = "RGB565-LE"
 MIN_FACE_DIFFERENCE_PIXELS = 300
 MIN_ARTWORK_PIXELS = 2_000
 
-PREVIEW_SCALE = 1
 PREVIEW_COLUMNS = 4
 PREVIEW_ROWS = 4
 PREVIEW_MARGIN = 8
 PREVIEW_GAP = 4
 PREVIEW_LABEL_HEIGHT = 18
-PREVIEW_FRAME_WIDTH = WIDTH * PREVIEW_SCALE
-PREVIEW_FRAME_HEIGHT = HEIGHT * PREVIEW_SCALE
+PREVIEW_FRAME_WIDTH = WIDTH
+PREVIEW_FRAME_HEIGHT = HEIGHT
 PREVIEW_WIDTH = (
     PREVIEW_MARGIN * 2
     + PREVIEW_COLUMNS * PREVIEW_FRAME_WIDTH
@@ -68,7 +67,6 @@ PAYLOAD_FILENAME = "xc-body-layered.rgb565le"
 MANIFEST_FILENAME = "xc-body-layered.manifest.json"
 PREVIEW_FILENAME = "xc-body-layered-preview.png"
 
-ToolCaller = Callable[[str, Mapping[str, object]], object]
 Color = tuple[int, int, int]
 
 _BACKGROUND = (22, 32, 39)
@@ -140,15 +138,6 @@ class _Canvas:
             self.pixels[start : start + right - left + 1] = [value] * (
                 right - left + 1
             )
-
-    def pixel(self, x: int, y: int, color: Color) -> None:
-        self._raw_rectangle(
-            x * DRAW_SCALE,
-            y * DRAW_SCALE,
-            (x + 1) * DRAW_SCALE - 1,
-            (y + 1) * DRAW_SCALE - 1,
-            color,
-        )
 
     def rectangle(
         self, x0: int, y0: int, x1: int, y1: int, color: Color
@@ -320,8 +309,7 @@ def _draw_base(canvas: _Canvas) -> None:
     canvas.line(80, 117, 111, 103, _GREEN, 3)
 
 
-def _draw_rune(canvas: _Canvas, expression: str) -> None:
-    del expression
+def _draw_rune(canvas: _Canvas) -> None:
     canvas.polygon(
         [
             (79, 22),
@@ -464,7 +452,7 @@ def _render_frame(frame_name: str) -> bytes:
 
     canvas = _Canvas(_BACKGROUND)
     _draw_base(canvas)
-    _draw_rune(canvas, expression)
+    _draw_rune(canvas)
     _draw_eyes(canvas, eye_state)
     _draw_mouth(canvas, mouth_state)
     _draw_expression_details(canvas, expression)
@@ -587,31 +575,6 @@ def validate_avatar_set(
                 )
 
 
-def load_validated_avatar_set(
-    call_tool: ToolCaller,
-    *,
-    payload_path: str | Path,
-    manifest_path: str | Path,
-    archive_path: str,
-) -> object:
-    """Validate local bytes, then request upstream runtime layered loading."""
-
-    if not isinstance(archive_path, str) or not archive_path.strip():
-        raise AvatarAssetValidationError("archive_path must be a non-empty string")
-    payload = Path(payload_path).read_bytes()
-    try:
-        decoded = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise AvatarAssetValidationError("manifest is not valid UTF-8 JSON") from exc
-    if not isinstance(decoded, Mapping):
-        raise AvatarAssetValidationError("manifest JSON must be an object")
-    validate_avatar_set(payload, decoded)
-    return call_tool(
-        "load_avatar_set",
-        {"archive_path": archive_path, "mode": MODE},
-    )
-
-
 def write_avatar_assets(output_directory: str | Path) -> dict[str, Path]:
     """Build validated artifacts beneath one caller-selected directory."""
 
@@ -707,11 +670,12 @@ def _paste_frame(
         source_x = source_index % WIDTH
         source_y = source_index // WIDTH
         color = _rgb_from_value(value)
-        for offset_y in range(PREVIEW_SCALE):
-            y = top + source_y * PREVIEW_SCALE + offset_y
-            for offset_x in range(PREVIEW_SCALE):
-                x = left + source_x * PREVIEW_SCALE + offset_x
-                _set_preview_pixel(preview, x, y, color)
+        _set_preview_pixel(
+            preview,
+            left + source_x,
+            top + source_y,
+            color,
+        )
 
 
 def _draw_label(

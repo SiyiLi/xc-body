@@ -4,19 +4,18 @@ import json
 import sys
 import types
 import unittest
-from contextlib import asynccontextmanager, contextmanager, redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_runtime import PendingThoughtRuntime
 from gateway.pending_thought_service import (
-    PlaybackConfig,
     PendingThoughtServiceError,
     create_service_server,
     main,
+    prepare_pending_runtime,
     run_service_streams,
-    run_stdio_service,
 )
-from gateway.semantic_e2e import RunnerConfig
+from stackchan.avatar_verification import REVIEWED_AVATAR_CHECKSUM
 
 
 _OPUS_PACKET = bytes.fromhex(
@@ -35,6 +34,12 @@ class PendingThoughtServiceTests(unittest.TestCase):
 
         self.assertIsInstance(server, server_class)
         self.assertEqual(server.name, "xc-body-knock-wait-tell")
+        tools = asyncio.run(server.list_tools_handler())
+        self.assertEqual([tool.name for tool in tools], ["consider_thought"])
+        self.assertEqual(
+            tools[0].inputSchema["properties"]["decision"]["enum"],
+            ["ignore", "remember", "offer"],
+        )
 
     def test_main_reports_missing_configuration(self):
         stderr = io.StringIO()
@@ -52,6 +57,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
         environment = {
             "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
+            "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
             "XC_BODY_PLAYBACK_TOKEN": "playback-token",
         }
@@ -66,6 +72,10 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertEqual(config.url, "https://daemon.invalid/mcp")
         self.assertEqual(config.token, "test-token")
         self.assertNotIn("test-token", repr(config))
+        self.assertEqual(
+            config.avatar_path,
+            "/srv/xc-body/avatar.rgb565le",
+        )
         playback_config = service.await_args.args[1]
         self.assertEqual(
             playback_config.url,
@@ -79,6 +89,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
         environment = {
             "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
+            "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
         }
 
         with redirect_stderr(stderr):
@@ -89,79 +100,78 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertEqual(payload["error"], "PendingThoughtServiceError")
         self.assertIn("XC_BODY_PLAYBACK_URL", payload["message"])
 
-    def test_stream_runner_initializes_upstream_before_downstream(self):
-        events = []
-
+    def test_runtime_preparation_rejects_disconnected_device(self):
         class Session:
-            async def __aenter__(self):
-                events.append("upstream-enter")
-                return self
+            async def call_tool(self, name, arguments):
+                del arguments
+                if name == "load_avatar_set":
+                    return {
+                        "ok": True,
+                        "checksum": REVIEWED_AVATAR_CHECKSUM,
+                    }
+                return {
+                    "connected": False,
+                    "initialized": True,
+                    "session_id": "device-session-1",
+                }
 
-            async def __aexit__(self, *args):
-                events.append("upstream-exit")
-
-            async def initialize(self):
-                events.append("upstream-initialize")
-
-        class Runtime:
-            def create_session(self, read, write, loop):
-                self.arguments = (read, write, loop)
-                return Session()
-
-        class Server:
-            def create_initialization_options(self):
-                return "options"
-
-            async def run(self, read, write, options):
-                events.append(("downstream-run", read, write, options))
-
-        runtime = Runtime()
-        with (
-            patch(
-                "gateway.pending_thought_service.create_service_server",
-                return_value=Server(),
-            ),
-            patch(
-                "gateway.pending_thought_service."
-                "wait_for_stackchan_event_tasks",
-                new=AsyncMock(),
-            ) as wait_tasks,
+        runtime = Mock()
+        with self.assertRaisesRegex(
+            PendingThoughtServiceError,
+            "not connected and initialized",
         ):
             asyncio.run(
-                run_service_streams(
-                    "up-read",
-                    "up-write",
-                    "down-read",
-                    "down-write",
-                    runtime=runtime,
+                prepare_pending_runtime(
+                    Session(),
+                    runtime,
+                    "/srv/xc-body/avatar.rgb565le",
                 )
             )
+        runtime.mark_avatar_ready.assert_not_called()
 
-        self.assertEqual(events[0:2], ["upstream-enter", "upstream-initialize"])
-        self.assertEqual(
-            events[2],
-            ("downstream-run", "down-read", "down-write", "options"),
-        )
-        self.assertEqual(events[3], "upstream-exit")
-        wait_tasks.assert_awaited_once()
+    def test_runtime_preparation_rejects_reconnect_during_avatar_load(self):
+        class Session:
+            def __init__(self):
+                self.session_ids = iter(("device-session-1", "device-session-2"))
+
+            async def call_tool(self, name, arguments):
+                del arguments
+                if name == "load_avatar_set":
+                    return {
+                        "ok": True,
+                        "checksum": REVIEWED_AVATAR_CHECKSUM,
+                    }
+                return {
+                    "connected": True,
+                    "initialized": True,
+                    "session_id": next(self.session_ids),
+                }
+
+        runtime = Mock()
+        with self.assertRaisesRegex(
+            PendingThoughtServiceError,
+            "session changed during avatar restore",
+        ):
+            asyncio.run(
+                prepare_pending_runtime(
+                    Session(),
+                    runtime,
+                    "/srv/xc-body/avatar.rgb565le",
+                )
+            )
+        runtime.mark_avatar_ready.assert_not_called()
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
-    def test_stdio_offer_gesture_uses_configured_playback(self, urlopen):
+    def test_offer_gesture_posts_prepared_audio(self, urlopen):
         response = Mock()
         response.read.return_value = b'{"ok": true}'
         urlopen.return_value.__enter__.return_value = response
         upstream_calls = []
-        active_runtime = None
-
-        class HTTPClient:
-            def __init__(self, **kwargs):
-                self.headers = kwargs["headers"]
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                del args
+        runtime = PendingThoughtRuntime(
+            sleep=lambda _seconds: None,
+            playback_url="http://127.0.0.1:8766/opus",
+            playback_token="playback-secret",
+        )
 
         class Session:
             async def __aenter__(self):
@@ -175,6 +185,17 @@ class PendingThoughtServiceTests(unittest.TestCase):
 
             async def call_tool(self, name, arguments):
                 upstream_calls.append((name, arguments))
+                if name == "load_avatar_set":
+                    return {
+                        "ok": True,
+                        "checksum": REVIEWED_AVATAR_CHECKSUM,
+                    }
+                if name == "get_status":
+                    return {
+                        "connected": True,
+                        "initialized": True,
+                        "session_id": "device-session-1",
+                    }
                 return {"ok": True}
 
         class Server:
@@ -183,7 +204,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
 
             async def run(self, read, write, options):
                 del read, write, options
-                offer = await active_runtime.consider_thought(
+                offer = await runtime.consider_thought(
                     {
                         "version": "v1",
                         "thought_id": "eval:stdio",
@@ -192,7 +213,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
                     }
                 )
                 told = await asyncio.to_thread(
-                    active_runtime.machine.handle_stackchan_event,
+                    runtime.machine.handle_stackchan_event,
                     {
                         "event_type": "touch",
                         "subtype": "tap",
@@ -202,67 +223,25 @@ class PendingThoughtServiceTests(unittest.TestCase):
                 self_test.assertEqual(offer.state, "waiting")
                 self_test.assertEqual(told.state, "told")
 
-        def create_server(runtime):
-            nonlocal active_runtime
-            active_runtime = runtime
-            return Server()
-
-        @asynccontextmanager
-        async def streamable_http_client(url, *, http_client):
-            self.assertEqual(url, "https://daemon.invalid/mcp")
-            self.assertEqual(
-                http_client.headers["Authorization"],
-                "Bearer upstream-secret",
-            )
-            yield ("up-read", "up-write")
-
-        @asynccontextmanager
-        async def stdio_server():
-            yield ("down-read", "down-write")
-
         self_test = self
-        httpx_module = types.ModuleType("httpx")
-        httpx_module.AsyncClient = HTTPClient
-        mcp_module = types.ModuleType("mcp")
-        mcp_module.__path__ = []
-        mcp_client_module = types.ModuleType("mcp.client")
-        mcp_client_module.__path__ = []
-        streamable_module = types.ModuleType("mcp.client.streamable_http")
-        streamable_module.streamable_http_client = streamable_http_client
-        mcp_server_module = types.ModuleType("mcp.server")
-        mcp_server_module.__path__ = []
-        stdio_module = types.ModuleType("mcp.server.stdio")
-        stdio_module.stdio_server = stdio_server
-        modules = {
-            "httpx": httpx_module,
-            "mcp": mcp_module,
-            "mcp.client": mcp_client_module,
-            "mcp.client.streamable_http": streamable_module,
-            "mcp.server": mcp_server_module,
-            "mcp.server.stdio": stdio_module,
-        }
         with (
-            patch.dict(sys.modules, modules),
             patch(
-                "gateway.pending_thought_runtime."
-                "create_stackchan_client_session",
+                "gateway.pending_thought_runtime.create_stackchan_client_session",
                 return_value=Session(),
             ),
             patch(
                 "gateway.pending_thought_service.create_service_server",
-                side_effect=create_server,
+                return_value=Server(),
             ),
         ):
             asyncio.run(
-                run_stdio_service(
-                    RunnerConfig(
-                        url="https://daemon.invalid/mcp",
-                        token="upstream-secret",
-                    ),
-                    PlaybackConfig(
-                        url="http://127.0.0.1:8766/opus",
-                        token="playback-secret",
-                    ),
+                run_service_streams(
+                    "up-read",
+                    "up-write",
+                    "down-read",
+                    "down-write",
+                    runtime=runtime,
+                    avatar_path="/srv/xc-body/avatar.rgb565le",
                 )
             )
 
@@ -276,17 +255,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-message-id"), "eval:stdio")
         self.assertEqual(request.data, _FRAMED_OPUS)
         self.assertNotIn("say", [name for name, _ in upstream_calls])
-
-    def test_server_creation_fails_clearly_without_sdk(self):
-        empty_server = types.ModuleType("mcp.server")
-
-        with patch.dict(sys.modules, {"mcp.server": empty_server}):
-            with self.assertRaisesRegex(
-                PendingThoughtServiceError,
-                "must provide the MCP Python SDK",
-            ):
-                create_service_server(PendingThoughtRuntime())
-
 
 @contextmanager
 def fake_mcp_server():

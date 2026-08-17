@@ -26,14 +26,12 @@ class UpstreamStackChanClient:
 
     def get_status(self) -> Mapping[str, object]:
         payload = self._call("get_status", {})
-        connected = self._connected_value(payload)
-        if connected is None:
+        connected = payload.get("connected")
+        if not isinstance(connected, bool):
             raise UpstreamClientError(
                 "get_status", "result did not contain a boolean connection state"
             )
-        normalized = dict(payload)
-        normalized["connected"] = connected
-        return normalized
+        return payload
 
     def set_avatar(self, face: str) -> Mapping[str, object]:
         return self._call("set_avatar", {"face": face})
@@ -111,20 +109,6 @@ class UpstreamStackChanClient:
             if isinstance(text, str):
                 texts.append(text)
         return texts
-
-    @classmethod
-    def _connected_value(cls, payload: Mapping[str, object]) -> bool | None:
-        candidates: list[Mapping[str, object]] = [payload]
-        for key in ("data", "device", "status"):
-            nested = payload.get(key)
-            if isinstance(nested, Mapping):
-                candidates.append(nested)
-        for candidate in candidates:
-            for key in ("connected", "device_connected", "is_connected"):
-                value = candidate.get(key)
-                if isinstance(value, bool):
-                    return value
-        return None
 
     @staticmethod
     def _field(value: object, *names: str) -> Any:

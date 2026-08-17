@@ -3,23 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 import urllib.request
-from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from gateway.pending_thought import (
-    KnockWaitTell,
-    PendingThoughtError,
-    decode_prepared_audio,
-)
+from gateway.pending_thought import KnockWaitTell
 from gateway.stackchan_event_session import create_stackchan_client_session
 
 ToolCaller = Callable[[str, Mapping[str, object]], object]
 _MISSING = object()
-_MAX_TOLD_IDS = 1024
 
 
 class PendingThoughtRuntimeError(RuntimeError):
@@ -33,7 +28,7 @@ class StackChanThoughtBody:
         self,
         call_tool: ToolCaller,
         *,
-        knock_hold_seconds: float = 2.0,
+        knock_hold_seconds: float = 10.0,
         sleep: Callable[[float], None] = time.sleep,
         playback_url: str | None = None,
         playback_token: str = "",
@@ -41,14 +36,35 @@ class StackChanThoughtBody:
         self._call_tool = call_tool
         self._knock_hold_seconds = knock_hold_seconds
         self._sleep = sleep
-        self._told_ids: OrderedDict[str, None] = OrderedDict()
         self._playback_url = playback_url
         self._playback_token = playback_token
+        self._verified_session_id: str | None = None
+
+    def mark_avatar_ready(self, session_id: str) -> None:
+        """Bind reviewed-avatar verification to one device session."""
+
+        if not isinstance(session_id, str) or not session_id:
+            raise PendingThoughtRuntimeError(
+                "reviewed avatar verification requires a device session"
+            )
+        self._verified_session_id = session_id
+
+    def is_ready(self) -> bool:
+        """Return whether the verified avatar is active in this session."""
+
+        if self._verified_session_id is None:
+            return False
+        try:
+            status = self._call("get_status", {})
+        except PendingThoughtRuntimeError:
+            return False
+        return ready_device_session_id(status) == self._verified_session_id
 
     def knock(self, thought_id: str) -> None:
         """Give one restrained silent gesture, then return to idle."""
 
         del thought_id
+        self._require_ready()
         operation_error: Exception | None = None
         try:
             self._call("set_avatar", {"face": "thinking"})
@@ -62,15 +78,12 @@ class StackChanThoughtBody:
         self._finish_with_idle(operation_error)
 
     def tell(self, thought_id: str, audio_base64: str) -> None:
-        """Play unless ID is in bounded process retention, then restore idle."""
+        """Play prepared audio, then restore the reviewed idle pose."""
 
+        self._require_ready()
         operation_error: Exception | None = None
         try:
-            if thought_id not in self._told_ids:
-                self._play_audio(audio_base64, thought_id)
-                self._told_ids[thought_id] = None
-                if len(self._told_ids) > _MAX_TOLD_IDS:
-                    self._told_ids.popitem(last=False)
+            self._play_audio(audio_base64, thought_id)
         except Exception as exc:
             operation_error = exc
         self._finish_with_idle(operation_error)
@@ -78,10 +91,7 @@ class StackChanThoughtBody:
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         if not self._playback_url:
             raise PendingThoughtRuntimeError("audio playback URL is not configured")
-        try:
-            payload = decode_prepared_audio(audio_base64)
-        except PendingThoughtError as exc:
-            raise PendingThoughtRuntimeError(str(exc)) from exc
+        payload = base64.b64decode(audio_base64)
         request = urllib.request.Request(
             self._playback_url,
             data=payload,
@@ -114,6 +124,12 @@ class StackChanThoughtBody:
             raise
         if operation_error is not None:
             raise operation_error
+
+    def _require_ready(self) -> None:
+        if not self.is_ready():
+            raise PendingThoughtRuntimeError(
+                "reviewed avatar is not ready for the current device session"
+            )
 
     def _return_to_idle(self) -> None:
         move_error: Exception | None = None
@@ -182,17 +198,31 @@ class PendingThoughtRuntime:
     def __init__(
         self,
         *,
-        knock_hold_seconds: float = 2.0,
+        knock_hold_seconds: float = 10.0,
         sleep: Callable[[float], None] = time.sleep,
         playback_url: str | None = None,
         playback_token: str = "",
-            ) -> None:
+    ) -> None:
         self._knock_hold_seconds = knock_hold_seconds
         self._sleep = sleep
         self._playback_url = playback_url
         self._playback_token = playback_token
         self.machine: KnockWaitTell | None = None
         self.body: StackChanThoughtBody | None = None
+
+    def mark_avatar_ready(self, session_id: str) -> None:
+        """Record that startup restored the reviewed avatar."""
+
+        if self.body is None:
+            raise PendingThoughtRuntimeError("runtime session is not initialized")
+        self.body.mark_avatar_ready(session_id)
+
+    async def is_ready(self) -> bool:
+        """Check readiness without blocking the service event loop."""
+
+        if self.machine is None or self.body is None:
+            return False
+        return await asyncio.to_thread(self.body.is_ready)
 
     async def consider_thought(
         self, payload: Mapping[str, object]
@@ -229,6 +259,21 @@ class PendingThoughtRuntime:
         self.body = body
         self.machine = machine
         return session
+
+
+def ready_device_session_id(status: object) -> str | None:
+    """Return the session ID only for a connected, initialized device."""
+
+    payload = _tool_payload(status)
+    session_id = payload.get("session_id")
+    if (
+        payload.get("connected") is not True
+        or payload.get("initialized") is not True
+        or not isinstance(session_id, str)
+        or not session_id
+    ):
+        return None
+    return session_id
 
 
 def _tool_payload(result: object) -> Mapping[str, object]:

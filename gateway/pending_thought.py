@@ -57,7 +57,7 @@ class KnockPort(Protocol):
 
 class TellPort(Protocol):
     def tell(self, thought_id: str, audio_base64: str) -> None:
-        """Tell unless this ID remains in bounded retention for this process."""
+        """Play prepared audio using the ID as the endpoint idempotency key."""
 
 
 def decode_prepared_audio(audio_base64: str) -> bytes:
