@@ -6,17 +6,23 @@ milestone at a time.
 ## Milestone 1: Manual Embodiment
 
 OpenClaw manually selects deterministic intentions. StackChan presents them
-safely and returns to idle. This is the current milestone.
+safely and returns to idle. Native faces, restrained motion, and safe return
+were proven on the physical device.
 
 ## Milestone 2: Knock, Wait, Tell
 
 An OpenClaw background result may be ignored, remembered, or offered silently.
-StackChan waits for a head tap before speaking a concise summary.
+StackChan waits for a deliberate head pat or stroke before playing
+OpenClaw-prepared audio. Historical physical acceptance passed on 2026-08-14;
+the incomplete version record means it is not a reproducible current deployment
+claim.
 
 ## Milestone 3: Continuity and Restraint
 
-Pending thoughts survive restarts, acknowledgments are idempotent, quiet hours
-and cooldowns are enforced, and reconnection restores authoritative state.
+This is the current software focus. Pending thoughts survive restarts,
+cross-restart
+duplicate handling is defined, quiet hours and cooldowns are enforced, and
+reconnection restores authoritative state.
 
 ## Milestone 4: Ambient Life
 

@@ -125,6 +125,45 @@ the pinned gateway and firmware, selects LVGL 1x scaling for native descriptors,
 and keeps legacy 160x120 modes unchanged. The caller remains responsible for
 making the exact validated bytes available at the deployment archive path.
 
+### Milestone 2 initiative boundary
+
+Milestone 2 keeps judgment and policy in OpenClaw while adding one strict,
+transport-neutral pending-thought state machine under `gateway/`. A background
+result enters through the tracked `pending-thought.v1` contract and becomes
+`ignored`, `remembered`, or `waiting`.
+
+Only `waiting` calls the injected knock port. That call receives only the
+opaque `thought_id`, never the prepared audio. The current CoreS3 firmware
+maps deliberate consent to `touch/tap/head_pat` and
+`touch/stroke/head_stroke`; the state machine accepts both. It passes
+`thought_id` plus OpenClaw-prepared, length-prefixed raw Opus packets to an
+injected tell port and clears the offer only after playback succeeds. No text
+summary or upstream `say` path exists.
+
+Duplicate playback is suppressed only while a thought ID remains in bounded
+recent-ID memory for the running process. Restart or ID eviction may replay it.
+
+The running process holds at most one offer. Restart persistence, quiet hours,
+cooldowns, batching, and background-event selection remain outside Milestone 2
+so this slice does not grow into a second memory or policy system.
+
+The executable boundary is `gateway/pending_thought_service.py`. It exposes
+only `consider_thought` downstream over MCP stdio while keeping one persistent
+authenticated upstream StackChan MCP session open. One
+`PendingThoughtRuntime` owns the state machine and concrete body adapters for
+that session lifetime. Custom `stackchan/event` notifications are dispatched
+as tracked background work so playback cannot block the MCP receive loop, and
+shutdown drains that work before closing the upstream session.
+
+Here, persistent means one session for the connected process lifetime, not an
+internal reconnect loop. An upstream transport loss terminates the current
+service. The runtime cannot be rebound because its machine and body are tied to
+the original session, and Milestone 2 deliberately has no cross-session pending
+state. A follow-up must define dependency pins and a launch supervisor, create
+a fresh runtime/session after disconnect, restore required avatar state before
+readiness, and test the exact state-loss behavior. The repository currently
+contains no reproducible service launch definition.
+
 ### stackchan-mcp
 
 The pinned `0.17.0` revision was inspected at its exact git revision without

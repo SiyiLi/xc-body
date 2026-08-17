@@ -19,13 +19,26 @@ The product is guided by three qualities:
 
 ## Current Focus
 
-The repository is in **Milestone 1: manual embodiment**. The only objective is
-to prove that an existing OpenClaw agent can deliberately present a small,
-deterministic set of intentions through the physical StackChan.
+Milestones 1 and 2 have historical physical acceptance. The current software
+focus is **Milestone 3: Continuity and Restraint**: make deployment and recovery
+reproducible before adding broader behavior. The recorded physical runs proved
+native faces, deterministic head motion, prepared-audio playback, and safe
+return to idle, but their full firmware, gateway, OpenClaw, and source version
+set was not captured, so they are not a reproducible current deployment claim.
 
-Milestone 1 does not include cron jobs, autonomous behavior, continuity state,
-touch input, microphone, camera, Stick S3 integration, or custom firmware unless
-the existing hardware layer proves insufficient.
+Milestone 2 adds a narrow initiative boundary: classify a background result as
+`ignore`, `remember`, or `offer`; offer silently; wait for a deliberate
+CoreS3 head pat or head stroke; then play OpenClaw-prepared Opus packets
+after acknowledgment. Duplicate playback is suppressed only while a thought ID
+remains in bounded recent-ID memory for the running process. Restart or
+eviction may replay it; durable restart persistence, quiet hours, microphone
+input, camera input, and background-event policy remain out of scope.
+
+The pending-thought boundary has a stdio service and a persistent HTTP
+service/proxy, each exposing only `consider_thought`. One process-owned runtime
+uses one upstream StackChan MCP session to receive device events. Local
+fake-port, full-suite, real-SDK transport, and physical prepared-audio
+knock/gesture/playback acceptance tests pass.
 
 ## Start Here
 
@@ -33,13 +46,15 @@ A new coding session should read these files in order:
 
 1. [`AGENTS.md`](AGENTS.md)
 2. [`docs/HANDOFF.md`](docs/HANDOFF.md)
-3. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
-4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-5. [`docs/DECISIONS.md`](docs/DECISIONS.md)
-6. [`docs/ROADMAP.md`](docs/ROADMAP.md)
+3. [`docs/MILESTONE_2.md`](docs/MILESTONE_2.md)
+4. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
+5. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+6. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+7. [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-The initial machine-readable command boundary is
-[`contracts/embodiment-intent.schema.json`][intent-contract].
+The tracked machine-readable boundaries are the manual embodiment
+[`intent contract`][intent-contract] and the Milestone 2
+[`pending-thought contract`][pending-thought-contract].
 
 ## Milestone 1 Semantic Bridge
 
@@ -53,23 +68,22 @@ checked for calibration before the first device call.
 
 The opt-in `measured_k151_cores3_calibration()` factory preserves reviewed
 motion evidence. Neutral maps to upstream avatar name `idle` and head command
-`(0,43,30)`. Curious maps to `thinking` and `(3,45,30)` before returning to the
-exact neutral command. Speed `30` represents upstream `low`. Head movement was
-visually confirmed; the curious pose reached `(1,44)` before settling at
-`(0,43)`.
+`(0,43,30)`. Curious maps to `thinking` and `(12,50,30)` before returning to
+the exact neutral command. Speed `30` represents upstream `low`. Louis confirmed
+that the curious pose is clearly visible and appropriately restrained.
 
 Avatar-name mapping is separate from visible-face verification. The measured
-factory maps `idle`, `thinking`, `happy`, and `sad`, but verifies none as
-visible. The pinned source and `firmware-v1.16.0` tag use placeholder 1x1 black
-assets, and real hardware showed no display change. A successful firmware
-response therefore proves only that LVGL accepted an asset, not that a person
-could see an expression.
+factory maps `idle`, `thinking`, `happy`, and `sad`; the reviewed native
+320x240 payload and accepted semantic `curious` path use verified `idle` and
+`thinking` faces. A successful firmware response alone is still insufficient:
+visible verification is bound to the exact reviewed payload and physical run.
 
 The import-safe runner accepts the `curious` shortcut or one v1 semantic intent
-JSON object. It accepts no raw face, servo, speed, or return controls. With the
-current measured calibration, every semantic intent fails during local recipe
-preflight, before configuration loading or MCP session creation. Raw/manual
-head checks remain outside this semantic success path.
+JSON object. It accepts no raw face, servo, speed, or return controls. Supported
+recipes pass complete local calibration preflight before configuration loading
+or MCP session creation. Before device work, both semantic entry points restore
+the configured avatar archive and require the exact reviewed SHA-256; another
+valid digest fails closed.
 
 Run the dependency-free tests from the repository root:
 
@@ -79,10 +93,8 @@ python3 -m unittest discover -s tests -v
 
 The checks cover deterministic translation, mandatory idle return, rejection
 before movement, honest device failures, servo limits, and visible-face
-preflight. Real hardware has verified measured head movement and neutral
-recovery, but display rendering failed. Full acceptance criteria 1-4 remain
-blocked until real assets are installed and their face changes are confirmed
-by human observation.
+preflight. Real hardware verified the native idle/thinking faces, measured
+curious movement, and automatic neutral recovery.
 
 ## Candidate Avatar Assets
 
@@ -96,9 +108,9 @@ python3 scripts/build_avatar_assets.py
 ```
 
 Outputs are deterministic and written beneath the ignored
-`build/avatar-assets/` directory. They are review artifacts, not production
-visible-face evidence, and the measured calibration's `verified_faces` remains
-empty.
+`build/avatar-assets/` directory. Generation alone is not production
+visible-face evidence. The measured calibration's four verified names are valid
+only when runtime restoration confirms the exact physically reviewed payload.
 
 The injection-based loader validates the local payload and manifest before
 making exactly one upstream `load_avatar_set` call:
@@ -131,7 +143,7 @@ examples/    Valid example payloads for the current contract
 gateway/     Intent validation, orchestration, and safe return
 scripts/     Repository checks and deterministic build entry points
 stackchan/   Symbolic recipes, calibration, and device adapter
-mcp/         Semantic descriptor and handler; no server yet
+mcp/         Transport-neutral semantic descriptor and handler
 references/  Temporary pinned study source; never a runtime dependency
 tests/       Responsibility-grouped standard-library tests
 ```
@@ -149,15 +161,21 @@ working here unless the user explicitly requests a cross-project change.
 ## Status
 
 - GitHub repository: <https://github.com/SiyiLi/xc-body.git>.
-- The `stackchan-mcp` gitlink is pinned to
-  `804af573ba8f577f63efbd39f6e8a9c7f57b4647`; the local submodule is currently
-  uninitialized.
-- Milestone 1 uses a separate always-on cloud rendezvous host. Read-only
-  discovery is complete; deployment, TLS routing, secrets, firewall changes,
-  and OpenClaw MCP configuration remain unapproved and unapplied.
-- No firmware has been flashed for this project.
+- The `stackchan-mcp` gitlink is initialized and pinned to
+  `804af573ba8f577f63efbd39f6e8a9c7f57b4647`.
+- XC Body uses an isolated service on a separate always-on cloud rendezvous;
+  raw gateway ports remain private and credentials are not stored here.
+- The app-only native-avatar firmware is flashed with private factory and
+  tested rollback artifacts retained.
+- OpenClaw has local semantic and pending-thought tool registration; no
+  OpenClaw runtime/source patch was made.
 - The transport-independent semantic core uses dependency-free Python 3.10+.
-  Deployment packaging remains intentionally undecided until the host inventory
-  and pinned upstream reuse boundary are inspected.
+  Executable services also require MCP and HTTP/ASGI packages, but this
+  repository does not yet pin that complete dependency set or define a
+  reviewed service launch unit.
+- Each executable service holds one upstream session while connected and exits
+  on transport loss. Internal reconnect, supervisor restart behavior, and
+  state recovery remain unverified follow-up work.
 
 [intent-contract]: contracts/embodiment-intent.schema.json
+[pending-thought-contract]: contracts/pending-thought.schema.json

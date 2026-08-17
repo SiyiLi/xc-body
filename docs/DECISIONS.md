@@ -195,3 +195,20 @@
   Production `verified_faces` stays empty until Louis holds and directly
   confirms each runtime-loaded face. Reload after restart remains required
   unless persistence is separately proven.
+
+## D-019: Require Consent Before Telling a Background Result
+
+- **Status:** Accepted for Milestone 2
+- **Date:** 2026-08-12
+- **Decision:** Classify each background result as `ignore`, `remember`, or
+  `offer`. An offer may knock silently, but XC Body plays OpenClaw-prepared
+  Opus packets only after `touch/tap/head_pat` or
+  `touch/stroke/head_stroke` acknowledges it.
+- **Reason:** Initiative should create an opportunity for interaction, not an
+  unsolicited announcement into the room.
+- **Consequence:** One offer may wait at a time. Prepared audio is never
+  passed to the knock boundary. The tell boundary uses `thought_id` to suppress
+  duplicates while that ID remains in bounded memory for the running process;
+  restart or eviction may replay it. No text-to-`say` path exists. Restart
+  persistence, batching, quiet hours, and selection policy remain Milestone 3
+  or later work.

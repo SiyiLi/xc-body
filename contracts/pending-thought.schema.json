@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xc-body.local/contracts/pending-thought.v1.schema.json",
+  "title": "XC Body Milestone 2 Pending Thought",
+  "description": "A background result classified for embodied follow-up.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "thought_id",
+    "decision"
+  ],
+  "properties": {
+    "version": {
+      "const": "v1"
+    },
+    "thought_id": {
+      "description": "Duplicate-suppression key retained only in bounded memory for the running process; restart or eviction may replay.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "ignore",
+        "remember",
+        "offer"
+      ]
+    },
+    "audio_base64": {
+      "description": "Raw input string containing base64 of two-byte big-endian length-prefixed raw Opus packets. maxLength applies before surrounding whitespace is stripped. Each packet TOC must declare mono and exactly 60 ms. The producer guarantees Opus encoded from 16 kHz mono PCM; XC Body does not decode packets or infer the input rate from packet bytes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1048576
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "offer"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "required": [
+          "audio_base64"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "audio_base64"
+          ]
+        }
+      }
+    }
+  ]
+}
