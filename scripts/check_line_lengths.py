@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_PARTS = {".git", ".venv", "__pycache__"}
-REFERENCE_PREFIX = ROOT / "references" / "stackchan-mcp"
+IMPORTED_FIRMWARE_PREFIX = ROOT / "firmware"
 MARKDOWN_EXEMPT_CHARS = frozenset("┌┐└┘│─▶▼▲")
 
 
@@ -27,7 +27,7 @@ def main() -> int:
     for path in sorted(ROOT.rglob("*")):
         if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
             continue
-        if path.is_relative_to(REFERENCE_PREFIX):
+        if path.is_relative_to(IMPORTED_FIRMWARE_PREFIX):
             continue
         if path.suffix not in {".py", ".md"}:
             continue

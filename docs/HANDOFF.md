@@ -30,13 +30,13 @@ The agreed North Star is:
 - No camera or microphone path is in scope, and no capture endpoint is to be
   exposed during Milestone 1.
 - Milestone 2 is complete; Milestone 3 is next.
-- The selected upstream reference is `kisaragi-mochi/stackchan-mcp`, pinned at
-  `804af573ba8f577f63efbd39f6e8a9c7f57b4647`; the local submodule is
-  initialized at that exact revision.
+- Firmware and gateway code are maintained directly under `firmware/` and
+  `stackchan_mcp/`. Their imported source revision is recorded in
+  `docs/REFERENCES.md`.
 - An isolated long-lived gateway and pending-thought service are deployed on
   the rendezvous VM. The tracked controller builds one `linux/amd64` runtime
-  image from exact source, the pinned upstream revision, the reviewed avatar,
-  and the gateway patch, then publishes it to TC Artifactory. The VM pulls the
+  image from exact XC Body source and the reviewed avatar, then publishes it
+  to TC Artifactory. The VM pulls the
   exact runtime and Caddy digests and runs only `xc-body-gateway`,
   `xc-body-pending`, and `xc-body-proxy`; credentials remain private.
 - A dependency-free Python 3.10+ semantic core now provides strict v1 request
@@ -78,7 +78,7 @@ The agreed North Star is:
 - Native loading requires the reviewed gateway adaptation and an app-only
   firmware flash. Legacy 160x120 modes remain available for rollback, and the
   set must be reloaded after restart unless persistence is later proven.
-- The tracked firmware patch now includes a USB-only maintenance channel for
+- The firmware includes a USB-only maintenance channel for
   status, gateway URL/token updates, logs, and application reboot. The exact
   StackChan target builds successfully as firmware `2.2.6`. The app-only image
   was flashed at `0x20000` with NVS preserved; its SHA-256 is
@@ -88,10 +88,6 @@ The agreed North Star is:
   set.
 - OpenClaw's managed MCP registry can consume remote Streamable HTTP servers
   with authentication headers, TLS verification, timeouts, and tool filters.
-- Pinned `stackchan-mcp` `0.17.0` already supplies loopback `/mcp`, bearer and
-  host validation, authenticated device WSS, a bounded command queue, and
-  health/status endpoints. It was inspected remotely and locally at the exact
-  pinned revision.
 - The executable Milestone 2 boundary exposes only `consider_thought` over MCP
   stdio or authenticated Streamable HTTP. It keeps one upstream StackChan MCP
   session open and owns one pending-thought runtime for that session lifetime.
@@ -102,13 +98,15 @@ The agreed North Star is:
   process; a safe reconnect follow-up must create a fresh runtime, preserve the
   existing startup restore, define pending-state loss, and verify supervisor
   restart behavior.
-- Its accepted silent knock is `thinking`, pose `(12,50)` at low speed, a
-  ten-second hold, then `(0,43)` and `idle`. The current CoreS3 head pat or
-  head stroke invokes prepared-audio playback. Duplicate playback is
+- Its silent knock is a named firmware behavior: `thinking`, pose `(12,50)` at
+  low speed, a ten-second hold, then `(0,43)` and `idle`. The gateway returns
+  only after firmware reports physical completion. A CoreS3 head pat or head
+  stroke is emitted after its local reaction settles and invokes prepared-audio
+  playback. Duplicate playback is
   suppressed only for retained recent IDs in the running process; restart or
   eviction may replay it. No upstream `say` path remains.
-- Local contract, fake-port, and service tests cover offer,
-  knock, waiting, gesture acknowledgment, prepared-audio playback, idle,
+- Local contract, fake-port, and service tests cover offer, waiting, gesture
+  acknowledgment, prepared-audio playback,
   duplicate suppression, and clean draining of in-flight gesture work.
 ## User Preferences and Constraints
 

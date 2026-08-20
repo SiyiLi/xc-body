@@ -12,8 +12,8 @@ Before proposing or making changes, read:
 6. `docs/DECISIONS.md`
 7. `docs/ROADMAP.md`
 
-Inspect `references/stackchan-mcp` only for the specific capability being
-implemented. It is a pinned reference dependency, not a place for casual edits.
+Firmware and gateway source are maintained directly under `firmware/` and
+`stackchan_mcp/`.
 
 ## Current Phase
 
@@ -47,8 +47,8 @@ not infer host configuration that has not been inspected.
 - Think before coding and state assumptions.
 - Prefer the smallest implementation that passes the milestone acceptance
   tests.
-- Reuse the pinned `stackchan-mcp` hardware layer before writing firmware or
-  device protocols.
+- Extend the existing `stackchan_mcp` hardware layer before inventing device
+  protocols.
 - The agent chooses semantic intentions; deterministic code owns expressions,
   timing, LEDs, and servo motion.
 - Treat servo safety and reconnect recovery as correctness requirements.

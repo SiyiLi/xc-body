@@ -58,8 +58,8 @@ The tracked machine-readable boundaries are the manual embodiment
 ## Milestone 1 Semantic Bridge
 
 The repository now includes a dependency-free Python 3.10+ semantic core, an
-executable `embody` MCP service, and a synchronous client bridge for the pinned
-upstream StackChan MCP daemon. The boundary loads the tracked v1 schema,
+executable `embody` MCP service, and a synchronous client bridge for the XC
+Body StackChan MCP daemon. The boundary loads the tracked v1 schema,
 validates each request, selects an immutable symbolic recipe, invokes an
 injected device port, and makes a mandatory
 safe-return-to-idle attempt after every expressive intent. A full recipe is
@@ -114,16 +114,15 @@ only when runtime restoration confirms the exact physically reviewed payload.
 The generator validates the local payload and manifest before writing them.
 Deployment must make those exact bytes available at the configured archive
 path. At startup, the service loads that archive and checks the device-reported
-checksum against the reviewed payload. The native format uses the reviewed
-`layered-320x240` adaptation stored in
-`stackchan/stackchan-mcp-native-avatar.patch`. Firmware renders native frames
-at 1x while retaining the upstream 160x120 modes as rollback. Assets must be
+checksum against the reviewed payload. The firmware implements the reviewed
+`layered-320x240` format directly and renders native frames at 1x while
+retaining the 160x120 modes as rollback. Assets must be
 reloaded after gateway or device restart unless persistence is proven.
 
 ## USB Maintenance
 
-The tracked firmware patch adds a local USB maintenance channel for the
-CoreS3. It reports Wi-Fi and gateway state, updates the saved gateway URL and
+The firmware includes a local USB maintenance channel for the CoreS3. It
+reports Wi-Fi and gateway state, updates the saved gateway URL and
 token, reboots through the normal application path, and streams existing
 firmware logs. It exposes no network listener and never reports the token.
 
@@ -143,22 +142,28 @@ available; flashing remains a separately approved hardware action.
 
 ## Rendezvous VM Deployment
 
-Build, publish, and deploy the committed production images:
+Build, publish, and deploy the production images:
 
 ```sh
 scripts/deploy.sh
 ```
 
-The real deployment requires clean, committed runtime and deployment inputs. It
-regenerates and verifies the reviewed avatar, applies the tracked patch to the
-pinned StackChan revision, builds `linux/amd64` images, and pushes them to TC
-Artifactory. The VM pulls the exact image digests and runs only the gateway,
+Committed deployment requires clean runtime and deployment inputs. An
+explicitly authorized `scripts/deploy.sh --candidate` run instead packages the
+current working tree and records the deployment as a candidate. Both paths
+regenerate and verify the reviewed avatar, build the direct gateway source as a
+`linux/amd64` image, and push it to TC Artifactory. The VM pulls the exact image
+digests and runs only the gateway,
 pending-thought service, and Caddy proxy. Caddy serves the authenticated WSS,
 avatar, playback, gateway MCP, and XC Body MCP routes through
 `https://43.143.37.91`; raw service ports remain private. The controller also
 registers the local OpenClaw producer, which calls the authenticated remote
 `consider_thought` service. It does not flash firmware or reconfigure the
 firewall.
+
+The deployment script never flashes firmware. When runtime code uses a new
+firmware-owned tool, flash and physically accept the matching firmware before
+deploying that runtime.
 
 ## Repository Layout
 
@@ -167,10 +172,11 @@ contracts/   Versioned contracts between OpenClaw and the physical body
 deploy/      Production image, Compose, proxy, and VM install definitions
 docs/        Product, architecture, milestone, decisions, and handoff material
 examples/    Valid example payloads for the current contract
+firmware/    XC Body CoreS3 firmware source and component licenses
 gateway/     Intent validation, orchestration, and safe return
 scripts/     Repository checks and deterministic build entry points
 stackchan/   Symbolic recipes, calibration, and device adapter
-references/  Temporary pinned study source; never a runtime dependency
+stackchan_mcp/  XC Body StackChan gateway source
 tests/       Responsibility-grouped standard-library tests
 ```
 
@@ -187,8 +193,8 @@ working here unless the user explicitly requests a cross-project change.
 ## Status
 
 - GitHub repository: <https://github.com/SiyiLi/xc-body.git>.
-- The `stackchan-mcp` gitlink is initialized and pinned to
-  `804af573ba8f577f63efbd39f6e8a9c7f57b4647`.
+- Firmware and gateway sources are maintained directly in this repository.
+  Their import provenance is recorded in `docs/REFERENCES.md`.
 - XC Body uses an isolated service on a separate always-on cloud rendezvous;
   raw gateway ports remain private and credentials are not stored here.
 - The app-only native-avatar firmware is flashed with private factory and
@@ -196,9 +202,8 @@ working here unless the user explicitly requests a cross-project change.
 - OpenClaw runs the tracked local thought producer and uses the authenticated
   remote pending-thought MCP route; no OpenClaw runtime/source patch was made.
 - The transport-independent semantic core uses dependency-free Python 3.10+.
-  The tracked deployment builds one runtime image from Python 3.11, exact
-  pinned upstream source, and the gateway patch, then publishes its digest to
-  TC Artifactory.
+  The tracked deployment builds the direct gateway source into one Python 3.11
+  runtime image, then publishes its digest to TC Artifactory.
 - Each executable service holds one upstream session while connected and exits
   on transport loss. The pending-thought service becomes unready if the device
   session changes. Internal reconnect, supervisor restart behavior, and state

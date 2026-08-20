@@ -2,23 +2,22 @@ FROM python:3.11-slim-bookworm
 
 RUN useradd --create-home --uid 1000 appuser
 
-COPY stackchan-gateway /tmp/stackchan-gateway
-RUN pip install --no-cache-dir /tmp/stackchan-gateway "uvicorn>=0.30,<1" \
-    && rm -rf /tmp/stackchan-gateway
+COPY app/pyproject.toml /tmp/xc-body-gateway/pyproject.toml
+COPY app/stackchan_mcp /tmp/xc-body-gateway/stackchan_mcp
+RUN pip install --no-cache-dir /tmp/xc-body-gateway "uvicorn>=0.30,<1" \
+    && rm -rf /tmp/xc-body-gateway
 
 COPY app/gateway /opt/xc-body/gateway
 COPY app/stackchan /opt/xc-body/stackchan
 COPY app/contracts /opt/xc-body/contracts
 COPY app/deploy /opt/xc-body/deploy
-COPY avatar/xc-body-layered.rgb565le \
+COPY --chmod=0444 avatar/xc-body-layered.rgb565le \
     /opt/xc-body/xc-body-native-320.rgb565le
 
 ARG GIT_COMMIT=unknown
-ARG UPSTREAM_COMMIT=unknown
 ARG GIT_DIRTY=false
 ARG BUILT_AT=unknown
 LABEL org.opencontainers.image.revision=$GIT_COMMIT \
-      ai.siyi.xc-body.upstream-revision=$UPSTREAM_COMMIT \
       ai.siyi.xc-body.dirty=$GIT_DIRTY \
       org.opencontainers.image.created=$BUILT_AT
 

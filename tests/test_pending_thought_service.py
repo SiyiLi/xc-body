@@ -168,7 +168,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
         urlopen.return_value.__enter__.return_value = response
         upstream_calls = []
         runtime = PendingThoughtRuntime(
-            sleep=lambda _seconds: None,
             playback_url="http://127.0.0.1:8766/opus",
             playback_token="playback-secret",
         )

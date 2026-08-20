@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -308,7 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise OpenClawThoughtServiceError(f"{VOICE_ENV} must not be empty")
         asyncio.run(run_stdio_service(config, voice))
     except (RunnerConfigError, OpenClawThoughtServiceError) as exc:
-        print(f"error: {exc}", file=os.sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
 

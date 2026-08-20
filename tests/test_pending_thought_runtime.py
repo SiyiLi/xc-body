@@ -47,10 +47,9 @@ def ready_body(caller, **kwargs):
 
 
 class PendingThoughtRuntimeTests(unittest.TestCase):
-    def test_knock_is_silent_restrained_gesture_with_idle_return(self):
+    def test_knock_delegates_complete_physical_behavior(self):
         caller = RecordingCaller()
-        sleeps = []
-        body = ready_body(caller, sleep=sleeps.append)
+        body = ready_body(caller)
 
         body.knock("eval:42")
 
@@ -58,39 +57,20 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             caller.calls,
             [
                 ("get_status", {}),
-                ("set_avatar", {"face": "thinking"}),
-                (
-                    "move_head",
-                    {"yaw": 12, "pitch": 50, "speed": "low"},
-                ),
-                (
-                    "move_head",
-                    {"yaw": 0, "pitch": 43, "speed": "low"},
-                ),
-                ("set_avatar", {"face": "idle"}),
+                ("perform_knock", {"behavior_id": "eval:42"}),
             ],
         )
         self.assertNotIn("say", [name for name, _ in caller.calls])
-        self.assertEqual(sleeps, [10.0])
 
-    def test_knock_failure_still_attempts_idle_return(self):
-        caller = RecordingCaller(
-            [
-                {"ok": True},
-                RuntimeError("move failed"),
-                {"ok": True},
-                {"ok": True},
-            ]
-        )
-        body = ready_body(caller, sleep=lambda seconds: None)
+    def test_knock_failure_is_reported(self):
+        caller = RecordingCaller([RuntimeError("knock failed")])
+        body = ready_body(caller)
 
-        with self.assertRaisesRegex(PendingThoughtRuntimeError, "move failed"):
+        with self.assertRaisesRegex(PendingThoughtRuntimeError, "knock failed"):
             body.knock("eval:42")
 
-        self.assertEqual(caller.calls[-1], ("set_avatar", {"face": "idle"}))
-
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
-    def test_tell_posts_prepared_audio_and_returns_to_idle(self, urlopen):
+    def test_tell_posts_audio_without_cloud_motion_control(self, urlopen):
         response = Mock()
         response.read.return_value = b'{"ok": true}'
         urlopen.return_value.__enter__.return_value = response
@@ -107,8 +87,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.data, _FRAMED_OPUS)
         self.assertEqual(request.get_header("X-message-id"), "eval:42")
-        self.assertNotIn("say", [name for name, _ in caller.calls])
-        self.assertEqual(caller.calls[-1], ("set_avatar", {"face": "idle"}))
+        self.assertEqual(caller.calls, [("get_status", {})])
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_tell_error_is_not_marked_complete(self, urlopen):
@@ -130,7 +109,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
     def test_body_rejects_unverified_or_reconnected_device_session(self):
         caller = RecordingCaller()
-        body = StackChanThoughtBody(caller, sleep=lambda seconds: None)
+        body = StackChanThoughtBody(caller)
 
         with self.assertRaisesRegex(
             PendingThoughtRuntimeError,

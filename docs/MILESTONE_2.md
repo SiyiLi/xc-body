@@ -60,8 +60,8 @@ required only for an `offer`; it is forbidden for `ignore` and `remember`. Its
 raw JSON string is limited to 1,048,576 characters before surrounding
 whitespace is stripped.
 
-The producer profile is raw Opus encoded from 16 kHz mono PCM in 60 ms packets,
-matching the pinned upstream producer defaults. Each packet is framed by a
+The producer profile is raw Opus encoded from 16 kHz mono PCM in 60 ms packets.
+Each packet is framed by a
 two-byte big-endian, nonzero packet length. XC Body validates complete framing,
 bounded packet count and size, and the Opus TOC's mono flag and 60 ms packet
 duration. It does not decode packets, so decodability and the 16 kHz PCM input
@@ -91,8 +91,7 @@ Restart or ID eviction may replay it.
 
 ## Upstream Event Boundary
 
-The accepted acknowledgment event matches the pinned gateway's notification
-shape exactly:
+The accepted acknowledgment event matches the gateway notification shape:
 
 ```json
 {
@@ -114,13 +113,13 @@ opens one persistent upstream StackChan MCP session, owns one
 `PendingThoughtRuntime` for that session lifetime, and continuously receives
 the custom `stackchan/event` notification.
 
-An accepted offer produces the reviewed silent knock: the `thinking` face,
-head pose `(12,50)` at low speed, a ten-second hold, and return to neutral
-`(0,43)` plus `idle`. Either accepted head gesture plays the prepared Opus
-packets. Retained recent IDs suppress duplicate playback within the running
-process; restart or ID eviction may replay it. There is no text-to-`say`
-fallback. Gesture work runs outside the MCP receive loop, and service shutdown
-waits for in-flight event work before closing the upstream session.
+An accepted offer calls one named firmware behavior. The robot owns the
+`thinking` face, head pose `(12,50)` at low speed, ten-second hold, neutral
+return `(0,43)`, idle restoration, and completion event. The gateway waits for
+that event. A head gesture is emitted only after its local reaction settles;
+the cloud then plays the prepared Opus packets. Retained recent IDs suppress
+duplicate playback within the running process; restart or ID eviction may
+replay it. There is no text-to-`say` fallback.
 
 Before either transport accepts work, the service restores the configured
 avatar archive, requires the exact reviewed checksum, and records the connected
@@ -131,17 +130,17 @@ non-loopback bind. A loopback-only bind may omit it.
 
 The process keeps one upstream session while connected. It exits on transport
 loss rather than rebinding the session-owned runtime. The tracked rendezvous
-deployment publishes the exact source, pinned StackChan revision, gateway
-patch, and reviewed avatar as one TC Artifactory runtime image. The VM runs
+deployment publishes the exact XC Body source and reviewed avatar as one TC
+Artifactory runtime image. The VM runs
 that digest as the gateway and persistent pending-thought service. Internal
 reconnect and verified pending-state loss after supervisor restart remain
 follow-up work.
 
 OpenClaw does not call the binary contract directly. Its tracked local producer
 accepts the agent's decision and short message, uses the configured XC voice,
-normalizes the result, and emits 16 kHz mono, 60 ms Opus packets. The gateway
-prefills six packets into the device decoder queue before paced delivery so
-normal WAN scheduling jitter does not cut speech.
+normalizes the result, and emits 16 kHz mono, 60 ms Opus packets. The
+gateway sends the accepted six-packet prefill, then paces remaining packets at
+the device's 60 ms consumption interval. This preserves continuous playback.
 
 ## Acceptance Tests
 
@@ -169,7 +168,7 @@ Chinese message. A physical head stroke triggered complete playback, and Louis
 confirmed that the speech was clear.
 
 The accepted versions were source candidate
-`e5e1fd68824fd80322896ddbaa7f23a06b34f2a7`, pinned StackChan
+`e5e1fd68824fd80322896ddbaa7f23a06b34f2a7`, StackChan source
 `804af573ba8f577f63efbd39f6e8a9c7f57b4647`, firmware `2.2.6` image SHA-256
 `c12ffb705d71c3ece5d78f3f2369c590b230a4c388432b5616c3ebfe671f175c`,
 runtime image SHA-256

@@ -1,11 +1,10 @@
-"""Concrete Milestone 2 runtime adapters for the pinned StackChan gateway."""
+"""Concrete Milestone 2 runtime adapters for the XC Body gateway."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
-import time
 import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -28,14 +27,10 @@ class StackChanThoughtBody:
         self,
         call_tool: ToolCaller,
         *,
-        knock_hold_seconds: float = 10.0,
-        sleep: Callable[[float], None] = time.sleep,
         playback_url: str | None = None,
         playback_token: str = "",
     ):
         self._call_tool = call_tool
-        self._knock_hold_seconds = knock_hold_seconds
-        self._sleep = sleep
         self._playback_url = playback_url
         self._playback_token = playback_token
         self._verified_session_id: str | None = None
@@ -61,32 +56,16 @@ class StackChanThoughtBody:
         return ready_device_session_id(status) == self._verified_session_id
 
     def knock(self, thought_id: str) -> None:
-        """Give one restrained silent gesture, then return to idle."""
+        """Run the firmware-owned silent knock through physical completion."""
 
-        del thought_id
         self._require_ready()
-        operation_error: Exception | None = None
-        try:
-            self._call("set_avatar", {"face": "thinking"})
-            self._call(
-                "move_head",
-                {"yaw": 12, "pitch": 50, "speed": "low"},
-            )
-            self._sleep(self._knock_hold_seconds)
-        except Exception as exc:
-            operation_error = exc
-        self._finish_with_idle(operation_error)
+        self._call("perform_knock", {"behavior_id": thought_id})
 
     def tell(self, thought_id: str, audio_base64: str) -> None:
-        """Play prepared audio, then restore the reviewed idle pose."""
+        """Play prepared audio after firmware reports acknowledgment."""
 
         self._require_ready()
-        operation_error: Exception | None = None
-        try:
-            self._play_audio(audio_base64, thought_id)
-        except Exception as exc:
-            operation_error = exc
-        self._finish_with_idle(operation_error)
+        self._play_audio(audio_base64, thought_id)
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         if not self._playback_url:
@@ -112,45 +91,11 @@ class StackChanThoughtBody:
                 f"play audio: {result.get('error', 'playback failed')}"
             )
 
-    def _finish_with_idle(self, operation_error: Exception | None) -> None:
-        try:
-            self._return_to_idle()
-        except Exception as idle_error:
-            if operation_error is not None:
-                raise PendingThoughtRuntimeError(
-                    f"operation failed ({operation_error}); "
-                    f"idle return also failed ({idle_error})"
-                ) from operation_error
-            raise
-        if operation_error is not None:
-            raise operation_error
-
     def _require_ready(self) -> None:
         if not self.is_ready():
             raise PendingThoughtRuntimeError(
                 "reviewed avatar is not ready for the current device session"
             )
-
-    def _return_to_idle(self) -> None:
-        move_error: Exception | None = None
-        try:
-            self._call(
-                "move_head",
-                {"yaw": 0, "pitch": 43, "speed": "low"},
-            )
-        except Exception as exc:
-            move_error = exc
-        try:
-            self._call("set_avatar", {"face": "idle"})
-        except Exception as avatar_error:
-            if move_error is not None:
-                raise PendingThoughtRuntimeError(
-                    f"idle motion failed ({move_error}); "
-                    f"idle face also failed ({avatar_error})"
-                ) from move_error
-            raise
-        if move_error is not None:
-            raise move_error
 
     def _call(
         self, name: str, arguments: Mapping[str, object]
@@ -198,13 +143,9 @@ class PendingThoughtRuntime:
     def __init__(
         self,
         *,
-        knock_hold_seconds: float = 10.0,
-        sleep: Callable[[float], None] = time.sleep,
         playback_url: str | None = None,
         playback_token: str = "",
     ) -> None:
-        self._knock_hold_seconds = knock_hold_seconds
-        self._sleep = sleep
         self._playback_url = playback_url
         self._playback_token = playback_token
         self.machine: KnockWaitTell | None = None
@@ -244,8 +185,6 @@ class PendingThoughtRuntime:
         caller = SessionToolCaller(loop)
         body = StackChanThoughtBody(
             caller,
-            knock_hold_seconds=self._knock_hold_seconds,
-            sleep=self._sleep,
             playback_url=self._playback_url,
             playback_token=self._playback_token,
         )

@@ -104,7 +104,7 @@
 - **Status:** Accepted for Milestone 1
 - **Date:** 2026-08-11
 - **Decision:** Implement the pure semantic core in dependency-free Python
-  3.10+, matching the pinned upstream gateway's language floor.
+  3.10+, matching the imported gateway baseline's language floor.
 - **Consequence:** This narrows D-007 only for the core. Cloud deployment
   packaging remains undecided until the host inventory and gateway integration
   boundary are inspected.

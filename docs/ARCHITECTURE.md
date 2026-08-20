@@ -13,12 +13,12 @@ so the public device route is instead `wss://43.143.37.91`. An isolated Caddy
 proxy obtains and renews a short-lived public IP certificate; raw gateway ports
 remain private.
 
-The transport-independent semantic core is dependency-free Python 3.10+, which
-matches the pinned upstream gateway's language floor. The deployment builds a
-`linux/amd64` runtime image from the exact application and upstream commits,
-reviewed avatar, and gateway patch. It publishes that image and the Caddy image
-to TC Artifactory; the VM pulls their exact digests and retains secrets only in
-its existing private environment.
+The transport-independent semantic core is dependency-free Python 3.10+. The
+deployment builds a `linux/amd64` runtime image from either a clean XC Body
+commit or an explicitly authorized candidate working tree, plus the reviewed
+avatar. It publishes that image and the Caddy image to TC Artifactory; the VM
+pulls their exact digests and retains secrets only in its existing private
+environment.
 
 ## Preferred Milestone 1 Shape
 
@@ -124,9 +124,9 @@ The generator validates local bytes and their manifest before writing them.
 At startup, each service calls upstream `load_avatar_set` with
 `mode="layered-320x240"`. Semantic readiness requires the device result
 checksum to equal the reviewed payload digest, not merely a valid digest. The
-companion adaptation adds that explicit mode to
-the pinned gateway and firmware, selects LVGL 1x scaling for native descriptors,
-and keeps legacy 160x120 modes unchanged. The caller remains responsible for
+gateway and firmware implement that mode directly, select LVGL 1x scaling for
+native descriptors, and keep legacy 160x120 modes unchanged. The caller is
+responsible for
 making the exact validated bytes available at the deployment archive path.
 
 ### Milestone 2 initiative boundary
@@ -184,11 +184,11 @@ state. Docker Compose starts a fresh runtime from the same TC image digest and
 restores the reviewed avatar on each process start. A follow-up must verify the
 exact pending-state loss after supervisor restart or disconnect.
 
-### stackchan-mcp
+### StackChan gateway
 
-The pinned `0.17.0` revision is initialized and was inspected at its exact git
-revision. Its gateway requires Python 3.10+ and already
-provides the required shared-daemon primitives:
+The gateway was imported from the `stackchan-mcp` `0.17.0` baseline and is now
+maintained directly in XC Body. It provides the required shared-daemon
+primitives:
 
 - loopback Streamable HTTP MCP at `/mcp`;
 - bearer authentication and allowed-host checks;
@@ -197,8 +197,8 @@ provides the required shared-daemon primitives:
 - health and status surfaces;
 - existing hardware tools and servo safety limits.
 
-XC Body should adapt this surface rather than duplicate its gateway or device
-protocol. The semantic layer must expose only reviewed intention tools to
+XC Body extends this surface rather than creating another gateway or device
+protocol. The semantic layer exposes only reviewed intention tools to
 OpenClaw; raw movement tools remain behind that boundary.
 
 ### StackChan
@@ -212,7 +212,7 @@ OpenClaw; raw movement tools remain behind that boundary.
 - Microphone, camera, and touch-to-agent paths remain disabled or unused during
   Milestone 1.
 
-The XC Body firmware patch also provides a USB-only maintenance boundary. A
+The XC Body firmware provides a USB-only maintenance boundary. A
 host tool can read connection state, persist the gateway URL and token, stream
 logs, and request a normal application reboot. The token is accepted as input
 but never returned. This path does not carry embodiment commands and does not

@@ -9,9 +9,8 @@ die() {
 runtime_image=${1:-}
 caddy_image=${2:-}
 source_commit=${3:-}
-upstream_commit=${4:-}
-avatar_sha256=${5:-}
-deployment_kind=${6:-}
+avatar_sha256=${4:-}
+deployment_kind=${5:-}
 root=/data/xc-body
 deploy_dir=$root/deploy
 
@@ -21,8 +20,6 @@ deploy_dir=$root/deploy
   || die "invalid Caddy image reference" 64
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid source commit" 64
-[[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]] \
-  || die "invalid upstream commit" 64
 [[ "$avatar_sha256" =~ ^[0-9a-f]{64}$ ]] \
   || die "invalid avatar digest" 64
 case "$deployment_kind" in
@@ -126,7 +123,6 @@ state_tmp=$root/gateway-state/.last-deploy-state.$$
 {
   printf 'status=%s\n' "$deployment_kind"
   printf 'source_commit=%s\n' "$source_commit"
-  printf 'upstream_commit=%s\n' "$upstream_commit"
   printf 'avatar_sha256=%s\n' "$avatar_sha256"
   printf 'runtime_image=%s\n' "$runtime_image"
   printf 'caddy_image=%s\n' "$caddy_image"
@@ -137,4 +133,3 @@ mv "$state_tmp" "$root/gateway-state/last-deploy-state.txt"
 docker ps --filter name=^/xc-body- \
   --format '{{.Names}}={{.Status}} image={{.Image}}'
 echo "source_commit=$source_commit"
-echo "upstream_commit=$upstream_commit"
