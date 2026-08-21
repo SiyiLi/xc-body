@@ -2,18 +2,26 @@
 
 ## Objective
 
-Make XC Body's initiative path a durable, restrained part of OpenClaw rather
-than a manually initiated or process-local demonstration.
+Make XC Body return to useful operation automatically after ordinary network,
+robot, and service interruptions without adding persistent queues or policy.
 
 ## Scope
 
 Milestone 3 includes:
 
 - Native OpenClaw integration for selected successful background completions.
-- Durable pending-thought and duplicate state across process restarts.
-- Defined reconnect recovery with authoritative session ownership.
-- Quiet hours, cooldowns, and bounded offer policy.
+- One in-memory offer that expires 30 minutes after its knock completes.
+- Quiet rejection of new offers while one is pending.
+- Bounded OpenClaw-to-VM retries without a delayed queue.
+- Automatic reviewed-avatar restoration after a robot reconnect while keeping
+  a still-valid in-process offer.
+- Supervisor restart recovery that forgets old process state and accepts the
+  next fresh completion.
+- Connected idle display dimming without dropping the control transport.
 - Reproducible deployment and physical acceptance of the integrated path.
+
+No persistence database, durable queue, quiet hours, cooldowns, quotas, or
+background replay are part of this milestone.
 
 The native OpenClaw integration is one part of this milestone. It does not by
 itself satisfy the continuity, recovery, or restraint requirements.
@@ -33,7 +41,10 @@ robot knocked once, a head touch acknowledged the offer, and speech was clear.
 
 ## Milestone Exit Criteria
 
-Milestone 3 is complete only when all parts above are implemented and verified,
-including restart continuity, reconnect behavior, restraint policy, and a fresh
-physical end-to-end acceptance. Passing the native OpenClaw integration tests
-alone is not milestone completion.
+Milestone 3 is complete when fresh real OpenClaw completions work after an
+OpenClaw restart, a temporary Mac-to-VM interruption, a robot reboot, a VM
+gateway restart, and a pending-service restart. A pending offer must survive a
+robot reconnect, expire after 30 minutes, and never produce a delayed burst.
+The idle display must dim while the authenticated control transport remains
+usable. Final acceptance uses exact source, image, firmware, and OpenClaw
+versions.

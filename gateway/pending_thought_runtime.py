@@ -165,6 +165,15 @@ class PendingThoughtRuntime:
             return False
         return await asyncio.to_thread(self.body.is_ready)
 
+    async def pending_thought_id(self) -> str | None:
+        """Return the current unexpired offer without blocking the loop."""
+
+        if self.machine is None:
+            return None
+        return await asyncio.to_thread(
+            lambda: self.machine.pending_thought_id
+        )
+
     async def consider_thought(
         self, payload: Mapping[str, object]
     ):

@@ -40,16 +40,18 @@ Milestones 1 and 2 are complete. Production acceptance proved the full
 Milestone 3 is in progress. Its native OpenClaw integration is implemented and
 physically accepted through a candidate deployment: one successful background
 completion was classified, submitted, offered with one knock, acknowledged by
-a head touch, and spoken clearly. The broader milestone also includes
-continuity, restart recovery, duplicate handling, quiet hours, and cooldowns.
+a head touch, and spoken clearly. The remaining milestone work adds a
+30-minute offer lifetime, bounded submission retries, automatic device-session
+recovery, supervised process recovery, and connected idle display dimming.
 
 Milestone 2 adds a narrow initiative boundary: classify a background result as
 `ignore`, `remember`, or `offer`; offer silently; wait for a deliberate
 CoreS3 head pat or head stroke; then play OpenClaw-prepared Opus packets
 after acknowledgment. Duplicate playback is suppressed only while a thought ID
 remains in bounded recent-ID memory for the running process. Restart or
-eviction may replay it; durable restart persistence, quiet hours, microphone
-input, camera input, and background-event policy remain out of scope.
+eviction may replay it. Process restart intentionally forgets the offer;
+durable queues, quiet hours, microphone input, camera input, and background
+event policy remain out of scope.
 
 The pending-thought boundary has stdio and persistent HTTP services, each
 exposing only `consider_thought`. One process-owned runtime uses one upstream
@@ -187,8 +189,10 @@ changes:
 scripts/deploy-openclaw-plugin.sh
 ```
 
-That command installs and configures the linked plugin, restarts OpenClaw, and
-verifies the required completion hooks. It does not deploy the VM services.
+That command installs and configures the linked plugin, grants its required
+conversation access for the observation-only `agent_end` hook, restarts
+OpenClaw, and verifies the required completion hooks. It does not deploy the
+VM services.
 Neither deployment command flashes firmware or reconfigures the firewall.
 
 When runtime code uses a new firmware-owned tool, flash and physically accept
@@ -234,9 +238,9 @@ working here unless the user explicitly requests a cross-project change.
   The tracked deployment builds the direct gateway source into one Python 3.11
   runtime image, then publishes its digest to TC Artifactory.
 - Each executable service holds one upstream session while connected and exits
-  on transport loss. The pending-thought service becomes unready if the device
-  session changes. Internal reconnect, supervisor restart behavior, and state
-  recovery remain unverified follow-up work.
+  on transport loss so Docker can restart it. The HTTP pending-thought service
+  becomes unready on a device-session change, then reloads the reviewed avatar
+  and resumes with any unexpired in-process offer.
 
 [intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json

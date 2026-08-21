@@ -20,6 +20,14 @@ _FRAMED_OPUS = len(_OPUS_PACKET).to_bytes(2, "big") + _OPUS_PACKET
 _PREPARED_AUDIO_BASE64 = base64.b64encode(_FRAMED_OPUS).decode("ascii")
 
 
+def ready_runtime(**values):
+    return SimpleNamespace(
+        pending_thought_id=AsyncMock(return_value=None),
+        is_ready=AsyncMock(return_value=True),
+        **values,
+    )
+
+
 class ThoughtSummaryServiceTests(unittest.TestCase):
     def test_summary_contract_accepts_bounded_private_chinese_text(self):
         request = parse_thought_summary(
@@ -37,7 +45,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         )
 
     def test_invalid_summary_fails_before_synthesis_or_runtime(self):
-        runtime = SimpleNamespace(consider_thought=AsyncMock())
+        runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(return_value=_PREPARED_AUDIO_BASE64)
 
         status, response = asyncio.run(
@@ -59,7 +67,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         runtime.consider_thought.assert_not_awaited()
 
     def test_synthesis_and_audio_validation_precede_offer_transition(self):
-        runtime = SimpleNamespace(
+        runtime = ready_runtime(
             consider_thought=AsyncMock(
                 return_value=SimpleNamespace(
                     thought_id="cron:def456",
@@ -100,7 +108,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
 
     def test_synthesis_failure_causes_no_knock_or_plaintext_leakage(self):
         private_summary = "私人事项：体检报告已经整理完成。"
-        runtime = SimpleNamespace(consider_thought=AsyncMock())
+        runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(
             side_effect=RuntimeError(f"failed for {private_summary}")
         )
@@ -127,7 +135,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         runtime.consider_thought.assert_not_awaited()
 
     def test_invalid_prepared_audio_causes_no_knock(self):
-        runtime = SimpleNamespace(consider_thought=AsyncMock())
+        runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(return_value="not-valid-audio")
 
         status, response = asyncio.run(
@@ -146,6 +154,47 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(response["error"], "speech_preparation_failed")
         runtime.consider_thought.assert_not_awaited()
+
+    def test_pending_offer_is_ignored_before_speech_preparation(self):
+        runtime = ready_runtime(consider_thought=AsyncMock())
+        runtime.pending_thought_id.return_value = "cron:waiting"
+        prepare = AsyncMock(return_value=_PREPARED_AUDIO_BASE64)
+
+        status, response = asyncio.run(
+            handle_summary_request(
+                runtime,
+                {
+                    "version": "v1",
+                    "thought_id": "cron:new",
+                    "summary": "另一个任务已经完成。",
+                },
+                voice=DEFAULT_VOICE,
+                speech_preparer=prepare,
+            )
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["state"], "ignored")
+        prepare.assert_not_awaited()
+        runtime.consider_thought.assert_not_awaited()
+
+        runtime.pending_thought_id.return_value = None
+        runtime.is_ready.return_value = False
+        status, response = asyncio.run(
+            handle_summary_request(
+                runtime,
+                {
+                    "version": "v1",
+                    "thought_id": "cron:unready",
+                    "summary": "机器人暂时断开连接。",
+                },
+                voice=DEFAULT_VOICE,
+                speech_preparer=prepare,
+            )
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(response["error"], "body_unavailable")
+        prepare.assert_not_awaited()
 
     def test_voice_uses_existing_default_and_environment_override(self):
         self.assertEqual(load_summary_voice({}), DEFAULT_VOICE)

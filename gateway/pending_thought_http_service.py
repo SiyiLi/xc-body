@@ -8,6 +8,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import sys
 from collections.abc import Mapping
@@ -36,6 +37,8 @@ TOKEN_REQUIRED_MESSAGE = (
 )
 _AUTHENTICATED_PATHS = frozenset(("/mcp", "/readyz", "/summary/v1"))
 _MAX_SUMMARY_REQUEST_BYTES = 4096
+_RECOVERY_DELAY_SECONDS = 5
+logger = logging.getLogger(__name__)
 
 
 def is_loopback_bind_host(host: str) -> bool:
@@ -121,13 +124,39 @@ async def _send_auth_failure(send: Any) -> None:
 async def _readiness_payload(
     runtime: PendingThoughtRuntime,
 ) -> dict[str, object]:
-    machine = runtime.machine
     return {
         "ok": await runtime.is_ready(),
-        "pending_thought_id": (
-            machine.pending_thought_id if machine is not None else None
-        ),
+        "pending_thought_id": await runtime.pending_thought_id(),
     }
+
+
+async def _restore_pending_runtime_if_needed(
+    session: Any,
+    runtime: PendingThoughtRuntime,
+    avatar_path: str,
+) -> bool:
+    if await runtime.is_ready():
+        return True
+    try:
+        await prepare_pending_runtime(session, runtime, avatar_path)
+    except PendingThoughtServiceError:
+        return False
+    logger.info("StackChan session restored with the reviewed avatar")
+    return True
+
+
+async def _maintain_pending_runtime(
+    session: Any,
+    runtime: PendingThoughtRuntime,
+    avatar_path: str,
+) -> None:
+    while True:
+        await _restore_pending_runtime_if_needed(
+            session,
+            runtime,
+            avatar_path,
+        )
+        await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
 
 
 def build_app(
@@ -205,15 +234,22 @@ def build_app(
                 )
                 async with session:
                     await session.initialize()
-                    await prepare_pending_runtime(
-                        session,
-                        runtime,
-                        config.avatar_path,
-                    )
                     async with manager.run():
+                        recovery_task = asyncio.create_task(
+                            _maintain_pending_runtime(
+                                session,
+                                runtime,
+                                config.avatar_path,
+                            )
+                        )
                         try:
                             yield
                         finally:
+                            recovery_task.cancel()
+                            await asyncio.gather(
+                                recovery_task,
+                                return_exceptions=True,
+                            )
                             await wait_for_stackchan_event_tasks(session)
 
     routes = [

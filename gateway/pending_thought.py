@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal, Protocol, cast
@@ -25,14 +26,11 @@ _MAX_AUDIO_BASE64_CHARS = 1_048_576
 _MAX_OPUS_PACKETS = 4096
 _MAX_OPUS_PACKET_BYTES = 1275
 _REQUIRED_OPUS_PACKET_DURATION_MS = 60
+_OFFER_TTL_SECONDS = 30 * 60
 
 
 class PendingThoughtError(ValueError):
     """A pending-thought request or state transition is invalid."""
-
-
-class PendingOfferExistsError(PendingThoughtError):
-    """A second offer cannot replace the thought awaiting acknowledgment."""
 
 
 @dataclass(frozen=True)
@@ -47,7 +45,7 @@ class PendingThought:
 class ThoughtOutcome:
     thought_id: str
     decision: Decision
-    state: Literal["ignored", "remembered", "waiting", "told"]
+    state: Literal["expired", "ignored", "remembered", "waiting", "told"]
 
 
 class KnockPort(Protocol):
@@ -231,21 +229,31 @@ def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
 class KnockWaitTell:
     """Hold one offer; suppress IDs retained in bounded process memory."""
 
-    def __init__(self, knock_port: KnockPort, tell_port: TellPort):
+    def __init__(
+        self,
+        knock_port: KnockPort,
+        tell_port: TellPort,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._knock_port = knock_port
         self._tell_port = tell_port
+        self._clock = clock
         self._outcomes: OrderedDict[str, ThoughtOutcome] = OrderedDict()
         self._pending: PendingThought | None = None
+        self._pending_expires_at: float | None = None
         self._lock = RLock()
 
     @property
     def pending_thought_id(self) -> str | None:
         with self._lock:
+            self._expire_pending()
             return self._pending.thought_id if self._pending else None
 
     def submit(self, payload: Mapping[str, object]) -> ThoughtOutcome:
         thought = parse_pending_thought(payload)
         with self._lock:
+            self._expire_pending()
             previous = self._outcomes.get(thought.thought_id)
             if previous is not None:
                 return previous
@@ -254,20 +262,21 @@ class KnockWaitTell:
             if thought.decision == "remember":
                 return self._record(thought, "remembered")
             if self._pending is not None:
-                raise PendingOfferExistsError(
-                    f"thought {self._pending.thought_id!r} "
-                    "is awaiting acknowledgment"
-                )
+                return self._record(thought, "ignored")
             self._pending = thought
             try:
                 self._knock_port.knock(thought.thought_id)
             except Exception:
                 self._pending = None
+                self._pending_expires_at = None
+                self._record(thought, "ignored")
                 raise
+            self._pending_expires_at = self._clock() + _OFFER_TTL_SECONDS
             return self._record(thought, "waiting")
 
     def acknowledge_head_gesture(self) -> ThoughtOutcome | None:
         with self._lock:
+            self._expire_pending()
             thought = self._pending
             if thought is None:
                 return None
@@ -275,7 +284,21 @@ class KnockWaitTell:
                 raise RuntimeError("pending offer has no prepared audio")
             self._tell_port.tell(thought.thought_id, thought.audio_base64)
             self._pending = None
+            self._pending_expires_at = None
             return self._record(thought, "told")
+
+    def _expire_pending(self) -> None:
+        thought = self._pending
+        expires_at = self._pending_expires_at
+        if (
+            thought is None
+            or expires_at is None
+            or self._clock() < expires_at
+        ):
+            return
+        self._pending = None
+        self._pending_expires_at = None
+        self._record(thought, "expired")
 
     def handle_stackchan_event(
         self, event: Mapping[str, object]
@@ -291,7 +314,9 @@ class KnockWaitTell:
     def _record(
         self,
         thought: PendingThought,
-        state: Literal["ignored", "remembered", "waiting", "told"],
+        state: Literal[
+            "expired", "ignored", "remembered", "waiting", "told"
+        ],
     ) -> ThoughtOutcome:
         outcome = ThoughtOutcome(
             thought_id=thought.thought_id,

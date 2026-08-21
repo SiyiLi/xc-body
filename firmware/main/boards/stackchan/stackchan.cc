@@ -2148,7 +2148,7 @@ private:
     };
 
     void InitializePowerSaveTimer() {
-        power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
+        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(10);
@@ -2156,9 +2156,6 @@ private:
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
-        });
-        power_save_timer_->OnShutdownRequest([this]() {
-            pmic_->PowerOff();
         });
         power_save_timer_->SetEnabled(true);
     }
@@ -3986,6 +3983,7 @@ private:
             throw std::runtime_error("another physical behavior is active");
         }
 
+        power_save_timer_->WakeUp();
         xc_body_knock_id_ = behavior_id;
         xc_body_knock_started_us_ = esp_timer_get_time();
         xc_body_knock_step_.store(
@@ -4416,6 +4414,7 @@ private:
         uint64_t now_us = esp_timer_get_time();
 
         if (now) {
+            power_save_timer_->WakeUp();
             // Rising edge. Capture the sensor state for the falling-edge
             // log either way — without this, a press that begins during
             // the post-reaction cooldown and is held until the cooldown
@@ -7410,6 +7409,10 @@ public:
             power_save_timer_->WakeUp();
         }
         WifiBoard::SetPowerSaveLevel(level);
+    }
+
+    virtual bool CanPowerSaveWithTransport() override {
+        return true;
     }
 
     // Phase 4 audio (Issue #76): drive avatar mouth animation alongside TTS

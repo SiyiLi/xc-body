@@ -100,6 +100,9 @@ The agreed North Star is:
   USB status and application reboot are physically verified. The device has
   the saved authenticated endpoint `wss://43.143.37.91` and its token remains
   set.
+- Current firmware source permits StackChan to dim its display while the
+  control transport remains connected and wakes it for touch, knock, or TTS.
+  This power behavior still requires flashing and physical acceptance.
 - OpenClaw's managed MCP registry can consume remote Streamable HTTP servers
   with authentication headers, TLS verification, timeouts, and tool filters.
 - The executable Milestone 2 boundary exposes only `consider_thought` over MCP
@@ -108,10 +111,10 @@ The agreed North Star is:
 - Before serving, it restores and checksum-verifies the reviewed avatar, then
   binds readiness to the connected, initialized device session. A device
   session change makes readiness false and body actions fail closed.
-- The service has no internal reconnect loop. Upstream transport loss exits the
-  process; a safe reconnect follow-up must create a fresh runtime, preserve the
-  existing startup restore, define pending-state loss, and verify supervisor
-  restart behavior.
+- The HTTP service becomes unready on a robot-session change and restores the
+  reviewed avatar in the returning session without replacing a still-valid
+  pending offer. Upstream gateway transport loss exits the process so Docker
+  can restart a fresh runtime; process restart forgets old offers by design.
 - Its silent knock is a named firmware behavior: `thinking`, pose `(12,50)` at
   low speed, a ten-second hold, then `(0,43)` and `idle`. The gateway returns
   only after firmware reports physical completion. A CoreS3 head pat or head
@@ -156,8 +159,6 @@ These are inspiration only. Do not import their feature scope into Milestone 1.
 
 ## Unknowns That Must Not Be Guessed
 
-- Final supervisor restart policy and reviewed resource limits.
-- Automatic recovery behavior after an upstream session or process failure.
 - Reviewed motion calibration for `pleased` and `concerned`.
 - Whether the runtime-loaded avatar set survives any device or gateway restart.
 

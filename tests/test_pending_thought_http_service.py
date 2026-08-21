@@ -89,13 +89,14 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
         self.assertEqual(missing[0]["status"], 401)
         self.assertEqual(accepted[0]["status"], 204)
         runtime = SimpleNamespace(
-            machine=SimpleNamespace(pending_thought_id="eval:private"),
             is_ready=AsyncMock(return_value=True),
+            pending_thought_id=AsyncMock(return_value="eval:private"),
         )
         self.assertEqual(
             asyncio.run(_readiness_payload(runtime)),
             {"ok": True, "pending_thought_id": "eval:private"},
         )
+        runtime.pending_thought_id.assert_awaited_once_with()
 
     def test_summary_state_requires_exact_downstream_bearer(self):
         inner = RecordingApp()

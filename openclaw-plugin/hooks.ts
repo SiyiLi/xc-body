@@ -12,6 +12,21 @@ export function registerCompletionHooks(
   integration: CompletionIntegration,
 ): void {
   api.on(
+    "agent_end",
+    async (event) => {
+      if (!event.success || !event.runId) {
+        return;
+      }
+      await integration.handle(
+        "agent",
+        event.runId,
+        extractCompletedResult(event.messages),
+      );
+    },
+    { timeoutMs: 300_000 },
+  );
+
+  api.on(
     "subagent_ended",
     async (event) => {
       if (

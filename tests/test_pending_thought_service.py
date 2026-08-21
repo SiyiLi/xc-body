@@ -8,6 +8,9 @@ from contextlib import contextmanager, redirect_stderr
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_runtime import PendingThoughtRuntime
+from gateway.pending_thought_http_service import (
+    _restore_pending_runtime_if_needed,
+)
 from gateway.pending_thought_service import (
     PendingThoughtServiceError,
     create_service_server,
@@ -160,6 +163,36 @@ class PendingThoughtServiceTests(unittest.TestCase):
                 )
             )
         runtime.mark_avatar_ready.assert_not_called()
+
+    def test_reconnect_restores_avatar_without_replacing_pending_offer(self):
+        status = {
+            "connected": True,
+            "initialized": True,
+            "session_id": "device-session-2",
+        }
+        session = AsyncMock()
+        session.call_tool.side_effect = [
+            status,
+            {"ok": True, "checksum": REVIEWED_AVATAR_CHECKSUM},
+            status,
+        ]
+        runtime = Mock()
+        runtime.is_ready = AsyncMock(return_value=False)
+        machine = types.SimpleNamespace(pending_thought_id="cron:waiting")
+        runtime.machine = machine
+
+        restored = asyncio.run(
+            _restore_pending_runtime_if_needed(
+                session,
+                runtime,
+                "/srv/xc-body/avatar.rgb565le",
+            )
+        )
+
+        self.assertTrue(restored)
+        self.assertIs(runtime.machine, machine)
+        self.assertEqual(machine.pending_thought_id, "cron:waiting")
+        runtime.mark_avatar_ready.assert_called_once_with("device-session-2")
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_offer_gesture_posts_prepared_audio(self, urlopen):

@@ -209,10 +209,10 @@
 - **Consequence:** One offer may wait at a time. Prepared audio is never
   passed to the knock boundary. The tell boundary uses `thought_id` to suppress
   duplicates while that ID remains in bounded memory for the running process;
-  restart or eviction may replay it. No text-to-`say` path exists. Restart
-  persistence, batching, quiet hours, and selection policy remain Milestone 3
-  or later work. A tracked local producer converts OpenClaw's chosen sentence
-  to the prepared-audio contract; the remote gateway never receives text.
+  restart or eviction may replay it. No text-to-`say` path exists. Milestone 3
+  adds bounded expiry and recovery while intentionally retaining process-local
+  state. A tracked local producer converts OpenClaw's chosen sentence to the
+  prepared-audio contract; the remote gateway never receives text.
 
 ## D-020: Bind Milestone 2 Readiness to the Reviewed Device Session
 
@@ -224,5 +224,6 @@
   non-loopback binds.
 - **Reason:** A reconnect must not report success while placeholder assets may
   be active, and exposed service traffic must be authenticated.
-- **Consequence:** A device session change fails closed. Automatic reconnect,
-  restart persistence, and cross-session pending state remain Milestone 3.
+- **Consequence:** A device session change fails closed until Milestone 3
+  reloads the reviewed avatar. A robot reconnect may retain the process-local
+  offer; a service restart does not.

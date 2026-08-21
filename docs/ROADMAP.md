@@ -20,9 +20,10 @@ stroke acknowledged it, and the robot played clear speech.
 
 In progress. Native OpenClaw completion integration is one part: successful
 subagent and cron completions may be classified and offered through XC Body.
-The broader milestone also requires pending thoughts to survive restarts,
-defined cross-restart duplicate handling, quiet hours and cooldowns, and
-reconnection that restores authoritative state.
+The broader milestone adds a 30-minute in-process offer lifetime, bounded
+submission retries, automatic robot-session restoration, supervised process
+recovery, and connected idle display dimming. Process restart forgets old
+offers; no durable queue or policy database is planned.
 
 ## Milestone 4: Ambient Life
 

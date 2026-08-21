@@ -81,6 +81,27 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
   ]);
 });
 
+test("deduplicates one run observed by different completion hooks", async () => {
+  let completions = 0;
+  const integration = new CompletionIntegration({
+    async complete() {
+      completions += 1;
+      return { text: '{"decision":"skip","summary":""}' };
+    },
+    async submit() {
+      return true;
+    },
+  });
+
+  assert.equal(await integration.handle("agent", "run-7", "done"), "skipped");
+  assert.equal(
+    await integration.handle("subagent", "run-7", "done"),
+    "duplicate",
+  );
+  assert.equal(await integration.handle("cron", "run-7", "done"), "duplicate");
+  assert.equal(completions, 1);
+});
+
 test("model failures and malformed output fail closed without submission", async () => {
   let submitted = 0;
   const throwing = new CompletionIntegration({
@@ -128,7 +149,7 @@ test("remote rejection stores only an operational outcome", async () => {
   assert.equal(JSON.stringify(integration).includes(privateSummary), false);
 });
 
-test("authenticated submission rejects redirects and malformed responses", async () => {
+test("authenticated submission validates responses and retries briefly", async () => {
   const calls: Array<{ input: unknown; init: RequestInit | undefined }> = [];
   const acceptedFetch = async (input: unknown, init?: RequestInit) => {
     calls.push({ input, init });
@@ -137,7 +158,7 @@ test("authenticated submission rejects redirects and malformed responses", async
   const config = {
     summaryUrl: "https://body.invalid/xc-body/summary/v1",
     token: "secret-token",
-    timeoutMs: 1_000,
+    timeoutMs: 5_000,
   };
   const payload = {
     version: "v1" as const,
@@ -161,4 +182,38 @@ test("authenticated submission rejects redirects and malformed responses", async
     await submitSummary(config, payload, rejectedFetch as typeof fetch),
     false,
   );
+
+  let transientCalls = 0;
+  const transientFetch = async () => {
+    transientCalls += 1;
+    if (transientCalls === 1) {
+      return {
+        ok: false,
+        status: 503,
+        body: {
+          async cancel() {
+            throw new Error("response cleanup failed");
+          },
+        },
+      } as unknown as Response;
+    }
+    return new Response('{"ok":true}', { status: 200 });
+  };
+
+  assert.equal(
+    await submitSummary(config, payload, transientFetch as typeof fetch),
+    true,
+  );
+  assert.equal(transientCalls, 2);
+
+  let permanentCalls = 0;
+  const permanentFetch = async () => {
+    permanentCalls += 1;
+    return new Response("Unauthorized", { status: 401 });
+  };
+  assert.equal(
+    await submitSummary(config, payload, permanentFetch as typeof fetch),
+    false,
+  );
+  assert.equal(permanentCalls, 1);
 });

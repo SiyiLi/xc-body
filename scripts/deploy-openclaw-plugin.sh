@@ -58,6 +58,9 @@ PY
 )
 openclaw config set plugins.entries.xc-body-native.config \
   "$config" --strict-json >/dev/null
+openclaw config set \
+  plugins.entries.xc-body-native.hooks.allowConversationAccess \
+  true --strict-json >/dev/null
 openclaw plugins enable xc-body-native >/dev/null
 openclaw mcp unset xc-body >/dev/null 2>&1 || true
 openclaw mcp unset xc-body-embodiment >/dev/null 2>&1 || true
@@ -97,7 +100,7 @@ hooks = {
     for hook in result.get("typedHooks", [])
     if isinstance(hook, dict)
 }
-required_hooks = {"cron_changed", "subagent_ended"}
+required_hooks = {"agent_end", "cron_changed", "subagent_ended"}
 if not required_hooks.issubset(hooks):
     raise SystemExit("XC Body plugin hooks are incomplete")
 PY

@@ -6,10 +6,10 @@ This path is one part of Milestone 3. It automates selection and delivery of
 completion offers; it does not by itself complete Milestone 3's continuity and
 restraint scope.
 
-`openclaw-plugin/` subscribes to typed `subagent_ended` and `cron_changed`
-hooks. Successful runs are deduplicated operationally, classified through
-`api.runtime.llm.complete`, and skipped or submitted as a versioned Chinese
-summary over authenticated TLS. No interactive-turn hook is present.
+`openclaw-plugin/` subscribes to typed `agent_end`, `subagent_ended`, and
+`cron_changed` hooks. Successful runs are deduplicated by run ID across hook
+boundaries, classified through `api.runtime.llm.complete`, and skipped or
+submitted as a versioned Chinese summary over authenticated TLS.
 
 The VM `/summary/v1` boundary keeps plaintext in request scope, synthesizes and
 validates prepared Opus, then passes only the existing prepared-audio offer
@@ -168,6 +168,8 @@ uses `thought_id` for request idempotency. Restart or ID eviction may replay it.
 The running process holds at most one offer. Restart persistence, quiet hours,
 cooldowns, batching, and background-event selection remain outside Milestone 2
 so this slice does not grow into a second memory or policy system.
+Milestone 3 expires that offer after 30 minutes and keeps it only across robot
+reconnects that leave the pending service process alive.
 
 The OpenClaw-facing boundary is
 `gateway/openclaw_thought_service.py`. It exposes the same semantic decision
@@ -193,13 +195,12 @@ readiness false and causes body actions to fail before movement or playback.
 The HTTP boundary requires a distinct downstream bearer token when bound to a
 non-loopback interface. A loopback-only bind may omit that credential.
 
-Here, persistent means one session for the connected process lifetime, not an
-internal reconnect loop. An upstream transport loss terminates the current
-service. The runtime cannot be rebound because its machine and body are tied to
-the original session, and Milestone 2 deliberately has no cross-session pending
-state. Docker Compose starts a fresh runtime from the same TC image digest and
-restores the reviewed avatar on each process start. A follow-up must verify the
-exact pending-state loss after supervisor restart or disconnect.
+The HTTP service keeps its state machine while the gateway MCP session remains
+alive. A robot-session change makes it unready; a background check reloads the
+reviewed avatar and binds the returning session without replacing a still-valid
+offer. Loss of the gateway MCP transport terminates the process, and Docker
+starts a fresh runtime from the same TC image digest. Process restart therefore
+forgets old offers by design.
 
 ### StackChan gateway
 

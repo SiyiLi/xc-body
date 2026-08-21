@@ -81,6 +81,7 @@ public:
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging);
     virtual std::string GetSystemInfoJson();
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
+    virtual bool CanPowerSaveWithTransport() { return false; }
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
     // Phase 4 audio (Issue #76): TTS playback hooks. Default no-op so non-

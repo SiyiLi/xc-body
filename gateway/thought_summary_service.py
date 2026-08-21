@@ -12,7 +12,10 @@ from gateway.pending_thought import (
     decode_prepared_audio,
     validate_thought_id,
 )
-from gateway.pending_thought_runtime import PendingThoughtRuntime
+from gateway.pending_thought_runtime import (
+    PendingThoughtRuntime,
+    PendingThoughtRuntimeError,
+)
 from gateway.speech_preparation import (
     DEFAULT_VOICE,
     VOICE_ENV,
@@ -103,6 +106,15 @@ async def handle_summary_request(
     except ThoughtSummaryError:
         return 400, {"ok": False, "error": "invalid_request"}
 
+    if await runtime.pending_thought_id() is not None:
+        return 200, {
+            "ok": True,
+            "thought_id": request.thought_id,
+            "state": "ignored",
+        }
+    if not await runtime.is_ready():
+        return 503, {"ok": False, "error": "body_unavailable"}
+
     try:
         audio_base64 = await speech_preparer(request.summary, voice)
         decode_prepared_audio(audio_base64)
@@ -122,7 +134,9 @@ async def handle_summary_request(
                 "audio_base64": audio_base64,
             }
         )
-    except Exception:
+    except PendingThoughtRuntimeError:
+        return 503, {"ok": False, "error": "body_unavailable"}
+    except PendingThoughtError:
         return 409, {"ok": False, "error": "offer_rejected"}
     return 200, {
         "ok": True,

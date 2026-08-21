@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 from gateway.pending_thought import (
     KnockWaitTell,
-    PendingOfferExistsError,
     PendingThoughtError,
     decode_prepared_audio,
     parse_pending_thought,
@@ -165,21 +164,41 @@ class PendingThoughtTests(unittest.TestCase):
             )
         )
 
-    def test_knock_failure_clears_pending_offer(self):
+    def test_knock_failure_clears_offer_and_suppresses_retry(self):
         body = RecordingBody(fail_knock=True)
         machine = KnockWaitTell(body, body)
         with self.assertRaisesRegex(RuntimeError, "knock failure"):
             offer(machine, "failed")
         self.assertIsNone(machine.pending_thought_id)
+        self.assertEqual(offer(machine, "failed").state, "ignored")
+        self.assertEqual(body.knocks, ["failed"])
         self.assertEqual(remember(machine, "retry").state, "remembered")
 
-    def test_second_offer_cannot_replace_pending_thought(self):
+    def test_second_offer_is_ignored_without_replacing_pending_thought(self):
         body = RecordingBody()
         machine = KnockWaitTell(body, body)
         offer(machine, "first")
-        with self.assertRaises(PendingOfferExistsError):
-            offer(machine, "second")
+
+        second = offer(machine, "second")
+
+        self.assertEqual(second.state, "ignored")
         self.assertEqual(machine.pending_thought_id, "first")
+        self.assertEqual(body.knocks, ["first"])
+
+    def test_offer_expires_after_thirty_minutes(self):
+        now = [0.0]
+        body = RecordingBody()
+        machine = KnockWaitTell(body, body, clock=lambda: now[0])
+        offer(machine, "expired")
+
+        now[0] = 30 * 60
+
+        self.assertIsNone(machine.acknowledge_head_gesture())
+        self.assertIsNone(machine.pending_thought_id)
+        self.assertEqual(offer(machine, "expired").state, "expired")
+        self.assertEqual(offer(machine, "fresh").state, "waiting")
+        self.assertEqual(body.knocks, ["expired", "fresh"])
+        self.assertEqual(body.tells, [])
 
     @patch("gateway.pending_thought._MAX_RECORDED_OUTCOMES", 2)
     def test_eviction_preserves_pending_but_allows_old_completed_id(self):
