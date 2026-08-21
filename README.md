@@ -174,17 +174,25 @@ explicitly authorized `scripts/deploy.sh --candidate` run instead packages the
 current working tree and records the deployment as a candidate. Both paths
 regenerate and verify the reviewed avatar, build the direct gateway source as a
 `linux/amd64` image, and push it to TC Artifactory. The VM pulls the exact image
-digests and runs only the gateway,
-pending-thought service, and Caddy proxy. Caddy serves the authenticated WSS,
+digests and runs only the gateway, pending-thought service, and Caddy proxy.
+Caddy serves the authenticated WSS,
 avatar, playback, gateway MCP, and XC Body MCP routes through
-`https://43.143.37.91`; raw service ports remain private. The controller also
-registers the local OpenClaw producer, which calls the authenticated remote
-`consider_thought` service. It does not flash firmware or reconfigure the
-firewall.
+`https://43.143.37.91`; raw service ports remain private. This command does not
+configure or restart OpenClaw.
 
-The deployment script never flashes firmware. When runtime code uses a new
-firmware-owned tool, flash and physically accept the matching firmware before
-deploying that runtime.
+Deploy the local OpenClaw plugin separately when its source or configuration
+changes:
+
+```sh
+scripts/deploy-openclaw-plugin.sh
+```
+
+That command installs and configures the linked plugin, restarts OpenClaw, and
+verifies the required completion hooks. It does not deploy the VM services.
+Neither deployment command flashes firmware or reconfigures the firewall.
+
+When runtime code uses a new firmware-owned tool, flash and physically accept
+the matching firmware before deploying that runtime.
 
 ## Repository Layout
 

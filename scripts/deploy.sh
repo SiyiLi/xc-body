@@ -10,7 +10,6 @@ REGISTRY_REPO=$REGISTRY/nvcr.io/xc-body
 RUNTIME_TAG=$REGISTRY_REPO:xc-body-0.1.0
 CADDY_TAG=$REGISTRY_REPO:caddy-2.11.4
 CADDY_SOURCE=caddy:2.11.4-alpine
-SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
 EXPECTED_AVATAR_SHA256=daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
@@ -175,90 +174,6 @@ login_vm_to_registry() {
   unset credentials password
 }
 
-remote_pending_token() {
-  ssh_vm bash -s <<'REMOTE'
-set -eu
-env_file=/data/xc-body/deploy/gateway.env
-value() {
-  awk -v key="$1" '
-    index($0, key "=") == 1 { sub(/^[^=]*=/, ""); found = $0 }
-    END { print found }
-  ' "$env_file"
-}
-token=$(value XC_BODY_PENDING_HTTP_TOKEN)
-[ -n "$token" ] || token=$(value STACKCHAN_TOKEN)
-[ -n "$token" ] || token=$(value BEARER_TOKEN)
-[ -n "$token" ]
-printf '%s' "$token"
-REMOTE
-}
-
-configure_openclaw_plugin() {
-  local token config
-  if ! openclaw plugins inspect xc-body-native --json >/dev/null 2>&1; then
-    openclaw plugins install --link "$REPO/openclaw-plugin" >/dev/null
-  fi
-  token=$(remote_pending_token)
-  config=$(python3 - "$token" "$SUMMARY_URL" <<'PY'
-import json
-import sys
-
-token, url = sys.argv[1:]
-print(json.dumps(
-    {"summaryUrl": url, "token": token, "timeoutMs": 120000},
-    separators=(",", ":"),
-))
-PY
-)
-  openclaw config set plugins.entries.xc-body-native.config \
-    "$config" --strict-json >/dev/null
-  openclaw plugins enable xc-body-native >/dev/null
-  openclaw mcp unset xc-body >/dev/null 2>&1 || true
-  openclaw mcp unset xc-body-embodiment >/dev/null 2>&1 || true
-  unset token config
-}
-
-probe_openclaw_plugin() {
-  local gateway_probe=$STATE_DIR/openclaw-gateway.json
-  local plugin_probe=$STATE_DIR/openclaw-xc-body-native.json
-  openclaw gateway restart --json \
-    > "$STATE_DIR/openclaw-gateway-restart.json"
-  openclaw gateway status --json --require-rpc > "$gateway_probe"
-  openclaw plugins inspect xc-body-native --runtime --json > "$plugin_probe"
-  python3 - "$gateway_probe" "$plugin_probe" <<'PY'
-import json
-import sys
-
-gateway_path, plugin_path = sys.argv[1:]
-with open(gateway_path, encoding="utf-8") as source:
-    gateway = json.load(source)
-with open(plugin_path, encoding="utf-8") as source:
-    result = json.load(source)
-
-runtime = gateway.get("service", {}).get("runtime", {})
-if (
-    runtime.get("status") != "running"
-    or gateway.get("rpc", {}).get("ok") is not True
-):
-    raise SystemExit("OpenClaw Gateway did not restart healthy")
-
-plugin = result.get("plugin", {})
-if plugin.get("status") != "loaded" or plugin.get("enabled") is not True:
-    raise SystemExit("XC Body plugin is not loaded and enabled")
-if result.get("diagnostics"):
-    raise SystemExit("XC Body plugin has runtime diagnostics")
-hooks = {
-    hook.get("name")
-    for hook in result.get("typedHooks", [])
-    if isinstance(hook, dict)
-}
-required_hooks = {"cron_changed", "subagent_ended"}
-if not required_hooks.issubset(hooks):
-    raise SystemExit("XC Body plugin hooks are incomplete")
-PY
-  echo "openclaw_probe=xc-body-native:runtime:ok"
-}
-
 deploy_images() {
   local runtime_ref=$1 caddy_ref=$2 source_commit=$3
   local avatar_sha256=$4 deployment_kind=$5
@@ -266,8 +181,6 @@ deploy_images() {
   ssh_vm bash -s -- \
     "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
     "$deployment_kind" < "$REPO/deploy/install.sh"
-  configure_openclaw_plugin
-  probe_openclaw_plugin
 }
 
 while [ "$#" -gt 0 ]; do
@@ -292,7 +205,7 @@ if [ "$status_only" = "1" ]; then
   exit 0
 fi
 
-for command in docker git openclaw python3 shasum ssh tar; do
+for command in docker git python3 shasum ssh tar; do
   require_command "$command"
 done
 [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
@@ -300,8 +213,7 @@ done
 source_commit=$(git -C "$REPO" rev-parse HEAD)
 
 dirty_paths=$(git -C "$REPO" status --porcelain --untracked-files=all -- \
-  gateway stackchan stackchan_mcp contracts deploy openclaw-plugin scripts \
-  pyproject.toml)
+  gateway stackchan stackchan_mcp contracts deploy scripts pyproject.toml)
 dirty=false
 if [ -n "$dirty_paths" ]; then
   dirty=true
