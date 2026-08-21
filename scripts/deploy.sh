@@ -10,9 +10,7 @@ REGISTRY_REPO=$REGISTRY/nvcr.io/xc-body
 RUNTIME_TAG=$REGISTRY_REPO:xc-body-0.1.0
 CADDY_TAG=$REGISTRY_REPO:caddy-2.11.4
 CADDY_SOURCE=caddy:2.11.4-alpine
-PENDING_MCP_URL=https://43.143.37.91/xc-body/mcp
-OPENCLAW_VENV=$REPO/.venv
-OPENCLAW_PYTHON=$OPENCLAW_VENV/bin/python
+SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
 EXPECTED_AVATAR_SHA256=daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
@@ -195,65 +193,70 @@ printf '%s' "$token"
 REMOTE
 }
 
-prepare_openclaw_producer() {
-  if ! "$OPENCLAW_PYTHON" -c \
-    'import edge_tts,importlib.metadata,mcp.server; assert edge_tts.__version__ == "7.2.3" and importlib.metadata.version("mcp") == "1.29.0"' \
-    >/dev/null 2>&1; then
-    uv venv --python 3.11 "$OPENCLAW_VENV"
-    uv pip install --python "$OPENCLAW_PYTHON" \
-      -r "$REPO/deploy/openclaw-requirements.txt"
-  fi
-}
-
-configure_openclaw() {
+configure_openclaw_plugin() {
   local token config
-  prepare_openclaw_producer
+  if ! openclaw plugins inspect xc-body-native --json >/dev/null 2>&1; then
+    openclaw plugins install --link "$REPO/openclaw-plugin" >/dev/null
+  fi
   token=$(remote_pending_token)
-  config=$(python3 - \
-    "$token" "$PENDING_MCP_URL" "$OPENCLAW_PYTHON" "$REPO" <<'PY'
+  config=$(python3 - "$token" "$SUMMARY_URL" <<'PY'
 import json
 import sys
 
-token, url, python, repo = sys.argv[1:]
-print(json.dumps({
-    "enabled": True,
-    "command": python,
-    "args": ["-m", "gateway.openclaw_thought_service"],
-    "cwd": repo,
-    "env": {
-        "XC_BODY_PENDING_MCP_URL": url,
-        "XC_BODY_PENDING_MCP_TOKEN": token,
-        "XC_BODY_VOICE": "zh-CN-YunxiNeural",
-    },
-    "connectTimeout": 90,
-    "timeout": 180,
-    "supportsParallelToolCalls": False,
-    "toolFilter": {"include": ["consider_thought"]},
-}, separators=(",", ":")))
+token, url = sys.argv[1:]
+print(json.dumps(
+    {"summaryUrl": url, "token": token, "timeoutMs": 120000},
+    separators=(",", ":"),
+))
 PY
 )
-  openclaw mcp set xc-body "$config" >/dev/null
+  openclaw config set plugins.entries.xc-body-native.config \
+    "$config" --strict-json >/dev/null
+  openclaw plugins enable xc-body-native >/dev/null
+  openclaw mcp unset xc-body >/dev/null 2>&1 || true
   openclaw mcp unset xc-body-embodiment >/dev/null 2>&1 || true
-  openclaw mcp reload >/dev/null
   unset token config
 }
 
-probe_openclaw() {
-  local probe=$STATE_DIR/openclaw-xc-body.json
-  openclaw mcp probe xc-body --json > "$probe"
-  python3 - "$probe" <<'PY'
+probe_openclaw_plugin() {
+  local gateway_probe=$STATE_DIR/openclaw-gateway.json
+  local plugin_probe=$STATE_DIR/openclaw-xc-body-native.json
+  openclaw gateway restart --json \
+    > "$STATE_DIR/openclaw-gateway-restart.json"
+  openclaw gateway status --json --require-rpc > "$gateway_probe"
+  openclaw plugins inspect xc-body-native --runtime --json > "$plugin_probe"
+  python3 - "$gateway_probe" "$plugin_probe" <<'PY'
 import json
 import sys
 
-with open(sys.argv[1], encoding="utf-8") as probe_file:
-    probe = json.load(probe_file)
-if probe.get("diagnostics"):
-    raise SystemExit(f"OpenClaw MCP diagnostics: {probe['diagnostics']}")
-tools = probe.get("tools", [])
-if not any(name.endswith("consider_thought") for name in tools):
-    raise SystemExit(f"consider_thought is missing: {tools}")
-print("openclaw_probe=xc-body:consider_thought:ok")
+gateway_path, plugin_path = sys.argv[1:]
+with open(gateway_path, encoding="utf-8") as source:
+    gateway = json.load(source)
+with open(plugin_path, encoding="utf-8") as source:
+    result = json.load(source)
+
+runtime = gateway.get("service", {}).get("runtime", {})
+if (
+    runtime.get("status") != "running"
+    or gateway.get("rpc", {}).get("ok") is not True
+):
+    raise SystemExit("OpenClaw Gateway did not restart healthy")
+
+plugin = result.get("plugin", {})
+if plugin.get("status") != "loaded" or plugin.get("enabled") is not True:
+    raise SystemExit("XC Body plugin is not loaded and enabled")
+if result.get("diagnostics"):
+    raise SystemExit("XC Body plugin has runtime diagnostics")
+hooks = {
+    hook.get("name")
+    for hook in result.get("typedHooks", [])
+    if isinstance(hook, dict)
+}
+required_hooks = {"cron_changed", "subagent_ended"}
+if not required_hooks.issubset(hooks):
+    raise SystemExit("XC Body plugin hooks are incomplete")
 PY
+  echo "openclaw_probe=xc-body-native:runtime:ok"
 }
 
 deploy_images() {
@@ -263,8 +266,8 @@ deploy_images() {
   ssh_vm bash -s -- \
     "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
     "$deployment_kind" < "$REPO/deploy/install.sh"
-  configure_openclaw
-  probe_openclaw
+  configure_openclaw_plugin
+  probe_openclaw_plugin
 }
 
 while [ "$#" -gt 0 ]; do
@@ -289,7 +292,7 @@ if [ "$status_only" = "1" ]; then
   exit 0
 fi
 
-for command in docker ffmpeg git openclaw python3 shasum ssh tar uv; do
+for command in docker git openclaw python3 shasum ssh tar; do
   require_command "$command"
 done
 [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
@@ -297,7 +300,8 @@ done
 source_commit=$(git -C "$REPO" rev-parse HEAD)
 
 dirty_paths=$(git -C "$REPO" status --porcelain --untracked-files=all -- \
-  gateway stackchan stackchan_mcp contracts deploy scripts pyproject.toml)
+  gateway stackchan stackchan_mcp contracts deploy openclaw-plugin scripts \
+  pyproject.toml)
 dirty=false
 if [ -n "$dirty_paths" ]; then
   dirty=true

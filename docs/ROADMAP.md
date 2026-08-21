@@ -18,9 +18,11 @@ stroke acknowledged it, and the robot played clear speech.
 
 ## Milestone 3: Continuity and Restraint
 
-After Milestone 2 closes, pending thoughts survive restarts, cross-restart
-duplicate handling is defined, quiet hours and cooldowns are enforced, and
-reconnection restores authoritative state.
+In progress. Native OpenClaw completion integration is one part: successful
+subagent and cron completions may be classified and offered through XC Body.
+The broader milestone also requires pending thoughts to survive restarts,
+defined cross-restart duplicate handling, quiet hours and cooldowns, and
+reconnection that restores authoritative state.
 
 ## Milestone 4: Ambient Life
 

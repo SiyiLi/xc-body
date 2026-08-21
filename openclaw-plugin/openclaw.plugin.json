@@ -1,0 +1,44 @@
+{
+  "id": "xc-body-native",
+  "name": "XC Body Native Integration",
+  "description": "Offers selected OpenClaw background completions through XC Body.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "summaryUrl": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "description": "Authenticated XC Body v1 summary endpoint."
+      },
+      "token": {
+        "type": "string",
+        "minLength": 1,
+        "description": "XC Body downstream bearer token."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 180000,
+        "default": 120000
+      }
+    }
+  },
+  "uiHints": {
+    "summaryUrl": {
+      "label": "Summary endpoint"
+    },
+    "token": {
+      "label": "Bearer token",
+      "sensitive": true
+    },
+    "timeoutMs": {
+      "label": "Request timeout (ms)"
+    }
+  }
+}

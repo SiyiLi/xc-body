@@ -1,5 +1,22 @@
 # Architecture
 
+## Milestone 3 native completion offer path
+
+This path is one part of Milestone 3. It automates selection and delivery of
+completion offers; it does not by itself complete Milestone 3's continuity and
+restraint scope.
+
+`openclaw-plugin/` subscribes to typed `subagent_ended` and `cron_changed`
+hooks. Successful runs are deduplicated operationally, classified through
+`api.runtime.llm.complete`, and skipped or submitted as a versioned Chinese
+summary over authenticated TLS. No interactive-turn hook is present.
+
+The VM `/summary/v1` boundary keeps plaintext in request scope, synthesizes and
+validates prepared Opus, then passes only the existing prepared-audio offer
+contract to the pending-thought runtime. Robot behavior remains the accepted
+silent knock, consent wait, touch acknowledgement, and playback flow.
+
+
 ## Current Deployment Fact
 
 OpenClaw and StackChan run on separate hosts and connect outbound to an

@@ -1,5 +1,21 @@
 # XC Body
 
+## Milestone 3 native OpenClaw integration
+
+The native OpenClaw integration is one part of Milestone 3, not the whole
+milestone. It lives in `openclaw-plugin/`, observes only successful subagent and
+cron completions, and asks OpenClaw's native LLM runtime for a strict `offer` or
+`skip` decision. Accepted offers carry a self-contained Chinese summary to the
+authenticated TLS `/xc-body/summary/v1` endpoint. Ordinary interactive turns
+do not trigger it.
+
+The VM pending-thought service performs Edge TTS, normalization, and validated
+16 kHz mono 60 ms Opus preparation before entering the accepted knock, wait,
+touch, and playback state machine. Summary plaintext is transient request data
+and is not logged or persisted. The older local Python MCP producer is not the
+production autonomous producer.
+
+
 XC Body gives an existing OpenClaw agent a physical presence through the
 official M5Stack StackChan K151/CoreS3 robot.
 
@@ -21,7 +37,11 @@ The product is guided by three qualities:
 
 Milestones 1 and 2 are complete. Production acceptance proved the full
 **Knock, Wait, Tell** interaction through OpenClaw and the physical robot.
-Milestone 3 is next but has not started.
+Milestone 3 is in progress. Its native OpenClaw integration is implemented and
+physically accepted through a candidate deployment: one successful background
+completion was classified, submitted, offered with one knock, acknowledged by
+a head touch, and spoken clearly. The broader milestone also includes
+continuity, restart recovery, duplicate handling, quiet hours, and cooldowns.
 
 Milestone 2 adds a narrow initiative boundary: classify a background result as
 `ignore`, `remember`, or `offer`; offer silently; wait for a deliberate
@@ -45,11 +65,12 @@ A new coding session should read these files in order:
 
 1. [`AGENTS.md`](AGENTS.md)
 2. [`docs/HANDOFF.md`](docs/HANDOFF.md)
-3. [`docs/MILESTONE_2.md`](docs/MILESTONE_2.md)
-4. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
-5. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-6. [`docs/DECISIONS.md`](docs/DECISIONS.md)
-7. [`docs/ROADMAP.md`](docs/ROADMAP.md)
+3. [`docs/MILESTONE_3.md`](docs/MILESTONE_3.md)
+4. [`docs/MILESTONE_2.md`](docs/MILESTONE_2.md)
+5. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
+6. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+7. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+8. [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 The tracked machine-readable boundaries are the manual embodiment
 [`intent contract`][intent-contract] and the Milestone 2

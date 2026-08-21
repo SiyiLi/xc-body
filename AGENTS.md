@@ -6,22 +6,23 @@ Before proposing or making changes, read:
 
 1. `README.md`
 2. `docs/HANDOFF.md`
-3. `docs/MILESTONE_2.md`
-4. `docs/MILESTONE_1.md`
-5. `docs/ARCHITECTURE.md`
-6. `docs/DECISIONS.md`
-7. `docs/ROADMAP.md`
+3. `docs/MILESTONE_3.md`
+4. `docs/MILESTONE_2.md`
+5. `docs/MILESTONE_1.md`
+6. `docs/ARCHITECTURE.md`
+7. `docs/DECISIONS.md`
+8. `docs/ROADMAP.md`
 
 Firmware and gateway source are maintained directly under `firmware/` and
 `stackchan_mcp/`.
 
 ## Current Phase
 
-Milestones 1 and 2 have historical physical acceptance. The current software
-focus is Milestone 3 planning: reproducible deployment, reconnect recovery, and
-continuity. This combined Milestone 2 commit also carries two intentional
-prerequisites: the persistent semantic service hardens serialized safe return,
-and the calibrated curious hold preserves the physically reviewed interaction.
+Milestones 1 and 2 have historical physical acceptance. Milestone 3 is in
+progress. Native OpenClaw completion integration is one part of it; the
+milestone also covers reproducible deployment, reconnect recovery, continuity,
+and restraint. Do not treat completion of the native integration as completion
+of Milestone 3.
 
 Keep the completed Milestone 2 scope limited to:
 

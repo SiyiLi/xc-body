@@ -163,6 +163,19 @@ def is_head_acknowledgment(event: Mapping[str, object]) -> bool:
     ) in head_gestures
 
 
+def validate_thought_id(value: object) -> str:
+    """Return one contract-valid duplicate-suppression identifier."""
+
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or value[0] not in _THOUGHT_ID_FIRST_CHARS
+        or any(character not in _THOUGHT_ID_CHARS for character in value)
+    ):
+        raise PendingThoughtError("thought_id has an invalid format")
+    return value
+
+
 def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
     if not isinstance(payload, Mapping):
         raise PendingThoughtError("pending thought must be a JSON object")
@@ -184,14 +197,7 @@ def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
         raise PendingThoughtError(
             f"unsupported pending-thought version: {payload['version']!r}"
         )
-    thought_id = payload["thought_id"]
-    if (
-        not isinstance(thought_id, str)
-        or not 1 <= len(thought_id) <= 128
-        or thought_id[0] not in _THOUGHT_ID_FIRST_CHARS
-        or any(character not in _THOUGHT_ID_CHARS for character in thought_id)
-    ):
-        raise PendingThoughtError("thought_id has an invalid format")
+    thought_id = validate_thought_id(payload["thought_id"])
     decision = payload["decision"]
     if not isinstance(decision, str) or decision not in _DECISIONS:
         raise PendingThoughtError(f"unsupported decision: {decision!r}")

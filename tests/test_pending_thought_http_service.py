@@ -97,6 +97,19 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             {"ok": True, "pending_thought_id": "eval:private"},
         )
 
+    def test_summary_state_requires_exact_downstream_bearer(self):
+        inner = RecordingApp()
+        app = _BearerAuthApp(inner, "downstream-secret")
+
+        missing = asyncio.run(call_app(app, "/summary/v1"))
+        accepted = asyncio.run(
+            call_app(app, "/summary/v1", "Bearer downstream-secret")
+        )
+
+        self.assertEqual(missing[0]["status"], 401)
+        self.assertEqual(accepted[0]["status"], 204)
+        self.assertEqual(len(inner.calls), 1)
+
     def test_only_network_visible_bind_requires_downstream_token(self):
         for host in ("127.0.0.1", "::1", "localhost"):
             with self.subTest(host=host):
@@ -152,6 +165,7 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
             "XC_BODY_PLAYBACK_TOKEN": "playback-secret",
+            "XC_BODY_VOICE": "zh-CN-XiaoxiaoNeural",
         }
 
         with patch(
@@ -173,6 +187,10 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
                 url="http://127.0.0.1:8766/opus",
                 token="playback-secret",
             ),
+        )
+        self.assertEqual(
+            service.await_args.kwargs["voice"],
+            "zh-CN-XiaoxiaoNeural",
         )
 
 

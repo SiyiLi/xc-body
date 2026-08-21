@@ -24,13 +24,18 @@ from gateway.pending_thought_service import (
 )
 from gateway.semantic_e2e import RunnerConfigError, load_config
 from gateway.stackchan_event_session import wait_for_stackchan_event_tasks
+from gateway.thought_summary_service import (
+    handle_summary_request,
+    load_summary_voice,
+)
 
 DOWNSTREAM_TOKEN_ENV = "XC_BODY_PENDING_HTTP_TOKEN"
 AUTH_FAILURE_MESSAGE = "Unauthorized: missing or invalid bearer token"
 TOKEN_REQUIRED_MESSAGE = (
     f"refusing pending-thought HTTP service without {DOWNSTREAM_TOKEN_ENV}"
 )
-_AUTHENTICATED_PATHS = frozenset(("/mcp", "/readyz"))
+_AUTHENTICATED_PATHS = frozenset(("/mcp", "/readyz", "/summary/v1"))
+_MAX_SUMMARY_REQUEST_BYTES = 4096
 
 
 def is_loopback_bind_host(host: str) -> bool:
@@ -131,6 +136,7 @@ def build_app(
     *,
     host: str,
     downstream_token: str = "",
+    voice: str,
 ) -> Any:
     """Build one process-wide runtime and its guarded HTTP MCP surface."""
 
@@ -167,6 +173,24 @@ def build_app(
         payload = await _readiness_payload(runtime)
         return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
+    async def summary_v1(request: Any) -> Any:
+        try:
+            raw_body = await request.body()
+            if len(raw_body) > _MAX_SUMMARY_REQUEST_BYTES:
+                raise ValueError
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                {"ok": False, "error": "invalid_request"},
+                status_code=400,
+            )
+        status, response = await handle_summary_request(
+            runtime,
+            payload,
+            voice=voice,
+        )
+        return JSONResponse(response, status_code=status)
+
     @asynccontextmanager
     async def lifespan(_app: Any):
         headers = {"Authorization": f"Bearer {config.token}"}
@@ -200,6 +224,7 @@ def build_app(
         ),
         Route("/healthz", endpoint=healthz, methods=["GET"]),
         Route("/readyz", endpoint=readyz, methods=["GET"]),
+        Route("/summary/v1", endpoint=summary_v1, methods=["POST"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     return _BearerAuthApp(app, downstream_token)
@@ -212,6 +237,7 @@ async def run_http_service(
     host: str,
     port: int,
     downstream_token: str,
+    voice: str,
 ) -> None:
     try:
         import uvicorn
@@ -225,6 +251,7 @@ async def run_http_service(
         playback_config,
         host=host,
         downstream_token=downstream_token,
+        voice=voice,
     )
     server = uvicorn.Server(
         uvicorn.Config(
@@ -263,6 +290,7 @@ def main(
         downstream_token = load_downstream_token(environ)
         validate_bind_safety(args.host, downstream_token)
         playback_config = load_playback_config(environ)
+        voice = load_summary_voice(environ)
         asyncio.run(
             run_http_service(
                 config,
@@ -270,9 +298,14 @@ def main(
                 host=args.host,
                 port=args.port,
                 downstream_token=downstream_token,
+                voice=voice,
             )
         )
-    except (RunnerConfigError, PendingThoughtServiceError) as exc:
+    except (
+        RunnerConfigError,
+        PendingThoughtServiceError,
+        ValueError,
+    ) as exc:
         print(
             json.dumps(
                 {"ok": False, "error": type(exc).__name__, "message": str(exc)},

@@ -16,6 +16,7 @@ export XC_BODY_AVATAR_ARCHIVE_PATH=/opt/xc-body/xc-body-native-320.rgb565le
 export XC_BODY_PLAYBACK_URL=https://43.143.37.91/opus
 export XC_BODY_PLAYBACK_TOKEN="$playback_token"
 export XC_BODY_PENDING_HTTP_TOKEN="$pending_token"
+export XC_BODY_VOICE=${XC_BODY_VOICE:-zh-CN-YunxiNeural}
 
 exec python3 -m gateway.pending_thought_http_service \
   --host 0.0.0.0 --port 8770

@@ -5,17 +5,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import os
-import shutil
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from gateway.pending_thought import PendingThoughtError, decode_prepared_audio
 from gateway.semantic_e2e import (
     TOKEN_ENV,
     URL_ENV,
@@ -23,10 +19,14 @@ from gateway.semantic_e2e import (
     RunnerConfigError,
     load_config,
 )
+from gateway.speech_preparation import (
+    DEFAULT_VOICE,
+    VOICE_ENV,
+    SpeechPreparationError,
+    prepare_speech as prepare_vm_speech,
+)
 
 TOOL_NAME = "consider_thought"
-VOICE_ENV = "XC_BODY_VOICE"
-DEFAULT_VOICE = "zh-CN-YunxiNeural"
 _CONTRACT_PATH = (
     Path(__file__).resolve().parents[1]
     / "contracts"
@@ -91,111 +91,12 @@ def _validate_arguments(arguments: Mapping[str, object]) -> str | None:
     return message
 
 
-def _opus_packets(ogg: bytes) -> list[bytes]:
-    """Extract complete Opus packets from an Ogg stream."""
-
-    offset = 0
-    partial = bytearray()
-    packets: list[bytes] = []
-    while offset < len(ogg):
-        if len(ogg) - offset < 27 or ogg[offset : offset + 4] != b"OggS":
-            raise OpenClawThoughtServiceError("TTS encoder returned invalid Ogg")
-        segment_count = ogg[offset + 26]
-        table_start = offset + 27
-        table_end = table_start + segment_count
-        if table_end > len(ogg):
-            raise OpenClawThoughtServiceError("TTS encoder returned invalid Ogg")
-        lacing = ogg[table_start:table_end]
-        data_start = table_end
-        data_end = data_start + sum(lacing)
-        if data_end > len(ogg):
-            raise OpenClawThoughtServiceError("TTS encoder returned invalid Ogg")
-        cursor = data_start
-        for size in lacing:
-            partial.extend(ogg[cursor : cursor + size])
-            cursor += size
-            if size < 255:
-                packet = bytes(partial)
-                partial.clear()
-                if not packet.startswith((b"OpusHead", b"OpusTags")):
-                    packets.append(packet)
-        offset = data_end
-    if partial or not packets:
-        raise OpenClawThoughtServiceError("TTS encoder returned incomplete Opus")
-    return packets
-
-
-def _frame_packets(packets: Sequence[bytes]) -> bytes:
-    framed = bytearray()
-    for packet in packets:
-        if not packet or len(packet) > 1275:
-            raise OpenClawThoughtServiceError("TTS encoder returned invalid Opus")
-        framed.extend(len(packet).to_bytes(2, "big"))
-        framed.extend(packet)
-    encoded = base64.b64encode(framed).decode("ascii")
-    try:
-        decode_prepared_audio(encoded)
-    except PendingThoughtError as exc:
-        raise OpenClawThoughtServiceError(str(exc)) from exc
-    return bytes(framed)
-
-
 async def prepare_speech(message: str, voice: str) -> str:
-    """Synthesize, normalize, and frame one bounded spoken message."""
-
+    """Retain the historical wrapper while sharing VM-side preparation."""
     try:
-        import edge_tts
-    except ImportError as exc:
-        raise OpenClawThoughtServiceError(
-            "edge-tts is not installed in the OpenClaw producer environment"
-        ) from exc
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise OpenClawThoughtServiceError("ffmpeg is required for speech prep")
-    with tempfile.TemporaryDirectory(prefix="xc-body-voice-") as temp_dir:
-        source = Path(temp_dir) / "speech.mp3"
-        encoded = Path(temp_dir) / "speech.ogg"
-        try:
-            await edge_tts.Communicate(message, voice).save(str(source))
-        except Exception as exc:
-            raise OpenClawThoughtServiceError(
-                f"speech synthesis failed ({type(exc).__name__})"
-            ) from exc
-        process = await asyncio.create_subprocess_exec(
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(source),
-            "-af",
-            "loudnorm=I=-16:TP=-2:LRA=7",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "libopus",
-            "-application",
-            "voip",
-            "-b:a",
-            "32k",
-            "-frame_duration",
-            "60",
-            str(encoded),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        if process.returncode != 0:
-            detail = stderr.decode("utf-8", errors="replace").strip()
-            raise OpenClawThoughtServiceError(
-                f"speech encoding failed: {detail or process.returncode}"
-            )
-        return base64.b64encode(
-            _frame_packets(_opus_packets(encoded.read_bytes()))
-        ).decode("ascii")
+        return await prepare_vm_speech(message, voice)
+    except SpeechPreparationError as exc:
+        raise OpenClawThoughtServiceError(str(exc)) from exc
 
 
 def create_service_server(downstream: Any, voice: str) -> Any:

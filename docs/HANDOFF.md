@@ -1,5 +1,17 @@
 # Handoff
 
+## Milestone 3 native OpenClaw integration
+
+This work is one part of Milestone 3, not the whole milestone. It adds
+`openclaw-plugin/` and the VM-side `/summary/v1` endpoint. The plugin handles
+only successful subagent and cron completions, fails closed on malformed,
+model, or remote errors, and does not hook ordinary interactive turns. The VM
+performs TTS and prepared-audio validation before knocking; plaintext summaries
+are neither logged nor persisted. A candidate deployment passed physical
+acceptance on 2026-08-21: one completion produced one knock, a head touch was
+accepted, and the resulting speech was clear.
+
+
 ## Why This Repository Exists
 
 The user has an existing OpenClaw agent and an official M5Stack StackChan
@@ -29,7 +41,9 @@ The agreed North Star is:
   privately.
 - No camera or microphone path is in scope, and no capture endpoint is to be
   exposed during Milestone 1.
-- Milestone 2 is complete; Milestone 3 is next.
+- Milestone 2 is complete. Milestone 3 is in progress; the native OpenClaw
+  integration is one current part of its broader continuity and restraint
+  scope.
 - Firmware and gateway code are maintained directly under `firmware/` and
   `stackchan_mcp/`. Their imported source revision is recorded in
   `docs/REFERENCES.md`.
@@ -136,8 +150,9 @@ These are inspiration only. Do not import their feature scope into Milestone 1.
 ## Immediate Next Session
 
 1. Read the Milestone 2 baseline before changing its transport or contract.
-2. Start Milestone 3 only after restating its persistence and restraint scope.
-3. Rerun the physical path after transport, firmware, voice, or gesture changes.
+2. Read the Milestone 3 scope before extending the native integration.
+3. Keep native completion offers distinct from the rest of Milestone 3.
+4. Rerun the physical path after transport, firmware, voice, or gesture changes.
 
 ## Unknowns That Must Not Be Guessed
 

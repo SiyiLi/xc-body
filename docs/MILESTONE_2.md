@@ -1,5 +1,12 @@
 # Milestone 2: Knock, Wait, Tell
 
+> Historical acceptance note: the physical Milestone 2 sequence remains
+> unchanged. The native OpenClaw plugin and VM summary endpoint belong to
+> Milestone 3, not this acceptance record. They are one part of Milestone 3,
+> not its complete scope. The local Python MCP producer is no longer the
+> intended production autonomous source.
+
+
 ## Objective
 
 Let the existing OpenClaw agent offer one meaningful background result without

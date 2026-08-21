@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xc-body.local/contracts/openclaw-summary.v1.schema.json",
+  "title": "XC Body Native OpenClaw Summary",
+  "description": "A transient spoken summary selected by the OpenClaw plugin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "thought_id",
+    "summary"
+  ],
+  "properties": {
+    "version": {
+      "const": "v1"
+    },
+    "thought_id": {
+      "description": "A stable opaque ID for duplicate suppression.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "summary": {
+      "description": "Transient self-contained Chinese speech; it may contain private information.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 150,
+      "pattern": "[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]"
+    }
+  }
+}

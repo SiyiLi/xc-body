@@ -303,7 +303,6 @@ def pack_opus_frames_to_ogg(
     for start in range(0, total_frames, _FRAMES_PER_PAGE):
         end = min(start + _FRAMES_PER_PAGE, total_frames)
         page_frames = frames[start:end]
-        granule += len(page_frames) * GRANULE_PER_FRAME
         is_last_page = end == total_frames
         # Split each opus packet into Ogg lacing segments. VBR opus can
         # produce packets > 255 bytes, which Ogg encodes as multiple
@@ -315,11 +314,13 @@ def pack_opus_frames_to_ogg(
         # Flush mid-batch when the segment table is about to overflow
         # so each emitted page stays inside the 255-segment limit.
         segments: list[bytes] = []
+        segment_frames = 0
         for frame in page_frames:
             frame_segs = _packet_to_segments(frame)
             if len(segments) + len(frame_segs) > 255:
+                granule += segment_frames * GRANULE_PER_FRAME
                 out += _build_ogg_page(
-                    header_type=0,  # continuation page
+                    header_type=0,
                     granule_position=granule,
                     serial=serial,
                     page_sequence=page_seq,
@@ -327,8 +328,11 @@ def pack_opus_frames_to_ogg(
                 )
                 page_seq += 1
                 segments = []
+                segment_frames = 0
             segments.extend(frame_segs)
+            segment_frames += 1
         if segments:
+            granule += segment_frames * GRANULE_PER_FRAME
             out += _build_ogg_page(
                 header_type=_HEADER_EOS if is_last_page else 0,
                 granule_position=granule,
