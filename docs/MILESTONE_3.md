@@ -38,11 +38,18 @@ completed MCP initialization, restored the reviewed layered avatar, and
 survived a validation reboot without rollback. Configuration mode advertised
 the reviewed `XCBODY-3341` SSID on `0.1.6`.
 
-The robot now runs firmware `0.1.7`. The last fully recorded acceptance set
-used firmware `0.1.6` on `ota_0`, gateway runtime `0.1.2`, and Caddy `2.11.4`.
+The robot now runs firmware `0.1.11`. The last fully recorded OTA acceptance
+set used firmware `0.1.6` on `ota_0`, gateway runtime `0.1.2`, and Caddy
+`2.11.4`.
 Its accepted app SHA-256 is
 `3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
 OpenClaw was not part of those OTA tests.
+
+Firmware `0.1.11`, gateway runtime `0.1.5`, and OpenClaw `2026.7.1-2`
+physically passed the native touch-to-speech path. Audio transfer began after
+the head stroke, playback remained silent until the head reaction settled,
+and one clear prepared-Opus result completed. The tested app SHA-256 is
+`325b8f2e2f6d7acb6213f03477495c4e00d41bc44dfe19ff572d03997208c2e9`.
 
 Firmware records a pending target before switching slots. If the bootloader
 rolls back, the recovered slot records the failed version and disables
@@ -51,7 +58,7 @@ block. Those local controls are physically exercised; forced unhealthy-boot
 rollback remains untested.
 
 The physical run used gateway runtime `0.1.2`. Current gateway source is
-`0.1.4`, with bounded MCP request deadlines and prepared-audio caching, but it
+`0.1.5`, with bounded MCP request deadlines and prepared-audio caching, but it
 has not been deployed or physically accepted. The complete run therefore
 remains unreproduced with one exact current version set.
 

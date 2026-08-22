@@ -31,6 +31,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <esp_lcd_ili9341.h>
 #include <esp_timer.h>
 #include <esp_random.h>
+#include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -40,6 +41,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -47,6 +49,26 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <vector>
 
 #define TAG "StackChanBoard"
+
+namespace {
+
+constexpr char kReviewedAvatarChecksum[] =
+    "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7";
+
+std::string AvatarSha256Checksum(const uint8_t* data, size_t size) {
+    uint8_t digest[32];
+    if (mbedtls_sha256(data, size, digest, 0) != 0) {
+        return "";
+    }
+    char hex[65];
+    for (int index = 0; index < 32; ++index) {
+        std::snprintf(hex + index * 2, 3, "%02x", digest[index]);
+    }
+    hex[64] = '\0';
+    return std::string("sha256:") + hex;
+}
+
+}  // namespace
 
 class Pmic : public Axp2101 {
 public:
@@ -2513,6 +2535,9 @@ private:
 
         ft6336_->UpdateTouchPoint();
         auto& touch_point = ft6336_->GetTouchPoint();
+        if (touch_point.num > 0) {
+            power_save_timer_->WakeUp();
+        }
 
         // 检测触摸开始
         if (touch_point.num > 0 && !was_touched) {
@@ -4095,7 +4120,7 @@ private:
         }
     }
 
-    bool StageTouchCompletion(TouchEvent event, uint64_t duration_ms) {
+    bool StageTouchReaction(TouchEvent event, uint64_t duration_ms) {
         PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
         if (!physical_behavior_owner_.compare_exchange_strong(
                 expected,
@@ -4115,7 +4140,7 @@ private:
         return true;
     }
 
-    void MaybeCompleteTouchAcknowledgment() {
+    void MaybeCompleteTouchReaction() {
         TouchEvent event = pending_touch_completion_.load(
             std::memory_order_acquire);
         uint64_t now_us = esp_timer_get_time();
@@ -4147,13 +4172,13 @@ private:
                         std::memory_order_relaxed)) {
                     return;
                 }
-                ESP_LOGE(TAG,
-                         "touch reaction recovery failed; acknowledgment aborted");
+                ESP_LOGE(TAG, "touch reaction recovery failed");
                 pending_touch_completion_.store(
                     TouchEvent::IDLE, std::memory_order_release);
                 physical_behavior_owner_.store(
                     PhysicalBehaviorOwner::IDLE, std::memory_order_release);
                 SetAvatarExpressionIfActive("idle");
+                Application::GetInstance().ResumePreparedAudioPlayback();
                 Application::GetInstance().SendStackChanEvent(
                     "behavior",
                     "behavior_failed",
@@ -4164,18 +4189,13 @@ private:
             }
         }
 
-        uint64_t duration_ms = pending_touch_duration_ms_.load(
-            std::memory_order_relaxed);
         pending_touch_completion_.store(
             TouchEvent::IDLE, std::memory_order_release);
         pending_touch_recovering_.store(false, std::memory_order_relaxed);
         physical_behavior_owner_.store(
             PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         SetAvatarExpressionIfActive("idle");
-        Application::GetInstance().SendStackChanEvent(
-            "touch",
-            event == TouchEvent::TAP ? "tap" : "stroke",
-            duration_ms);
+        Application::GetInstance().ResumePreparedAudioPlayback();
     }
 
     // Servo wobble: yaw -A -> +A -> -A -> 0. Each step is dispatched only
@@ -4281,14 +4301,14 @@ private:
         while (true) {
             if (!servo_ok_ || motion_driver_ == nullptr) {
                 MaybeAdvanceXcBodyKnock();
-                MaybeCompleteTouchAcknowledgment();
+                MaybeCompleteTouchReaction();
                 vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
                 continue;
             }
             motion_driver_->Tick();
             ServoWobbleStepAdvance();
             MaybeAdvanceXcBodyKnock();
-            MaybeCompleteTouchAcknowledgment();
+            MaybeCompleteTouchReaction();
             MaybeAutoReleaseTorque();
             taskYIELD();
         }
@@ -4352,10 +4372,12 @@ private:
         if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
             return;
         }
-        if (!StageTouchCompletion(TouchEvent::TAP, duration_ms)) {
+        if (!StageTouchReaction(TouchEvent::TAP, duration_ms)) {
             return;
         }
         LogTouchEvent("TAP", duration_ms);
+        Application::GetInstance().SendStackChanEvent(
+            "touch", "tap", duration_ms);
         last_event_ = TouchEvent::TAP;
         last_event_us_ = esp_timer_get_time();
         // Use the IfActive variant so a tap during set_avatar("off") does
@@ -4369,10 +4391,12 @@ private:
         if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
             return;
         }
-        if (!StageTouchCompletion(TouchEvent::STROKE, duration_ms)) {
+        if (!StageTouchReaction(TouchEvent::STROKE, duration_ms)) {
             return;
         }
         LogTouchEvent("STROKE", duration_ms);
+        Application::GetInstance().SendStackChanEvent(
+            "touch", "stroke", duration_ms);
         last_event_ = TouchEvent::STROKE;
         last_event_us_ = esp_timer_get_time();
         SetAvatarExpressionIfActive("embarrassed");
@@ -4865,6 +4889,7 @@ private:
     }
 
     void LoadBuiltInAvatar() {
+        reviewed_avatar_active_.store(false, std::memory_order_release);
         void* data = nullptr;
         size_t size = 0;
         if (!Assets::GetInstance().GetAssetData(
@@ -4872,10 +4897,16 @@ private:
             ESP_LOGE(TAG, "Reviewed avatar is missing from assets partition");
             return;
         }
+        auto* bytes = static_cast<const uint8_t*>(data);
+        if (size != AvatarSet::kLayeredNativePayloadBytes ||
+            AvatarSha256Checksum(bytes, size) != kReviewedAvatarChecksum) {
+            ESP_LOGE(TAG, "Built-in avatar does not match reviewed SHA-256");
+            return;
+        }
         reviewed_avatar_active_.store(
             avatar_set_.LoadFromFlash(
                 AvatarSet::Mode::kLayeredNative,
-                static_cast<const uint8_t*>(data),
+                bytes,
                 size),
             std::memory_order_release);
         if (!reviewed_avatar_active_.load(std::memory_order_acquire)) {
@@ -7484,6 +7515,11 @@ public:
         StopTtsLipSync();
     }
 
+    virtual bool IsTouchReactionActive() const override {
+        return physical_behavior_owner_.load(std::memory_order_acquire) ==
+            PhysicalBehaviorOwner::TOUCH;
+    }
+
     // Phase 4.5 avatar (saiverse-stackchan-addon): handle the gateway's
     // `avatar_set_fetch` WS message. Parse url/token/mode/checksum/
     // expected_size, spawn a worker task that performs HTTP GET + SHA256
@@ -7529,8 +7565,6 @@ public:
             return;
         }
 
-        static constexpr char kReviewedAvatarChecksum[] =
-            "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7";
         if (reviewed_avatar_active_.load(std::memory_order_acquire) &&
             mode_enum == AvatarSet::Mode::kLayeredNative &&
             static_cast<size_t>(size_j->valuedouble) ==
@@ -7627,8 +7661,7 @@ public:
                     actual_checksum.empty() ? expected_sha256 : actual_checksum;
                 if (ok) {
                     reviewed_avatar_active_.store(
-                        actual_checksum ==
-                            "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7",
+                        actual_checksum == kReviewedAvatarChecksum,
                         std::memory_order_release);
                 }
                 SendAvatarSetLoaded(ok, correlation, error_code);

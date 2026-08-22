@@ -33,10 +33,10 @@ turning it off should make the room feel a little emptier.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   cloud rendezvous host. The public route is `https://43.143.37.91`; raw
   service ports remain private.
-- The robot runs firmware `0.1.7`; the next source version is `0.1.8`. The last
-  fully recorded OTA acceptance covered consecutive updates from `0.1.4` to
-  `0.1.5` and from `0.1.5` to `0.1.6`. Forced unhealthy-boot rollback remains
-  untested.
+- The robot and source run firmware `0.1.11`.
+  The last fully recorded OTA acceptance covered consecutive updates from
+  `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Forced unhealthy-boot
+  rollback remains untested.
 - Camera and microphone input, durable queues, quiet hours, free-form motion,
   Home Assistant, and Stick S3 integration are not part of the current scope.
 

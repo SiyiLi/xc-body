@@ -21,6 +21,8 @@
 
 namespace {
 
+constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(5);
+
 ListeningProfile ParseListenProfile(const cJSON* root) {
     auto profile = cJSON_GetObjectItem(root, "profile");
     bool profile_present = profile != nullptr;
@@ -76,6 +78,12 @@ Application::~Application() {
 
 bool Application::SetDeviceState(DeviceState state) {
     return state_machine_.TransitionTo(state);
+}
+
+void Application::ResumePreparedAudioPlayback() {
+    if (audio_service_.ReleasePreparedAudioPlayback()) {
+        Board::GetInstance().OnTtsStart();
+    }
 }
 
 void Application::Initialize() {
@@ -551,9 +559,9 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnAudioChannelClosed([this, &board]() {
-        audio_service_.AbortPreparedAudio();
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            audio_service_.AbortPreparedAudio();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -572,22 +580,27 @@ void Application::InitializeProtocol() {
                     return;
                 }
                 size_t packet_count = static_cast<size_t>(count->valuedouble);
-                Schedule([this, packet_count]() {
+                if (!audio_service_.BeginPreparedAudio(packet_count)) {
+                    ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                    return;
+                }
+                Schedule([this]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
-                    if (!audio_service_.BeginPreparedAudio(packet_count)) {
-                        ESP_LOGE(TAG, "Invalid prepared audio transfer");
-                        SetDeviceState(kDeviceStateIdle);
-                    }
                 });
             } else if (strcmp(state->valuestring, "play") == 0) {
                 Schedule([this, &board]() {
-                    if (!audio_service_.CommitPreparedAudio()) {
+                    bool defer_playback = board.IsTouchReactionActive();
+                    if (!audio_service_.CommitPreparedAudio(defer_playback)) {
                         ESP_LOGE(TAG, "Prepared audio transfer incomplete");
                         SetDeviceState(kDeviceStateIdle);
                         return;
                     }
-                    board.OnTtsStart();
+                    if (!defer_playback) {
+                        board.OnTtsStart();
+                    } else if (!board.IsTouchReactionActive()) {
+                        ResumePreparedAudioPlayback();
+                    }
                 });
             } else if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, &board]() {
@@ -599,8 +612,15 @@ void Application::InitializeProtocol() {
                     board.OnTtsStart();
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                audio_service_.AbortPreparedAudio();
+                if (audio_service_.IsPreparedAudioPending()) {
+                    audio_service_.AbortPreparedAudio();
+                }
                 Schedule([this, &board]() {
+                    if (!audio_service_.WaitForPlaybackQueueEmpty(
+                            kPlaybackDrainTimeout)) {
+                        ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                    }
+                    audio_service_.AbortPreparedAudio();
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone
                         // xiaozhi-style conversational agent. Listening must
@@ -1112,7 +1132,11 @@ void Application::HandleStateChangedEvent() {
                 // For auto mode, wait for playback queue to be empty before enabling mic capture
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
-                    audio_service_.WaitForPlaybackQueueEmpty();
+                    if (!audio_service_.WaitForPlaybackQueueEmpty(
+                            kPlaybackDrainTimeout)) {
+                        ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                        audio_service_.AbortPreparedAudio();
+                    }
                 }
                 
                 // Send the start listening command

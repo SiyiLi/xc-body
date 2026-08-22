@@ -125,7 +125,7 @@ public:
     const std::string& GetLastWakeWord() const;
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
-    void WaitForPlaybackQueueEmpty();
+    bool WaitForPlaybackQueueEmpty(std::chrono::milliseconds timeout);
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
     bool IsRawCaptureRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_RAW_CAPTURE_RUNNING; }
@@ -141,7 +141,8 @@ public:
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     bool BeginPreparedAudio(size_t packet_count);
-    bool CommitPreparedAudio();
+    bool CommitPreparedAudio(bool defer_playback = false);
+    bool ReleasePreparedAudioPlayback();
     void AbortPreparedAudio();
     bool IsPreparedAudioPending();
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
@@ -188,6 +189,7 @@ private:
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
     bool prepared_audio_pending_ = false;
+    bool prepared_audio_playback_blocked_ = false;
     size_t prepared_audio_packets_ = 0;
     std::mutex raw_capture_mutex_;
     std::atomic<uint32_t> raw_capture_generation_{0};

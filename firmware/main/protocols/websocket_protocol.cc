@@ -80,6 +80,46 @@ WebsocketProtocol::WebsocketProtocol() {
         ESP_LOGE(TAG, "Failed to create reconnect timer; auto reconnect will not be available");
         reconnect_timer_ = nullptr;
     }
+
+    esp_timer_create_args_t heartbeat_timer_args = {
+        .callback = [](void* arg) {
+            auto protocol = static_cast<WebsocketProtocol*>(arg);
+            auto alive = protocol->alive_;
+            Application::GetInstance().Schedule([protocol, alive]() {
+                if (!alive->load()) {
+                    return;
+                }
+                if (!protocol->transport_connected_.load()) {
+                    protocol->ping_outstanding_.store(false);
+                    return;
+                }
+                if (protocol->ping_outstanding_.exchange(true)) {
+                    ESP_LOGW(TAG, "Websocket heartbeat timed out; reconnecting");
+                    protocol->CloseAudioChannel(false);
+                    Application::GetInstance().Schedule([protocol, alive]() {
+                        if (alive->load()) {
+                            protocol->OpenAudioChannelInternal(false, false);
+                        }
+                    });
+                    return;
+                }
+                if (protocol->websocket_ != nullptr) {
+                    protocol->websocket_->Ping();
+                }
+            });
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "websocket_heartbeat",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&heartbeat_timer_args, &heartbeat_timer_) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create websocket heartbeat timer");
+        heartbeat_timer_ = nullptr;
+    } else {
+        esp_timer_start_periodic(
+            heartbeat_timer_, WEBSOCKET_HEARTBEAT_INTERVAL_MS * 1000);
+    }
 }
 
 WebsocketProtocol::~WebsocketProtocol() {
@@ -93,6 +133,11 @@ WebsocketProtocol::~WebsocketProtocol() {
     if (reconnect_timer_ != nullptr) {
         esp_timer_delete(reconnect_timer_);
         reconnect_timer_ = nullptr;
+    }
+    if (heartbeat_timer_ != nullptr) {
+        esp_timer_stop(heartbeat_timer_);
+        esp_timer_delete(heartbeat_timer_);
+        heartbeat_timer_ = nullptr;
     }
     websocket_.reset();
     if (event_group_handle_ != nullptr) {
@@ -248,6 +293,7 @@ bool WebsocketProtocol::OpenAudioChannelInternal(bool report_error, bool arm_aud
     // intentional_close_ once the server hello has been acked.
     audio_channel_open_.store(false);
     transport_connected_.store(false);
+    ping_outstanding_.store(false);
     intentional_close_.store(true);
     if (current_notify_disconnect_) {
         current_notify_disconnect_->store(false);
@@ -507,6 +553,7 @@ bool WebsocketProtocol::OpenAudioChannelInternal(bool report_error, bool arm_aud
         websocket_->OnDisconnected([this, notify_disconnect, disconnected_after_hello]() {
             audio_channel_open_.store(false);
             transport_connected_.store(false);
+            ping_outstanding_.store(false);
             // notify_disconnect carries this socket's reconnect intent.
             // ParseServerHello() arms it (true) once the handshake
             // completes; intentional teardown paths (CloseAudioChannel,
@@ -534,6 +581,9 @@ bool WebsocketProtocol::OpenAudioChannelInternal(bool report_error, bool arm_aud
             // timer via StopReconnectTimer() (#189 round-2 review).
             disconnected_after_hello->store(true, std::memory_order_release);
             ScheduleReconnect();
+        });
+        websocket_->OnPong([this](const char*, size_t) {
+            ping_outstanding_.store(false);
         });
 
         ESP_LOGI(TAG, "Connecting to websocket server candidate %d/%d: %s with version: %d",
@@ -621,6 +671,7 @@ bool WebsocketProtocol::OpenAudioChannelInternal(bool report_error, bool arm_aud
         intentional_close_.store(false);
         connected_url_ = candidate_url;
         transport_connected_.store(true);
+        ping_outstanding_.store(false);
         reconnect_interval_ms_ = WEBSOCKET_RECONNECT_INITIAL_INTERVAL_MS;
         StopReconnectTimer();
 

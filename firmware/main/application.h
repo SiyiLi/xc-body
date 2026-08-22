@@ -127,6 +127,7 @@ public:
         const char* subtype,
         uint64_t duration_ms,
         const char* behavior_id = nullptr);
+    void ResumePreparedAudioPlayback();
 
     // Phase 4.5 avatar: thread-safe generic WS text frame send.
     // Wraps Protocol::SendText through the main-task Schedule for the

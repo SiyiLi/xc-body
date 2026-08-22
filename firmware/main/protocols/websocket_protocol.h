@@ -16,6 +16,7 @@
 #define WEBSOCKET_PROTOCOL_SERVER_HELLO_FAILED (1 << 1)
 #define WEBSOCKET_RECONNECT_INITIAL_INTERVAL_MS 5000
 #define WEBSOCKET_RECONNECT_MAX_INTERVAL_MS 60000
+#define WEBSOCKET_HEARTBEAT_INTERVAL_MS 15000
 
 class WebsocketProtocol : public Protocol {
 public:
@@ -35,6 +36,8 @@ private:
     EventGroupHandle_t event_group_handle_;
     std::unique_ptr<WebSocket> websocket_;
     esp_timer_handle_t reconnect_timer_ = nullptr;
+    esp_timer_handle_t heartbeat_timer_ = nullptr;
+    std::atomic<bool> ping_outstanding_ = false;
     // True while reconnect_timer_ has a pending one-shot retry. This keeps
     // independent failure/disconnect paths from double-arming the same retry
     // and advancing reconnect_interval_ms_ more than once.

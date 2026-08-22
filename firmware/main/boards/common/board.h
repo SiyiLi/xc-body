@@ -90,6 +90,7 @@ public:
     virtual void OnTtsStart() {}
     virtual void OnTtsAudioFrame() {}
     virtual void OnTtsStop() {}
+    virtual bool IsTouchReactionActive() const { return false; }
     virtual void OnAssetsUpdated() {}
 
     // Phase 4.5 avatar (saiverse-stackchan-addon): dynamic avatar set fetch
