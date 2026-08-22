@@ -5,16 +5,15 @@
 Before proposing or making changes, read:
 
 1. `README.md`
-2. `docs/HANDOFF.md`
-3. `docs/MILESTONE_3.md`
+2. `docs/MILESTONE_3.md`
+3. `docs/ARCHITECTURE.md`
 4. `docs/MILESTONE_2.md`
 5. `docs/MILESTONE_1.md`
-6. `docs/ARCHITECTURE.md`
-7. `docs/DECISIONS.md`
-8. `docs/ROADMAP.md`
 
 Firmware and gateway source are maintained directly under `firmware/` and
 `stackchan_mcp/`.
+
+Before changing firmware, also read `firmware/README.md`.
 
 ## Current Phase
 
@@ -40,8 +39,22 @@ integration, or a mobile app during Milestone 2.
 ## Known Deployment Fact
 
 OpenClaw and StackChan connect to a separate always-on cloud rendezvous host.
-Its XC Body deployment surface must be inventoried before implementation. Do
-not infer host configuration that has not been inspected.
+Inspect the current XC Body deployment before changing it. Do not infer host
+configuration that has not been inspected.
+
+## Firmware Rules
+
+- Call the product XC Body firmware. Use upstream names only for exact source
+  provenance or legacy configuration identifiers.
+- Build only the StackChan target with
+  `python ./scripts/release.py stackchan` from `firmware/`.
+- A generic ESP32-S3 build selects an incompatible board configuration and may
+  produce a PSRAM boot loop on CoreS3.
+- The 16 MiB layout has an 8 MiB assets partition and two `0x3f0000` app
+  partitions.
+- Routine app-only flashing uses `xc_body.bin` at `0x20000` and preserves NVS.
+  The merged recovery image starts at `0x0` and is not a routine flash image.
+- Firmware flashing requires explicit permission for that exact flash.
 
 ## Engineering Rules
 
