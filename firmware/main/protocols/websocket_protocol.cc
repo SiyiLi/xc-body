@@ -431,7 +431,7 @@ bool WebsocketProtocol::OpenAudioChannelInternal(bool report_error, bool arm_aud
                 // Drop binary frames before parsing when the device is not
                 // speaking. This mirrors Application::OnIncomingAudio's
                 // downstream gate while avoiding stale-frame parse/allocation.
-                if (Application::GetInstance().GetDeviceState() != kDeviceStateSpeaking) {
+                if (!Application::GetInstance().AcceptsIncomingAudio()) {
                     return;
                 }
                 if (on_incoming_audio_ != nullptr) {

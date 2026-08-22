@@ -51,9 +51,9 @@ block. Those local controls are physically exercised; forced unhealthy-boot
 rollback remains untested.
 
 The physical run used gateway runtime `0.1.2`. Current gateway source is
-`0.1.3`, with bounded MCP request deadlines, but it has not been deployed or
-physically accepted. The complete run therefore remains unreproduced with one
-exact current version set.
+`0.1.4`, with bounded MCP request deadlines and prepared-audio caching, but it
+has not been deployed or physically accepted. The complete run therefore
+remains unreproduced with one exact current version set.
 
 ## Remaining Acceptance
 

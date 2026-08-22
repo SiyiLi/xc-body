@@ -97,6 +97,11 @@ void Application::Initialize() {
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
     };
+    callbacks.on_audio_output = [this]() {
+        if (GetDeviceState() == kDeviceStateSpeaking) {
+            Board::GetInstance().OnTtsAudioFrame();
+        }
+    };
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
@@ -530,8 +535,9 @@ void Application::InitializeProtocol() {
     
     protocol_->OnIncomingAudio([this, &board](
             std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
-            board.OnTtsAudioFrame();
+        if (audio_service_.IsPreparedAudioPending()) {
+            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else if (GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -545,6 +551,7 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnAudioChannelClosed([this, &board]() {
+        audio_service_.AbortPreparedAudio();
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
@@ -558,7 +565,31 @@ void Application::InitializeProtocol() {
         auto type = cJSON_GetObjectItem(root, "type");
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
-            if (strcmp(state->valuestring, "start") == 0) {
+            if (strcmp(state->valuestring, "prepare") == 0) {
+                auto count = cJSON_GetObjectItem(root, "packet_count");
+                if (!cJSON_IsNumber(count) || count->valuedouble <= 0) {
+                    ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                    return;
+                }
+                size_t packet_count = static_cast<size_t>(count->valuedouble);
+                Schedule([this, packet_count]() {
+                    aborted_ = false;
+                    SetDeviceState(kDeviceStateSpeaking);
+                    if (!audio_service_.BeginPreparedAudio(packet_count)) {
+                        ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                        SetDeviceState(kDeviceStateIdle);
+                    }
+                });
+            } else if (strcmp(state->valuestring, "play") == 0) {
+                Schedule([this, &board]() {
+                    if (!audio_service_.CommitPreparedAudio()) {
+                        ESP_LOGE(TAG, "Prepared audio transfer incomplete");
+                        SetDeviceState(kDeviceStateIdle);
+                        return;
+                    }
+                    board.OnTtsStart();
+                });
+            } else if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, &board]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
@@ -568,6 +599,7 @@ void Application::InitializeProtocol() {
                     board.OnTtsStart();
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                audio_service_.AbortPreparedAudio();
                 Schedule([this, &board]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone

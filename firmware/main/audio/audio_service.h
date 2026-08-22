@@ -80,6 +80,7 @@
 
 struct AudioServiceCallbacks {
     std::function<void(void)> on_send_queue_available;
+    std::function<void(void)> on_audio_output;
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
@@ -139,6 +140,10 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    bool BeginPreparedAudio(size_t packet_count);
+    bool CommitPreparedAudio();
+    void AbortPreparedAudio();
+    bool IsPreparedAudioPending();
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
@@ -182,6 +187,8 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    bool prepared_audio_pending_ = false;
+    size_t prepared_audio_packets_ = 0;
     std::mutex raw_capture_mutex_;
     std::atomic<uint32_t> raw_capture_generation_{0};
     std::unique_ptr<std::vector<int16_t>> raw_capture_buffer_;
