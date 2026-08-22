@@ -160,6 +160,7 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
+    std::atomic<bool> firmware_upgrade_in_progress_{false};
 
     bool has_server_time_ = false;
     bool aborted_ = false;

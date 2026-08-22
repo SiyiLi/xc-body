@@ -1,12 +1,13 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_http_service import (
     AUTH_FAILURE_MESSAGE,
     DOWNSTREAM_TOKEN_ENV,
     _BearerAuthApp,
+    _maintain_pending_runtime,
     _readiness_payload,
     load_downstream_token,
     main,
@@ -121,6 +122,66 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             DOWNSTREAM_TOKEN_ENV,
         ):
             validate_bind_safety("0.0.0.0", "")
+
+    def test_failed_restore_recreates_upstream_session(self):
+        class AsyncContext:
+            def __init__(self, value):
+                self.value = value
+
+            async def __aenter__(self):
+                return self.value
+
+            async def __aexit__(self, *args):
+                del args
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                del args
+
+            async def initialize(self):
+                pass
+
+        config = SimpleNamespace(
+            token="upstream-secret",
+            url="https://stackchan.invalid/mcp",
+            avatar_path="/srv/xc-body/avatar.rgb565le",
+        )
+        runtime = Mock()
+        runtime.create_session.side_effect = [Session(), Session()]
+        httpx = SimpleNamespace(
+            Timeout=lambda *args, **kwargs: object(),
+            AsyncClient=lambda **kwargs: AsyncContext(object()),
+        )
+        streamable_http_client = Mock(
+            side_effect=lambda *args, **kwargs: AsyncContext(
+                (object(), object())
+            )
+        )
+
+        async def exercise():
+            with patch(
+                "gateway.pending_thought_http_service."
+                "_restore_pending_runtime_if_needed",
+                new=AsyncMock(side_effect=[False, asyncio.CancelledError]),
+            ), patch(
+                "gateway.pending_thought_http_service.asyncio.sleep",
+                new=AsyncMock(),
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await _maintain_pending_runtime(
+                        config,
+                        runtime,
+                        httpx,
+                        streamable_http_client,
+                    )
+
+        asyncio.run(exercise())
+
+        self.assertEqual(streamable_http_client.call_count, 2)
+        self.assertEqual(runtime.create_session.call_count, 2)
 
     def test_playback_url_allows_plaintext_only_on_loopback(self):
         for url in (

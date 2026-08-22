@@ -146,16 +146,48 @@ async def _restore_pending_runtime_if_needed(
 
 
 async def _maintain_pending_runtime(
-    session: Any,
+    config: Any,
     runtime: PendingThoughtRuntime,
-    avatar_path: str,
+    httpx: Any,
+    streamable_http_client: Any,
 ) -> None:
     while True:
-        await _restore_pending_runtime_if_needed(
-            session,
-            runtime,
-            avatar_path,
-        )
+        try:
+            headers = {"Authorization": f"Bearer {config.token}"}
+            timeout = httpx.Timeout(60.0, read=None)
+            async with httpx.AsyncClient(
+                headers=headers,
+                timeout=timeout,
+            ) as client:
+                async with streamable_http_client(
+                    config.url,
+                    http_client=client,
+                ) as streams:
+                    session = runtime.create_session(
+                        *streams[:2],
+                        asyncio.get_running_loop(),
+                    )
+                    async with session:
+                        await session.initialize()
+                        try:
+                            while True:
+                                restored = (
+                                    await _restore_pending_runtime_if_needed(
+                                        session,
+                                        runtime,
+                                        config.avatar_path,
+                                    )
+                                )
+                                if not restored:
+                                    break
+                                await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
+                        finally:
+                            await wait_for_stackchan_event_tasks(session)
+                            runtime.unbind_session(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("StackChan upstream reconnect: %s", exc)
         await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
 
 
@@ -222,36 +254,23 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any):
-        headers = {"Authorization": f"Bearer {config.token}"}
-        timeout = httpx.Timeout(60.0, read=None)
-        async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
-            async with streamable_http_client(
-                config.url,
-                http_client=client,
-            ) as streams:
-                session = runtime.create_session(
-                    *streams[:2],
-                    asyncio.get_running_loop(),
+        async with manager.run():
+            recovery_task = asyncio.create_task(
+                _maintain_pending_runtime(
+                    config,
+                    runtime,
+                    httpx,
+                    streamable_http_client,
                 )
-                async with session:
-                    await session.initialize()
-                    async with manager.run():
-                        recovery_task = asyncio.create_task(
-                            _maintain_pending_runtime(
-                                session,
-                                runtime,
-                                config.avatar_path,
-                            )
-                        )
-                        try:
-                            yield
-                        finally:
-                            recovery_task.cancel()
-                            await asyncio.gather(
-                                recovery_task,
-                                return_exceptions=True,
-                            )
-                            await wait_for_stackchan_event_tasks(session)
+            )
+            try:
+                yield
+            finally:
+                recovery_task.cancel()
+                await asyncio.gather(
+                    recovery_task,
+                    return_exceptions=True,
+                )
 
     routes = [
         Route(

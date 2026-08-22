@@ -21,11 +21,47 @@ die() {
   exit "${2:-1}"
 }
 
+if [ "${1:-}" = "--activate" ]; then
+  [ "$#" -eq 2 ] || die "usage: $0 --activate VERSION" 64
+  for command in sed ssh; do
+    command -v "$command" >/dev/null 2>&1 \
+      || die "required command not found: $command" 64
+  done
+  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+  version=$2
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "invalid firmware version: $version" 65
+  release=v$version
+  ssh "${SSH_OPTIONS[@]}" -T "$TARGET" bash -s -- \
+    "$REMOTE_ROOT/releases/$release" "$REMOTE_ROOT" "$version" <<'REMOTE'
+set -eu
+release_dir=$1
+root=$2
+expected_version=$3
+ota_asset=xc-body-stackchan-ota.bin
+
+[ -f "$release_dir/manifest.json" ] \
+  || { echo "[FATAL] firmware release is missing: $release_dir" >&2; exit 65; }
+cd "$release_dir"
+sha256sum -c "$ota_asset.sha256"
+manifest_version=$(sed -nE \
+  's/^[[:space:]]*"version": "([^"]+)",?$/\1/p' manifest.json)
+[ "$manifest_version" = "$expected_version" ] \
+  || { echo "[FATAL] release manifest version mismatch" >&2; exit 65; }
+manifest_tmp=$root/.manifest.json.$$
+install -m 0644 manifest.json "$manifest_tmp"
+mv "$manifest_tmp" "$root/manifest.json"
+REMOTE
+  echo "activated=$release"
+  echo "manifest=$PUBLIC_ROOT/manifest.json"
+  exit 0
+fi
+
 if [ "${1:-}" = "--replace" ]; then
   replace=true
   shift
 fi
-[ "$#" -eq 0 ] || die "usage: $0 [--replace]" 64
+[ "$#" -eq 0 ] || die "usage: $0 [--replace] | --activate VERSION" 64
 
 for command in docker python3 scp sed ssh; do
   command -v "$command" >/dev/null 2>&1 \

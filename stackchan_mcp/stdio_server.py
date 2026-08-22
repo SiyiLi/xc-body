@@ -1294,6 +1294,14 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                             "type": "string",
                             "pattern": "^https://",
                         },
+                        "version": {
+                            "type": "string",
+                            "pattern": (
+                                "^(0|[1-9][0-9]*)\\."
+                                "(0|[1-9][0-9]*)\\."
+                                "(0|[1-9][0-9]*)$"
+                            ),
+                        },
                         "sha256": {
                             "type": "string",
                             "pattern": "^[0-9a-f]{64}$",
@@ -1304,7 +1312,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                             "maximum": 0x3F0000,
                         },
                     },
-                    "required": ["url", "sha256", "size"],
+                    "required": ["url", "version", "sha256", "size"],
                     "additionalProperties": False,
                 },
             ),

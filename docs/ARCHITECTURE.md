@@ -32,15 +32,15 @@ lifecycle, health checks, and resource limits.
 
 - Owns agent identity, reasoning, and the decision to express something.
 - Selects semantic intentions instead of raw servo or animation commands.
-- Observes selected successful subagent and cron completions.
+- Observes successful agent, subagent, and cron completions.
 - Classifies a completion as `offer` or `skip` through its native LLM runtime.
 - Sends an accepted self-contained Chinese summary over authenticated HTTPS.
 
 ### Completion plugin
 
-`openclaw-plugin/` observes typed completion hooks and deduplicates the same run
-across hook boundaries. It ignores ordinary interactive turns. It does not own
-speech encoding, robot motion, pending-offer state, or device connectivity.
+`openclaw-plugin/` observes typed completion hooks, including `agent_end`, and
+deduplicates the same run across hook boundaries. It does not own speech
+encoding, robot motion, pending-offer state, or device connectivity.
 
 ### Pending-thought service
 
@@ -116,8 +116,11 @@ The knock never receives prepared audio. No text-to-`say` fallback exists.
    firmware verifies HTTPS, size, hash, image format, and StackChan identity
    while writing the inactive app partition.
 4. The bootloader starts the new slot pending verification. Firmware marks it
-   valid only after authenticated gateway activation; otherwise it remains
-   eligible for bootloader rollback.
+   valid only after the authenticated gateway completes MCP tool discovery;
+   otherwise it remains eligible for bootloader rollback.
+5. After a rollback, the recovered slot records the failed version and disables
+   automatic boot OTA until it is explicitly re-enabled through USB or the
+   configuration screen.
 
 The authenticated gateway maintenance tool can start the same verified update
 without USB when an immediate update is needed. USB remains a recovery fallback.
@@ -138,8 +141,8 @@ new session. A still-valid in-process offer is retained during this recovery.
 - An offer expires 30 minutes after its knock completes.
 - Duplicate suppression is bounded to retained IDs in the running process.
 - Robot reconnect recovery retains an unexpired offer in that process.
-- Gateway transport loss terminates the pending service so Docker starts a
-  fresh runtime.
+- Gateway transport loss replaces the upstream MCP session while preserving
+  the in-process pending runtime.
 - Process restart intentionally forgets offers and duplicate memory.
 - OpenClaw submission retries are bounded and do not create a delayed queue.
 - Connected idle display dimming does not drop the control transport.

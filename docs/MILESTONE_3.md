@@ -31,21 +31,23 @@ one eligible completion produced one knock, a head touch acknowledged it, and
 the resulting speech was clear. That run does not complete the milestone
 because the full recovery matrix was not accepted with one exact version set.
 
-The physical no-USB OTA path is accepted. On 2026-08-22, the authenticated
-gateway bridge updated `0.1.1` to `0.1.2`. A later physical reset made `0.1.2`
-read the stable manifest, download `0.1.3`, write `ota_1`, boot the new slot,
-authenticate with the gateway, and mark the image valid. The accepted `0.1.3`
-app SHA-256 is
-`2c2f21466f6ba00b88e37f342483d6983948fccb499fe1bac77b39d61b8da144`.
+The physical no-USB OTA path is accepted. On 2026-08-22, the robot completed
+two consecutive boot updates: `0.1.4` to `0.1.5`, then `0.1.5` to `0.1.6`.
+Each image installed in the inactive slot, authenticated with the gateway,
+completed MCP initialization, restored the reviewed layered avatar, and
+survived a validation reboot without rollback. Configuration mode advertised
+the reviewed `XCBODY-3341` SSID on `0.1.6`.
 
-The first `0.1.3` download attempt crashed at two percent in the existing
-Si12T head-touch I2C poll. The incomplete slot was not activated; the robot
-rebooted as `0.1.2`, automatically retried the manifest, and completed the
-update. The robot now runs valid firmware `0.1.3` on `ota_1` with gateway
-runtime `0.1.2` and Caddy `2.11.4`. The gateway restored an initialized
-41-tool session and verified transfer of the reviewed layered avatar. The user
-confirmed that the restored idle avatar was visible. OpenClaw was not part of
-this OTA test.
+The robot now runs valid firmware `0.1.6` on `ota_0` with gateway runtime
+`0.1.2` and Caddy `2.11.4`. The accepted app SHA-256 is
+`3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
+OpenClaw was not part of these OTA tests.
+
+Firmware records a pending target before switching slots. If the bootloader
+rolls back, the recovered slot records the failed version and disables
+automatic boot OTA until local USB or configuration-screen control clears the
+block. Those local controls are physically exercised; forced unhealthy-boot
+rollback remains untested.
 
 The physical run used gateway runtime `0.1.2`. Current gateway source is
 `0.1.3`, with bounded MCP request deadlines, but it has not been deployed or

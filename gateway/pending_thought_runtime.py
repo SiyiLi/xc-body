@@ -121,9 +121,11 @@ class SessionToolCaller:
         self._session: Any | None = None
 
     def bind(self, session: Any) -> None:
-        if self._session is not None:
-            raise PendingThoughtRuntimeError("MCP session is already bound")
         self._session = session
+
+    def unbind(self, session: Any) -> None:
+        if self._session is session:
+            self._session = None
 
     def __call__(
         self, name: str, arguments: Mapping[str, object]
@@ -150,6 +152,7 @@ class PendingThoughtRuntime:
         self._playback_token = playback_token
         self.machine: KnockWaitTell | None = None
         self.body: StackChanThoughtBody | None = None
+        self._caller: SessionToolCaller | None = None
 
     def mark_avatar_ready(self, session_id: str) -> None:
         """Record that startup restored the reviewed avatar."""
@@ -191,22 +194,25 @@ class PendingThoughtRuntime:
     ) -> Any:
         """Create the event-aware session and bind its concrete body ports."""
 
-        caller = SessionToolCaller(loop)
-        body = StackChanThoughtBody(
-            caller,
-            playback_url=self._playback_url,
-            playback_token=self._playback_token,
-        )
-        machine = KnockWaitTell(body, body)
+        if self.machine is None:
+            self._caller = SessionToolCaller(loop)
+            self.body = StackChanThoughtBody(
+                self._caller,
+                playback_url=self._playback_url,
+                playback_token=self._playback_token,
+            )
+            self.machine = KnockWaitTell(self.body, self.body)
         session = create_stackchan_client_session(
             read_stream,
             write_stream,
-            machine,
+            self.machine,
         )
-        caller.bind(session)
-        self.body = body
-        self.machine = machine
+        self._caller.bind(session)
         return session
+
+    def unbind_session(self, session: Any) -> None:
+        if self._caller is not None:
+            self._caller.unbind(session)
 
 
 def ready_device_session_id(status: object) -> str | None:

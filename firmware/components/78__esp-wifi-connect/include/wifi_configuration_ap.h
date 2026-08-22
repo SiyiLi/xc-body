@@ -33,6 +33,7 @@ public:
 
     void SetSsidPrefix(const std::string &&ssid_prefix);
     void SetSsidPrefix(const std::string &ssid_prefix);
+    void SetSsid(const std::string &ssid);
     void SetLanguage(const std::string &&language);
     void SetLanguage(const std::string &language);
     void Start();
@@ -58,6 +59,7 @@ private:
     httpd_handle_t server_ = NULL;
     EventGroupHandle_t event_group_;
     std::string ssid_prefix_;
+    std::string ssid_;
     std::string language_;
     esp_event_handler_instance_t instance_any_id_;
     esp_event_handler_instance_t instance_got_ip_;

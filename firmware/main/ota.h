@@ -8,6 +8,13 @@
 #include <esp_err.h>
 #include "board.h"
 
+struct OtaPolicyStatus {
+    bool automatic_updates_enabled = true;
+    std::string pending_version;
+    std::string failed_version;
+    int rollback_reset_reason = 0;
+};
+
 class Ota {
 public:
     Ota();
@@ -24,9 +31,13 @@ public:
     bool StartUpgrade(std::function<void(int progress, size_t speed)> callback);
     static bool Upgrade(
         const std::string& firmware_url,
+        const std::string& expected_version,
         const std::string& expected_sha256,
         size_t expected_size,
         std::function<void(int progress, size_t speed)> callback);
+    static OtaPolicyStatus GetPolicyStatus();
+    static void SetAutomaticUpdatesEnabled(bool enabled);
+    static void RecordRollbackIfNeeded();
     static void MarkCurrentVersionValid();
 
     const std::string& GetFirmwareVersion() const { return firmware_version_; }
@@ -58,8 +69,6 @@ private:
     int activation_timeout_ms_ = 30000;
 
     std::function<void(int progress, size_t speed)> upgrade_callback_;
-    std::vector<int> ParseVersion(const std::string& version);
-    bool IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion);
     std::string GetActivationPayload();
     std::unique_ptr<Http> SetupHttp();
 };

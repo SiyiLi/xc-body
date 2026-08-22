@@ -219,7 +219,7 @@ std::string WifiManager::GetMacAddress() const {
 
 // ==================== Config AP Mode ====================
 
-void WifiManager::StartConfigAp() {
+void WifiManager::StartConfigAp(const std::string& ssid) {
     std::unique_lock<std::mutex> lock(mutex_);
 
     if (!initialized_) {
@@ -243,6 +243,7 @@ void WifiManager::StartConfigAp() {
 
     ESP_LOGI(TAG, "Starting config AP");
 
+    config_ap_->SetSsid(ssid);
     config_ap_->SetSsidPrefix(config_.ssid_prefix);
     config_ap_->SetLanguage(config_.language);
 

@@ -5,6 +5,7 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#include "ota.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -163,7 +164,11 @@ void WifiBoard::StartWifiConfigMode() {
 #ifdef CONFIG_USE_HOTSPOT_WIFI_PROVISIONING
     auto& wifi_manager = WifiManager::GetInstance();
 
+#if CONFIG_BOARD_TYPE_STACKCHAN
+    wifi_manager.StartConfigAp("XCBODY-3341");
+#else
     wifi_manager.StartConfigAp();
+#endif
 
     // Show config prompt after a short delay
     Application::GetInstance().Schedule([&wifi_manager]() {
@@ -171,6 +176,13 @@ void WifiBoard::StartWifiConfigMode() {
         hint += wifi_manager.GetApSsid();
         hint += Lang::Strings::ACCESS_VIA_BROWSER;
         hint += wifi_manager.GetApWebUrl();
+#if CONFIG_BOARD_TYPE_STACKCHAN
+        hint += "\nAutomatic OTA: ";
+        hint += Ota::GetPolicyStatus().automatic_updates_enabled
+            ? "ON"
+            : "OFF";
+        hint += " (tap left OFF / right ON)";
+#endif
 
         Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
     });

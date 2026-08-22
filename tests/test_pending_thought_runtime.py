@@ -129,19 +129,30 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
     def test_runtime_owns_machine_for_session_lifetime(self):
         runtime = PendingThoughtRuntime()
-        fake_session = object()
+        first_session = object()
+        second_session = object()
 
         with patch(
             "gateway.pending_thought_runtime.create_stackchan_client_session",
-            return_value=fake_session,
+            side_effect=(first_session, second_session),
         ) as factory:
-            session = runtime.create_session("read", "write", object())
+            first = runtime.create_session("read-1", "write-1", object())
+            machine = runtime.machine
+            body = runtime.body
+            second = runtime.create_session("read-2", "write-2", object())
 
-        self.assertIs(session, fake_session)
-        self.assertIsNotNone(runtime.machine)
-        self.assertIsNotNone(runtime.body)
-        factory.assert_called_once()
-        self.assertIs(factory.call_args.args[2], runtime.machine)
+        self.assertIs(first, first_session)
+        self.assertIs(second, second_session)
+        self.assertIs(runtime.machine, machine)
+        self.assertIs(runtime.body, body)
+        self.assertEqual(factory.call_count, 2)
+        self.assertIs(factory.call_args_list[0].args[2], machine)
+        self.assertIs(factory.call_args_list[1].args[2], machine)
+
+        runtime.unbind_session(first_session)
+        self.assertIs(runtime._caller._session, second_session)
+        runtime.unbind_session(second_session)
+        self.assertIsNone(runtime._caller._session)
 
     def test_runtime_readiness_tracks_verified_device_session(self):
         caller = RecordingCaller()

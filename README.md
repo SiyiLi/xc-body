@@ -23,9 +23,9 @@ turning it off should make the room feel a little emptier.
 ## Current Status
 
 - Milestones 1 and 2 have physical acceptance. Milestone 3 is in progress.
-- Native OpenClaw integration observes selected successful subagent and cron
+- Native OpenClaw integration observes successful agent, subagent, and cron
   completions, chooses `offer` or `skip`, and submits accepted summaries to the
-  authenticated VM service. Ordinary interactive turns do not trigger it.
+  authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
   submission retries, robot-session avatar restoration, supervisor recovery,
   and connected idle display dimming. The complete recovery matrix still needs
@@ -33,9 +33,10 @@ turning it off should make the room feel a little emptier.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   cloud rendezvous host. The public route is `https://43.143.37.91`; raw
   service ports remain private.
-- The robot and firmware source run `0.1.3`. Both the authenticated no-USB
-  gateway bridge and the boot-time update from the stable manifest have
-  physical acceptance. Forced unhealthy-boot rollback remains untested.
+- The robot runs accepted firmware `0.1.6`; the next source version is `0.1.7`.
+  Two consecutive no-USB boot updates, `0.1.4` to `0.1.5` and `0.1.5` to
+  `0.1.6`, survived validation reboots and restored the reviewed avatar.
+  Forced unhealthy-boot rollback remains untested.
 - Camera and microphone input, durable queues, quiet hours, free-form motion,
   Home Assistant, and Stick S3 integration are not part of the current scope.
 
@@ -61,6 +62,8 @@ application reboot. It never returns the saved bearer token.
 ```sh
 scripts/stackchan_usb.py status
 scripts/stackchan_usb.py configure --url wss://43.143.37.91
+scripts/stackchan_usb.py automatic-ota disable
+scripts/stackchan_usb.py automatic-ota enable
 scripts/stackchan_usb.py update \
   --manifest https://43.143.37.91/firmware/manifest.json
 scripts/stackchan_usb.py reboot

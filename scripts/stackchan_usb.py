@@ -295,6 +295,11 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("reboot", help="reboot through the application path")
+    automatic_ota = commands.add_parser(
+        "automatic-ota",
+        help="enable or disable automatic boot OTA",
+    )
+    automatic_ota.add_argument("state", choices=("enable", "disable"))
     update = commands.add_parser(
         "update",
         help="queue a verified XC Body firmware release",
@@ -319,6 +324,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "configure":
             request = _configure_request(args)
+        elif args.command == "automatic-ota":
+            request = {
+                "command": "automatic_ota",
+                "enabled": args.state == "enable",
+            }
         elif args.command == "update":
             request = _firmware_from_manifest(args.manifest, args.timeout)
         else:

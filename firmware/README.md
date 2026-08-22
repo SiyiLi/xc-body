@@ -2,7 +2,7 @@
 
 This directory contains the XC Body firmware for the M5Stack StackChan
 K151/CoreS3. The ESP-IDF project is `xc_body`; its StackChan app identity is
-`xc_body_stackchan`. The current firmware version is `0.1.3`, and the app image
+`xc_body_stackchan`. The current firmware version is `0.1.7`, and the app image
 is `build/xc_body.bin`.
 
 ## Source Provenance
@@ -33,7 +33,7 @@ The build produces:
 
 - `build/xc_body.bin` for the app partition;
 - `build/merged-binary.bin` for full USB recovery; and
-- `releases/v0.1.3_stackchan.zip`.
+- `releases/v0.1.7_stackchan.zip`.
 
 ## Flash Layout
 
@@ -45,11 +45,14 @@ routine iteration.
 Firmware flashing always requires separate explicit permission. Detailed
 project rules are in [`../AGENTS.md`](../AGENTS.md).
 
-The no-USB dual-slot OTA path is physically accepted. The gateway bridge
-updated `0.1.1` to `0.1.2`; a later physical reset made `0.1.2` discover and
-install `0.1.3` from the stable manifest. The robot booted `ota_1`, reached the
-authenticated gateway, and marked `0.1.3` valid. An incomplete first download
-was never activated and the next boot retried successfully. That first attempt
-crashed in the existing Si12T head-touch I2C poll, which remains an open
-firmware defect. Forced unhealthy-boot rollback also remains untested. The
-merged USB recovery path remains available.
+The no-USB dual-slot OTA path is physically accepted through consecutive
+updates from `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Both images
+authenticated with the gateway, restored the reviewed avatar, and survived a
+validation reboot. The robot now runs `0.1.6` on `ota_0`; its app SHA-256 is
+`3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
+
+After a bootloader rollback, firmware disables automatic boot OTA until it is
+re-enabled through USB or the configuration screen. Configuration mode uses
+SSID `XCBODY-3341`. Forced unhealthy-boot rollback remains untested, and the
+intermittent Si12T head-touch I2C crash remains open. The merged USB recovery
+path remains available.

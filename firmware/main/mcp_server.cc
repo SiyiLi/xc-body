@@ -152,18 +152,21 @@ void McpServer::AddUserOnlyTools() {
     AddUserOnlyTool("self.upgrade_firmware", "Install a verified XC Body firmware image, then reboot.",
         PropertyList({
             Property("url", kPropertyTypeString),
+            Property("version", kPropertyTypeString),
             Property("sha256", kPropertyTypeString),
             Property("size", kPropertyTypeInteger, 1, 0x3f0000)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
+            auto version = properties["version"].value<std::string>();
             auto sha256 = properties["sha256"].value<std::string>();
             auto size = properties["size"].value<int>();
             ESP_LOGI(TAG, "User requested verified XC Body firmware upgrade");
             
             auto& app = Application::GetInstance();
-            app.Schedule([url, sha256, size, &app]() {
-                bool success = app.UpgradeFirmware(url, "", sha256, size);
+            app.Schedule([url, version, sha256, size, &app]() {
+                bool success = app.UpgradeFirmware(
+                    url, version, sha256, size);
                 if (!success) {
                     ESP_LOGE(TAG, "Firmware upgrade failed");
                 }
@@ -510,6 +513,9 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     }
     
     ReplyResult(id, json);
+    if (next_cursor.empty()) {
+        Ota::MarkCurrentVersionValid();
+    }
 }
 
 void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments) {

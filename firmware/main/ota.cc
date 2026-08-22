@@ -13,6 +13,7 @@
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <mbedtls/sha256.h>
 #ifdef SOC_HMAC_SUPPORTED
 #include <esp_hmac.h>
@@ -20,10 +21,10 @@
 
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
-#include <vector>
-#include <sstream>
 #include <algorithm>
+#include <limits>
 
 #define TAG "Ota"
 
@@ -31,6 +32,17 @@ namespace {
 
 constexpr char kManifestProduct[] = "xc-body";
 constexpr char kStackChanProjectName[] = "xc_body_stackchan";
+constexpr char kOtaSettingsNamespace[] = "xc_ota";
+constexpr char kAutomaticUpdatesKey[] = "auto_enabled";
+constexpr char kPendingVersionKey[] = "pending_ver";
+constexpr char kPendingSlotKey[] = "pending_slot";
+constexpr char kFailedVersionKey[] = "failed_ver";
+constexpr char kRollbackResetReasonKey[] = "reset_reason";
+
+void ClearPendingUpdate(Settings& settings) {
+    settings.EraseKey(kPendingVersionKey);
+    settings.EraseKey(kPendingSlotKey);
+}
 
 bool IsHttpsUrl(const std::string& url) {
     return url.rfind("https://", 0) == 0;
@@ -44,6 +56,51 @@ bool IsSha256Hex(const std::string& value) {
             return std::isdigit(character) ||
                 (character >= 'a' && character <= 'f');
         });
+}
+
+bool ParseSemanticVersion(
+    const std::string& version,
+    std::array<uint32_t, 3>& parts) {
+    size_t start = 0;
+    for (size_t index = 0; index < parts.size(); ++index) {
+        size_t end = version.find('.', start);
+        if ((index < parts.size() - 1 && end == std::string::npos) ||
+            (index == parts.size() - 1 && end != std::string::npos)) {
+            return false;
+        }
+
+        size_t length = (end == std::string::npos ? version.size() : end) -
+            start;
+        if (length == 0 ||
+            (length > 1 && version[start] == '0')) {
+            return false;
+        }
+
+        uint32_t value = 0;
+        for (size_t offset = 0; offset < length; ++offset) {
+            unsigned char character = version[start + offset];
+            if (!std::isdigit(character)) {
+                return false;
+            }
+            uint32_t digit = character - '0';
+            if (value >
+                (std::numeric_limits<uint32_t>::max() - digit) / 10) {
+                return false;
+            }
+            value = value * 10 + digit;
+        }
+        parts[index] = value;
+        if (end != std::string::npos) {
+            start = end + 1;
+        }
+    }
+    return true;
+}
+
+bool IsNewerSemanticVersion(
+    const std::array<uint32_t, 3>& current,
+    const std::array<uint32_t, 3>& candidate) {
+    return candidate > current;
 }
 
 std::string Sha256Hex(const std::array<unsigned char, 32>& digest) {
@@ -104,6 +161,80 @@ Ota::Ota() {
 }
 
 Ota::~Ota() {
+}
+
+OtaPolicyStatus Ota::GetPolicyStatus() {
+    Settings settings(kOtaSettingsNamespace, false);
+    OtaPolicyStatus status;
+    status.automatic_updates_enabled = settings.GetBool(
+        kAutomaticUpdatesKey, true);
+    status.pending_version = settings.GetString(kPendingVersionKey);
+    status.failed_version = settings.GetString(kFailedVersionKey);
+    status.rollback_reset_reason = settings.GetInt(
+        kRollbackResetReasonKey, 0);
+    return status;
+}
+
+void Ota::SetAutomaticUpdatesEnabled(bool enabled) {
+    Settings settings(kOtaSettingsNamespace, true);
+    settings.SetBool(kAutomaticUpdatesKey, enabled);
+    if (enabled) {
+        settings.EraseKey(kFailedVersionKey);
+        settings.EraseKey(kRollbackResetReasonKey);
+    }
+    ESP_LOGI(
+        TAG,
+        "Automatic OTA %s by local control",
+        enabled ? "enabled" : "disabled");
+}
+
+void Ota::RecordRollbackIfNeeded() {
+    auto running = esp_ota_get_running_partition();
+    if (running == nullptr) {
+        return;
+    }
+
+    Settings read_settings(kOtaSettingsNamespace, false);
+    std::string pending_version = read_settings.GetString(
+        kPendingVersionKey);
+    std::string pending_slot = read_settings.GetString(kPendingSlotKey);
+    if (pending_version.empty() || pending_slot.empty() ||
+        pending_slot == running->label) {
+        return;
+    }
+
+    auto failed = esp_ota_get_last_invalid_partition();
+    if (failed == nullptr || pending_slot != failed->label) {
+        ESP_LOGW(
+            TAG,
+            "Pending OTA %s expected slot %s, but no matching failed "
+            "partition was found",
+            pending_version.c_str(),
+            pending_slot.c_str());
+        return;
+    }
+
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(failed, &state) != ESP_OK ||
+        (state != ESP_OTA_IMG_ABORTED && state != ESP_OTA_IMG_INVALID)) {
+        return;
+    }
+
+    int reset_reason = static_cast<int>(esp_reset_reason());
+    {
+        Settings settings(kOtaSettingsNamespace, true);
+        settings.SetBool(kAutomaticUpdatesKey, false);
+        settings.SetString(kFailedVersionKey, pending_version);
+        settings.SetInt(kRollbackResetReasonKey, reset_reason);
+        ClearPendingUpdate(settings);
+    }
+    ESP_LOGE(
+        TAG,
+        "Firmware %s rolled back from %s (reset reason %d); automatic "
+        "OTA is disabled",
+        pending_version.c_str(),
+        pending_slot.c_str(),
+        reset_reason);
 }
 
 std::string Ota::GetCheckVersionUrl() {
@@ -320,12 +451,16 @@ esp_err_t Ota::CheckVersion() {
             firmware_size_ = static_cast<size_t>(size->valueint);
         }
 
+        std::array<uint32_t, 3> current_parts;
+        std::array<uint32_t, 3> firmware_parts;
         if (cJSON_IsString(version) && cJSON_IsString(url) &&
             cJSON_IsString(sha256) && cJSON_IsNumber(size) &&
             IsHttpsUrl(firmware_url_) &&
-            IsSha256Hex(firmware_sha256_) && firmware_size_ > 0) {
-            // Check if the version is newer, for example, 0.1.0 is newer than 0.0.1
-            has_new_version_ = IsNewVersionAvailable(current_version_, firmware_version_);
+            IsSha256Hex(firmware_sha256_) && firmware_size_ > 0 &&
+            ParseSemanticVersion(current_version_, current_parts) &&
+            ParseSemanticVersion(firmware_version_, firmware_parts)) {
+            has_new_version_ = IsNewerSemanticVersion(
+                current_parts, firmware_parts);
             if (has_new_version_) {
                 ESP_LOGI(TAG, "New version available: %s", firmware_version_.c_str());
             } else {
@@ -362,16 +497,34 @@ void Ota::MarkCurrentVersionValid() {
 
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
         ESP_LOGI(TAG, "Marking firmware as valid");
-        esp_ota_mark_app_valid_cancel_rollback();
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "Failed to mark firmware as valid: %s",
+                esp_err_to_name(err));
+            return;
+        }
+    }
+
+    Settings read_settings(kOtaSettingsNamespace, false);
+    if (read_settings.GetString(kPendingSlotKey) == partition->label) {
+        Settings settings(kOtaSettingsNamespace, true);
+        ClearPendingUpdate(settings);
+        ESP_LOGI(TAG, "Cleared pending OTA marker after health confirmation");
     }
 }
 
 bool Ota::Upgrade(
     const std::string& firmware_url,
+    const std::string& expected_version,
     const std::string& expected_sha256,
     size_t expected_size,
     std::function<void(int progress, size_t speed)> callback) {
+    std::array<uint32_t, 3> version_parts;
     if (!IsHttpsUrl(firmware_url) || !IsSha256Hex(expected_sha256) ||
+        !ParseSemanticVersion(expected_version, version_parts) ||
+        expected_version.size() >= sizeof(esp_app_desc_t::version) ||
         expected_size == 0) {
         ESP_LOGE(TAG, "Rejected invalid XC Body firmware metadata");
         return false;
@@ -489,6 +642,19 @@ bool Ota::Upgrade(
                     ESP_LOGE(TAG, "Rejected non-StackChan XC Body firmware");
                     return fail_download();
                 }
+                std::string embedded_version(
+                    new_app_info.version,
+                    strnlen(
+                        new_app_info.version,
+                        sizeof(new_app_info.version)));
+                if (embedded_version != expected_version) {
+                    ESP_LOGE(
+                        TAG,
+                        "Firmware version mismatch: image=%s manifest=%s",
+                        embedded_version.c_str(),
+                        expected_version.c_str());
+                    return fail_download();
+                }
 
                 if (esp_ota_begin(
                         update_partition,
@@ -548,8 +714,16 @@ bool Ota::Upgrade(
         return false;
     }
 
+    {
+        Settings settings(kOtaSettingsNamespace, true);
+        settings.SetString(kPendingVersionKey, expected_version);
+        settings.SetString(kPendingSlotKey, update_partition->label);
+    }
+
     err = esp_ota_set_boot_partition(update_partition);
     if (err != ESP_OK) {
+        Settings settings(kOtaSettingsNamespace, true);
+        ClearPendingUpdate(settings);
         ESP_LOGE(TAG, "Failed to set boot partition: %s", esp_err_to_name(err));
         return false;
     }
@@ -561,38 +735,12 @@ bool Ota::Upgrade(
 bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback) {
     return Upgrade(
         firmware_url_,
+        firmware_version_,
         firmware_sha256_,
         firmware_size_,
         callback);
 }
 
-
-std::vector<int> Ota::ParseVersion(const std::string& version) {
-    std::vector<int> versionNumbers;
-    std::stringstream ss(version);
-    std::string segment;
-    
-    while (std::getline(ss, segment, '.')) {
-        versionNumbers.push_back(std::stoi(segment));
-    }
-    
-    return versionNumbers;
-}
-
-bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion) {
-    std::vector<int> current = ParseVersion(currentVersion);
-    std::vector<int> newer = ParseVersion(newVersion);
-    
-    for (size_t i = 0; i < std::min(current.size(), newer.size()); ++i) {
-        if (newer[i] > current[i]) {
-            return true;
-        } else if (newer[i] < current[i]) {
-            return false;
-        }
-    }
-    
-    return newer.size() > current.size();
-}
 
 std::string Ota::GetActivationPayload() {
     if (!has_serial_number_) {

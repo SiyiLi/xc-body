@@ -416,6 +416,16 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
+    auto policy = Ota::GetPolicyStatus();
+    if (!policy.automatic_updates_enabled) {
+        ESP_LOGW(
+            TAG,
+            "Automatic OTA is disabled%s%s",
+            policy.failed_version.empty() ? "" : " after rollback of ",
+            policy.failed_version.c_str());
+        return;
+    }
+
     if (ota_->GetCheckVersionUrl().empty()) {
         ESP_LOGI(TAG, "XC Body OTA is disabled: no manifest URL configured");
         return;
@@ -452,7 +462,6 @@ void Application::InitializeProtocol() {
     protocol_ = std::make_unique<WebsocketProtocol>();
 
     protocol_->OnConnected([this]() {
-        Ota::MarkCurrentVersionValid();
         DismissAlert();
     });
 
@@ -1110,6 +1119,13 @@ bool Application::UpgradeFirmware(
     const std::string& version,
     const std::string& expected_sha256,
     size_t expected_size) {
+    bool expected = false;
+    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
+            expected, true)) {
+        ESP_LOGW(TAG, "Firmware upgrade already in progress");
+        return false;
+    }
+
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto previous_state = GetDeviceState();
@@ -1138,6 +1154,7 @@ bool Application::UpgradeFirmware(
 
     bool upgrade_success = Ota::Upgrade(
         upgrade_url,
+        version,
         expected_sha256,
         expected_size,
         [this, display](int progress, size_t speed) {
@@ -1154,6 +1171,7 @@ bool Application::UpgradeFirmware(
         });
 
     if (!upgrade_success) {
+        firmware_upgrade_in_progress_.store(false);
         // Upgrade failed, restart audio service and continue running
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
