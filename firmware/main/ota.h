@@ -15,6 +15,19 @@ struct OtaPolicyStatus {
     int rollback_reset_reason = 0;
 };
 
+struct OtaDownloadDiagnostics {
+    std::string state = "none";
+    std::string stage = "none";
+    size_t bytes_received = 0;
+    size_t expected_size = 0;
+    int progress = 0;
+    bool has_previous_interruption = false;
+    std::string previous_stage = "none";
+    size_t previous_bytes_received = 0;
+    size_t previous_expected_size = 0;
+    int previous_reset_reason = 0;
+};
+
 class Ota {
 public:
     Ota();
@@ -36,6 +49,7 @@ public:
         size_t expected_size,
         std::function<void(int progress, size_t speed)> callback);
     static OtaPolicyStatus GetPolicyStatus();
+    static OtaDownloadDiagnostics GetDownloadDiagnostics();
     static void SetAutomaticUpdatesEnabled(bool enabled);
     static void RecordRollbackIfNeeded();
     static void MarkCurrentVersionValid();

@@ -110,14 +110,26 @@ void LvglDisplay::ShowNotification(const char* notification, int duration_ms) {
     ESP_ERROR_CHECK(esp_timer_start_once(notification_timer_, duration_ms * 1000));
 }
 
+bool LvglDisplay::FormatCurrentTime(char* buffer, size_t size) {
+    time_t now = time(nullptr);
+    struct tm local_time;
+    localtime_r(&now, &local_time);
+    if (local_time.tm_year < 2025 - 1900) {
+        return false;
+    }
+    return strftime(buffer, size, "%H:%M", &local_time) > 0;
+}
+
 void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& app = Application::GetInstance();
     auto& board = Board::GetInstance();
     auto codec = board.GetAudioCodec();
+    bool appliance_status_style;
 
     // Update mute icon
     {
         DisplayLockGuard lock(this);
+        appliance_status_style = appliance_status_style_;
         if (mute_label_ == nullptr) {
             return;
         }
@@ -133,19 +145,17 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     }
 
     // Update time
-    if (app.GetDeviceState() == kDeviceStateIdle) {
-        if (last_status_update_time_ + std::chrono::seconds(10) < std::chrono::system_clock::now()) {
+    if (!appliance_status_style &&
+        app.GetDeviceState() == kDeviceStateIdle) {
+        if (last_status_update_time_ + std::chrono::seconds(10) <
+            std::chrono::system_clock::now()) {
             last_status_update_time_ = std::chrono::system_clock::now();
-            // Set status to clock "HH:MM"
-            time_t now = time(NULL);
-            struct tm* tm = localtime(&now);
-            // Check if the we have already set the time
-            if (tm->tm_year >= 2025 - 1900) {
-                char time_str[16];
-                strftime(time_str, sizeof(time_str), "%H:%M", tm);
+            // Set status to clock "HH:MM" through the shared formatter.
+            char time_str[16];
+            if (FormatCurrentTime(time_str, sizeof(time_str))) {
                 SetStatus(time_str);
             } else {
-                ESP_LOGW(TAG, "System time is not set, tm_year: %d", tm->tm_year);
+                ESP_LOGW(TAG, "System time is not set");
             }
         }
     }
@@ -156,23 +166,38 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     bool charging, discharging;
     const char* icon = nullptr;
     if (board.GetBatteryLevel(battery_level, charging, discharging)) {
-        if (charging) {
-            icon = FONT_AWESOME_BATTERY_BOLT;
-        } else {
-            const char* levels[] = {
-                FONT_AWESOME_BATTERY_EMPTY, // 0-19%
-                FONT_AWESOME_BATTERY_QUARTER,    // 20-39%
-                FONT_AWESOME_BATTERY_HALF,    // 40-59%
-                FONT_AWESOME_BATTERY_THREE_QUARTERS,    // 60-79%
-                FONT_AWESOME_BATTERY_FULL, // 80-99%
-                FONT_AWESOME_BATTERY_FULL, // 100%
-            };
-            icon = levels[battery_level / 20];
-        }
         DisplayLockGuard lock(this);
-        if (battery_label_ != nullptr && battery_icon_ != icon) {
+        const char* levels[] = {
+            FONT_AWESOME_BATTERY_EMPTY, // 0-19%
+            FONT_AWESOME_BATTERY_QUARTER, // 20-39%
+            FONT_AWESOME_BATTERY_HALF, // 40-59%
+            FONT_AWESOME_BATTERY_THREE_QUARTERS, // 60-79%
+            FONT_AWESOME_BATTERY_FULL, // 80-99%
+            FONT_AWESOME_BATTERY_FULL, // 100%
+        };
+        icon = charging && !appliance_status_style
+            ? FONT_AWESOME_BATTERY_BOLT
+            : levels[battery_level / 20];
+        if (battery_icon_ != icon) {
             battery_icon_ = icon;
-            lv_label_set_text(battery_label_, battery_icon_);
+            if (battery_label_ != nullptr) {
+                lv_label_set_text(battery_label_, battery_icon_);
+            }
+            if (appliance_battery_label_ != nullptr) {
+                lv_label_set_text(
+                    appliance_battery_label_, battery_icon_);
+            }
+        }
+        if (battery_label_ != nullptr) {
+            lv_obj_remove_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (appliance_battery_label_ != nullptr) {
+            lv_obj_remove_flag(
+                appliance_battery_label_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_text_color(
+                appliance_battery_label_,
+                charging ? lv_color_hex(0x22C55E) : lv_color_white(),
+                0);
         }
 
         // Check low battery popup only when clock tick event is triggered
@@ -181,6 +206,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
             if (strcmp(icon, FONT_AWESOME_BATTERY_EMPTY) == 0 && discharging) {
                 if (lv_obj_has_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN)) { // Show if low battery popup is hidden
                     lv_obj_remove_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_move_foreground(low_battery_popup_);
                     app.Schedule([&app]() {
                         app.PlaySound(Lang::Sounds::OGG_LOW_BATTERY);
                     });
@@ -208,10 +234,16 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         };
         if (std::find(allowed_states.begin(), allowed_states.end(), device_state) != allowed_states.end()) {
             icon = board.GetNetworkStateIcon();
-            if (network_label_ != nullptr && icon != nullptr && network_icon_ != icon) {
+            if (icon != nullptr && network_icon_ != icon) {
                 DisplayLockGuard lock(this);
                 network_icon_ = icon;
-                lv_label_set_text(network_label_, network_icon_);
+                if (network_label_ != nullptr) {
+                    lv_label_set_text(network_label_, network_icon_);
+                }
+                if (appliance_network_label_ != nullptr) {
+                    lv_label_set_text(
+                        appliance_network_label_, network_icon_);
+                }
             }
         }
     }

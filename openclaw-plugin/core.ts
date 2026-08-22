@@ -28,7 +28,12 @@ export type IntegrationDependencies = {
 
 export type NativeIntegrationConfig = {
   summaryUrl: string;
+  voiceUrl?: string;
   token: string;
+  sessionKey?: string;
+  telegramTarget?: string;
+  agentId: string;
+  pollMs: number;
   timeoutMs: number;
 };
 
@@ -155,12 +160,25 @@ export function parsePluginConfig(
   value: Record<string, unknown>,
 ): NativeIntegrationConfig {
   const summaryUrl = value.summaryUrl;
+  const voiceUrl = value.voiceUrl;
   const token = value.token;
+  const sessionKey = value.sessionKey;
+  const telegramTarget = value.telegramTarget;
+  const agentId = value.agentId ?? "main";
+  const pollMs = value.pollMs ?? 1_000;
   const timeoutMs = value.timeoutMs ?? 120_000;
   if (
     typeof summaryUrl !== "string" ||
     typeof token !== "string" ||
     !token.trim() ||
+    (voiceUrl !== undefined && typeof voiceUrl !== "string") ||
+    (sessionKey !== undefined && typeof sessionKey !== "string") ||
+    (telegramTarget !== undefined && typeof telegramTarget !== "string") ||
+    typeof agentId !== "string" ||
+    !agentId.trim() ||
+    !Number.isInteger(pollMs) ||
+    (pollMs as number) < 250 ||
+    (pollMs as number) > 30_000 ||
     !Number.isInteger(timeoutMs) ||
     (timeoutMs as number) < 1_000 ||
     (timeoutMs as number) > 180_000
@@ -180,9 +198,31 @@ export function parsePluginConfig(
   ) {
     throw new Error("XC Body summary URL must use authenticated TLS");
   }
+  let voiceEndpoint: URL | undefined;
+  if (voiceUrl !== undefined) {
+    try {
+      voiceEndpoint = new URL(voiceUrl);
+    } catch {
+      throw new Error("XC Body voice URL is invalid");
+    }
+    if (
+      voiceEndpoint.protocol !== "https:" ||
+      voiceEndpoint.username ||
+      voiceEndpoint.password ||
+      !sessionKey?.trim() ||
+      !telegramTarget?.trim()
+    ) {
+      throw new Error("XC Body voice configuration is invalid");
+    }
+  }
   return {
     summaryUrl: endpoint.toString(),
+    voiceUrl: voiceEndpoint?.toString(),
     token: token.trim(),
+    sessionKey: sessionKey?.trim(),
+    telegramTarget: telegramTarget?.trim(),
+    agentId: agentId.trim(),
+    pollMs: pollMs as number,
     timeoutMs: timeoutMs as number,
   };
 }

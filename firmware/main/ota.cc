@@ -10,6 +10,7 @@
 #include <esp_partition.h>
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
+#include <esp_attr.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 #include <esp_heap_caps.h>
@@ -38,6 +39,128 @@ constexpr char kPendingVersionKey[] = "pending_ver";
 constexpr char kPendingSlotKey[] = "pending_slot";
 constexpr char kFailedVersionKey[] = "failed_ver";
 constexpr char kRollbackResetReasonKey[] = "reset_reason";
+
+constexpr uint32_t kOtaDiagnosticMagic = 0x58434f54;
+
+enum class OtaDiagnosticState : uint32_t {
+    kNone,
+    kInProgress,
+    kInterrupted,
+    kFailed,
+    kComplete,
+};
+
+enum class OtaDiagnosticStage : uint32_t {
+    kNone,
+    kConnect,
+    kRead,
+    kBegin,
+    kWrite,
+    kVerify,
+    kActivate,
+    kComplete,
+};
+
+struct OtaRtcDiagnostics {
+    uint32_t magic;
+    OtaDiagnosticState state;
+    OtaDiagnosticStage stage;
+    uint32_t bytes_received;
+    uint32_t expected_size;
+    bool has_previous_interruption;
+    OtaDiagnosticStage previous_stage;
+    uint32_t previous_bytes_received;
+    uint32_t previous_expected_size;
+    int previous_reset_reason;
+};
+
+RTC_NOINIT_ATTR OtaRtcDiagnostics ota_diagnostics;
+
+bool HasValidOtaDiagnostics() {
+    return ota_diagnostics.magic == kOtaDiagnosticMagic &&
+        ota_diagnostics.state <= OtaDiagnosticState::kComplete &&
+        ota_diagnostics.stage <= OtaDiagnosticStage::kComplete;
+}
+
+const char* OtaStateName(OtaDiagnosticState state) {
+    switch (state) {
+        case OtaDiagnosticState::kInProgress:
+            return "in_progress";
+        case OtaDiagnosticState::kInterrupted:
+            return "interrupted";
+        case OtaDiagnosticState::kFailed:
+            return "failed";
+        case OtaDiagnosticState::kComplete:
+            return "complete";
+        case OtaDiagnosticState::kNone:
+        default:
+            return "none";
+    }
+}
+
+const char* OtaStageName(OtaDiagnosticStage stage) {
+    switch (stage) {
+        case OtaDiagnosticStage::kConnect:
+            return "connect";
+        case OtaDiagnosticStage::kRead:
+            return "read";
+        case OtaDiagnosticStage::kBegin:
+            return "begin";
+        case OtaDiagnosticStage::kWrite:
+            return "write";
+        case OtaDiagnosticStage::kVerify:
+            return "verify";
+        case OtaDiagnosticStage::kActivate:
+            return "activate";
+        case OtaDiagnosticStage::kComplete:
+            return "complete";
+        case OtaDiagnosticStage::kNone:
+        default:
+            return "none";
+    }
+}
+
+void BeginOtaDiagnostics(size_t expected_size) {
+    bool preserve_interruption = HasValidOtaDiagnostics() &&
+        ota_diagnostics.state == OtaDiagnosticState::kInterrupted;
+    if (!preserve_interruption) {
+        ota_diagnostics.has_previous_interruption = false;
+    }
+    ota_diagnostics.magic = kOtaDiagnosticMagic;
+    ota_diagnostics.state = OtaDiagnosticState::kInProgress;
+    ota_diagnostics.stage = OtaDiagnosticStage::kConnect;
+    ota_diagnostics.bytes_received = 0;
+    ota_diagnostics.expected_size = expected_size;
+}
+
+void RecordOtaStage(OtaDiagnosticStage stage, size_t bytes_received) {
+    ota_diagnostics.stage = stage;
+    ota_diagnostics.bytes_received = bytes_received;
+}
+
+class OtaDiagnosticAttempt {
+public:
+    explicit OtaDiagnosticAttempt(size_t expected_size) {
+        BeginOtaDiagnostics(expected_size);
+    }
+
+    ~OtaDiagnosticAttempt() {
+        if (!complete_) {
+            ota_diagnostics.state = OtaDiagnosticState::kFailed;
+        }
+    }
+
+    void Complete() {
+        RecordOtaStage(
+            OtaDiagnosticStage::kComplete,
+            ota_diagnostics.expected_size);
+        ota_diagnostics.state = OtaDiagnosticState::kComplete;
+        complete_ = true;
+    }
+
+private:
+    bool complete_ = false;
+};
 
 void ClearPendingUpdate(Settings& settings) {
     settings.EraseKey(kPendingVersionKey);
@@ -159,6 +282,26 @@ private:
 
 
 Ota::Ota() {
+    if (HasValidOtaDiagnostics() &&
+        ota_diagnostics.state == OtaDiagnosticState::kInProgress) {
+        ota_diagnostics.has_previous_interruption = true;
+        ota_diagnostics.previous_stage = ota_diagnostics.stage;
+        ota_diagnostics.previous_bytes_received =
+            ota_diagnostics.bytes_received;
+        ota_diagnostics.previous_expected_size =
+            ota_diagnostics.expected_size;
+        ota_diagnostics.previous_reset_reason = esp_reset_reason();
+        ota_diagnostics.state = OtaDiagnosticState::kInterrupted;
+        ESP_LOGE(
+            TAG,
+            "Previous OTA interrupted at %s (%lu/%lu bytes), reset=%d",
+            OtaStageName(ota_diagnostics.previous_stage),
+            static_cast<unsigned long>(
+                ota_diagnostics.previous_bytes_received),
+            static_cast<unsigned long>(
+                ota_diagnostics.previous_expected_size),
+            ota_diagnostics.previous_reset_reason);
+    }
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // Read Serial Number from efuse user_data
     uint8_t serial_number[33] = {0};
@@ -186,6 +329,36 @@ OtaPolicyStatus Ota::GetPolicyStatus() {
     status.rollback_reset_reason = settings.GetInt(
         kRollbackResetReasonKey, 0);
     return status;
+}
+
+OtaDownloadDiagnostics Ota::GetDownloadDiagnostics() {
+    OtaDownloadDiagnostics result;
+    if (!HasValidOtaDiagnostics()) {
+        return result;
+    }
+
+    result.state = OtaStateName(ota_diagnostics.state);
+    result.stage = OtaStageName(ota_diagnostics.stage);
+    result.bytes_received = ota_diagnostics.bytes_received;
+    result.expected_size = ota_diagnostics.expected_size;
+    if (result.expected_size > 0) {
+        result.progress = static_cast<int>(
+            static_cast<uint64_t>(result.bytes_received) * 100 /
+            result.expected_size);
+    }
+    result.has_previous_interruption =
+        ota_diagnostics.has_previous_interruption;
+    if (result.has_previous_interruption) {
+        result.previous_stage = OtaStageName(
+            ota_diagnostics.previous_stage);
+        result.previous_bytes_received =
+            ota_diagnostics.previous_bytes_received;
+        result.previous_expected_size =
+            ota_diagnostics.previous_expected_size;
+        result.previous_reset_reason =
+            ota_diagnostics.previous_reset_reason;
+    }
+    return result;
 }
 
 void Ota::SetAutomaticUpdatesEnabled(bool enabled) {
@@ -597,6 +770,8 @@ bool Ota::Upgrade(
         return false;
     }
 
+    OtaDiagnosticAttempt diagnostic_attempt(expected_size);
+
     ESP_LOGI(TAG, "Starting verified XC Body firmware download");
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
@@ -616,6 +791,7 @@ bool Ota::Upgrade(
 
     auto network = Board::GetInstance().GetNetwork();
     auto http = network->CreateHttp(0);
+    RecordOtaStage(OtaDiagnosticStage::kConnect, 0);
     if (!http->Open("GET", firmware_url)) {
         ESP_LOGE(TAG, "Failed to open HTTP connection");
         return false;
@@ -668,6 +844,7 @@ bool Ota::Upgrade(
     auto last_calc_time = esp_timer_get_time();
     while (true) {
         size_t read_offset = buffer_offset;
+        RecordOtaStage(OtaDiagnosticStage::kRead, total_read);
         int ret = http->Read(buffer + buffer_offset, PAGE_SIZE - buffer_offset);
         if (ret < 0) {
             ESP_LOGE(TAG, "Failed to read HTTP data: %s", esp_err_to_name(ret));
@@ -723,6 +900,7 @@ bool Ota::Upgrade(
                     return fail_download();
                 }
 
+                RecordOtaStage(OtaDiagnosticStage::kBegin, total_read);
                 if (esp_ota_begin(
                         update_partition,
                         expected_size,
@@ -742,6 +920,7 @@ bool Ota::Upgrade(
         if (image_header_checked &&
             (buffer_offset == PAGE_SIZE ||
              (is_last_chunk && buffer_offset > 0))) {
+            RecordOtaStage(OtaDiagnosticStage::kWrite, total_read);
             auto err = esp_ota_write(update_handle, buffer, buffer_offset);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
@@ -756,6 +935,7 @@ bool Ota::Upgrade(
         }
     }
 
+    RecordOtaStage(OtaDiagnosticStage::kVerify, total_read);
     if (!image_header_checked || total_read != expected_size) {
         ESP_LOGE(TAG, "Firmware download was incomplete");
         return fail_download();
@@ -787,6 +967,7 @@ bool Ota::Upgrade(
         settings.SetString(kPendingSlotKey, update_partition->label);
     }
 
+    RecordOtaStage(OtaDiagnosticStage::kActivate, total_read);
     err = esp_ota_set_boot_partition(update_partition);
     if (err != ESP_OK) {
         Settings settings(kOtaSettingsNamespace, true);
@@ -796,6 +977,7 @@ bool Ota::Upgrade(
     }
 
     ESP_LOGI(TAG, "Firmware upgrade successful");
+    diagnostic_attempt.Complete();
     return true;
 }
 

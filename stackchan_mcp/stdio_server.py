@@ -927,7 +927,7 @@ async def _dispatch_mcp_tool(
             )
         ]
 
-    if name == "perform_knock":
+    if name in {"perform_knock", "perform_behavior"}:
         behavior_id = arguments.get("behavior_id")
         if not isinstance(behavior_id, str) or not 1 <= len(behavior_id) <= 128:
             return [
@@ -943,9 +943,24 @@ async def _dispatch_mcp_tool(
                     ),
                 )
             ]
-        result, error = await gateway.esp32.perform_xc_body_knock(
-            behavior_id
-        )
+        if name == "perform_knock":
+            result, error = await gateway.esp32.perform_xc_body_knock(
+                behavior_id
+            )
+        else:
+            kind = arguments.get("kind")
+            if kind not in {"knock", "attention"}:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {"error": "kind must be knock or attention"}
+                        ),
+                    )
+                ]
+            result, error = await gateway.esp32.perform_xc_body_behavior(
+                behavior_id, kind
+            )
         if error:
             return [
                 TextContent(
@@ -1410,6 +1425,25 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         },
                     },
                     "required": ["yaw", "pitch"],
+                },
+            ),
+            Tool(
+                name="perform_behavior",
+                description=(
+                    "Run one reviewed XC Body firmware behavior through the "
+                    "shared servo lane and return after neutral restoration."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "behavior_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        },
+                        "kind": {"enum": ["knock", "attention"]},
+                    },
+                    "required": ["behavior_id", "kind"],
                 },
             ),
             Tool(

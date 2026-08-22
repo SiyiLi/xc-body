@@ -29,6 +29,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_ili9341.h>
+#include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <esp_random.h>
 #include <mbedtls/sha256.h>
@@ -551,14 +552,16 @@ private:
     // board's constructor completes. avatar_init_timer_ retries every 500 ms
     // until the screen is ready, then stops itself.
     lv_obj_t* avatar_img_ = nullptr;
+    lv_obj_t* avatar_status_overlay_ = nullptr;
+    uint8_t* avatar_status_overlay_buffer_ = nullptr;
+    lv_image_dsc_t avatar_status_overlay_dsc_ = {};
+    bool appliance_status_visible_ = false;
     esp_timer_handle_t avatar_init_timer_ = nullptr;
     std::string current_avatar_face_ = "idle";
 
-    // Board-local listening cue shown above the full-screen avatar layer.
-    lv_obj_t* listening_indicator_ = nullptr;
-    lv_obj_t* listening_indicator_dot_ = nullptr;
-    std::atomic<bool> listening_indicator_visible_{false};
-    static constexpr int LISTENING_INDICATOR_DOT_SIZE_PX = 14;
+    lv_obj_t* settings_panel_ = nullptr;
+    lv_obj_t* settings_volume_label_ = nullptr;
+    std::atomic<bool> settings_open_{false};
 
     // Reviewed avatar loaded from the flashed assets partition. A later
     // load_avatar_set call may still replace it as a development override.
@@ -735,7 +738,7 @@ private:
     std::atomic<int> servo_wobble_step_{0};       // 0..3 sequence index
     std::atomic<bool> servo_wobble_active_{false};
 
-    enum class KnockStep : uint8_t {
+    enum class ReviewedBehaviorStep : uint8_t {
         STARTING = 0,
         MOVING_TO_POSE,
         HOLDING,
@@ -744,26 +747,28 @@ private:
     };
     enum class PhysicalBehaviorOwner : uint8_t {
         IDLE = 0,
-        KNOCK,
+        REVIEWED,
         TOUCH,
     };
-    static constexpr int XC_BODY_KNOCK_YAW_DEG = 12;
-    static constexpr int XC_BODY_KNOCK_PITCH_DEG = 50;
+    static constexpr int XC_BODY_BEHAVIOR_YAW_DEG = 12;
+    static constexpr int XC_BODY_BEHAVIOR_PITCH_DEG = 50;
     static constexpr int XC_BODY_IDLE_YAW_DEG = 0;
     static constexpr int XC_BODY_IDLE_PITCH_DEG = 43;
-    static constexpr int XC_BODY_KNOCK_SPEED_DPS = 30;
+    static constexpr int XC_BODY_BEHAVIOR_SPEED_DPS = 30;
     static constexpr uint64_t XC_BODY_KNOCK_HOLD_US = 10000000ULL;
-    static constexpr uint64_t XC_BODY_KNOCK_TIMEOUT_US = 20000000ULL;
+    static constexpr uint64_t XC_BODY_BEHAVIOR_TIMEOUT_US = 20000000ULL;
     static constexpr uint64_t TOUCH_RECOVERY_TIMEOUT_US = 5000000ULL;
 
-    std::atomic<bool> xc_body_knock_active_{false};
+    std::atomic<bool> xc_body_behavior_active_{false};
     std::atomic<PhysicalBehaviorOwner> physical_behavior_owner_{
         PhysicalBehaviorOwner::IDLE};
-    std::atomic<KnockStep> xc_body_knock_step_{
-        KnockStep::MOVING_TO_POSE};
-    uint64_t xc_body_knock_started_us_ = 0;
-    uint64_t xc_body_knock_hold_until_us_ = 0;
-    std::string xc_body_knock_id_;
+    std::atomic<ReviewedBehaviorStep> xc_body_behavior_step_{
+        ReviewedBehaviorStep::MOVING_TO_POSE};
+    uint64_t xc_body_behavior_started_us_ = 0;
+    uint64_t xc_body_behavior_hold_until_us_ = 0;
+    uint64_t xc_body_behavior_hold_us_ = XC_BODY_KNOCK_HOLD_US;
+    const char* xc_body_behavior_success_subtype_ = "knock_complete";
+    std::string xc_body_behavior_id_;
 
     std::atomic<TouchEvent> pending_touch_completion_{TouchEvent::IDLE};
     std::atomic<uint64_t> pending_touch_duration_ms_{0};
@@ -2171,16 +2176,23 @@ private:
     };
 
     void InitializePowerSaveTimer() {
-        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
+        power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
+        power_save_timer_->OnEnterDimMode([this]() {
+            GetBacklight()->SetBrightness(10);
+        });
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
-            GetBacklight()->SetBrightness(10);
+            GetBacklight()->SetBrightness(0);
         });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
         });
-        power_save_timer_->SetEnabled(true);
+        power_save_timer_->OnShutdownRequest([this]() {
+            pmic_->PowerOff();
+        });
+        // Battery telemetry enables this only while discharging. Starting
+        // disabled keeps an externally powered boot awake from the outset.
     }
 
     void InitializeI2c() {
@@ -2347,166 +2359,79 @@ private:
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    bool EnsureListeningIndicatorObjectLocked() {
-        if (listening_indicator_ != nullptr) {
-            if (lv_obj_is_valid(listening_indicator_)) {
-                if (listening_indicator_dot_ != nullptr &&
-                    lv_obj_is_valid(listening_indicator_dot_)) {
-                    return true;
-                }
-                StopListeningIndicatorPulseLocked();
-                lv_obj_del(listening_indicator_);
-            } else {
-                StopListeningIndicatorPulseLocked();
-            }
-        }
-        listening_indicator_ = nullptr;
-        listening_indicator_dot_ = nullptr;
-
+    void EnsureSettingsUiLocked() {
         lv_obj_t* screen = lv_screen_active();
         if (screen == nullptr) {
-            return false;
-        }
-
-        listening_indicator_ = lv_obj_create(screen);
-        if (listening_indicator_ == nullptr) {
-            return false;
-        }
-
-        lv_obj_set_size(listening_indicator_, 36, 30);
-        lv_obj_align(listening_indicator_, LV_ALIGN_TOP_RIGHT, -8, 8);
-        lv_obj_clear_flag(listening_indicator_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(listening_indicator_, 10, 0);
-        lv_obj_set_style_bg_color(listening_indicator_, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(listening_indicator_, LV_OPA_70, 0);
-        lv_obj_set_style_border_width(listening_indicator_, 0, 0);
-        lv_obj_set_style_pad_all(listening_indicator_, 0, 0);
-
-        listening_indicator_dot_ = lv_obj_create(listening_indicator_);
-        if (listening_indicator_dot_ == nullptr) {
-            lv_obj_del(listening_indicator_);
-            listening_indicator_ = nullptr;
-            listening_indicator_dot_ = nullptr;
-            return false;
-        }
-        lv_obj_set_size(listening_indicator_dot_,
-                        LISTENING_INDICATOR_DOT_SIZE_PX,
-                        LISTENING_INDICATOR_DOT_SIZE_PX);
-        lv_obj_clear_flag(listening_indicator_dot_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(listening_indicator_dot_, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(listening_indicator_dot_,
-                                  lv_color_hex(0xE0352B), 0);
-        lv_obj_set_style_bg_opa(listening_indicator_dot_, LV_OPA_COVER, 0);
-        lv_obj_set_style_opa(listening_indicator_dot_, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(listening_indicator_dot_, 0, 0);
-        lv_obj_set_style_pad_all(listening_indicator_dot_, 0, 0);
-        lv_obj_center(listening_indicator_dot_);
-
-        lv_obj_add_flag(listening_indicator_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(listening_indicator_);
-        ESP_LOGI(TAG, "Listening indicator created on active screen");
-        return true;
-    }
-
-    static void SetListeningDotOpacity(void* obj, int32_t opa) {
-        auto* dot = static_cast<lv_obj_t*>(obj);
-        if (dot == nullptr || !lv_obj_is_valid(dot)) {
             return;
         }
-        lv_obj_set_style_opa(dot, static_cast<lv_opa_t>(opa), 0);
-    }
-
-    void StopListeningIndicatorPulseLocked() {
-        if (listening_indicator_dot_ == nullptr) {
-            return;
-        }
-        lv_anim_delete(listening_indicator_dot_, nullptr);
-        if (lv_obj_is_valid(listening_indicator_dot_)) {
-            lv_obj_set_style_opa(listening_indicator_dot_, LV_OPA_COVER, 0);
+        if (settings_panel_ == nullptr) {
+            settings_panel_ = lv_obj_create(screen);
+            lv_obj_set_size(settings_panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+            lv_obj_align(settings_panel_, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_set_style_border_width(settings_panel_, 0, 0);
+            settings_volume_label_ = lv_label_create(settings_panel_);
+            lv_obj_align(settings_volume_label_, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_add_flag(settings_panel_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
-    void StartListeningIndicatorPulseLocked() {
-        if (listening_indicator_dot_ == nullptr ||
-            !lv_obj_is_valid(listening_indicator_dot_)) {
-            return;
-        }
-
-        StopListeningIndicatorPulseLocked();
-
-        lv_anim_t anim;
-        lv_anim_init(&anim);
-        lv_anim_set_var(&anim, listening_indicator_dot_);
-        lv_anim_set_values(&anim, LV_OPA_COVER, LV_OPA_40);
-        lv_anim_set_exec_cb(&anim, SetListeningDotOpacity);
-        lv_anim_set_duration(&anim, 700);
-        lv_anim_set_reverse_duration(&anim, 700);
-        lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
-        lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_start(&anim);
-    }
-
-    void BringListeningIndicatorToFrontLocked() {
-        if (listening_indicator_ == nullptr) {
-            return;
-        }
-        if (!lv_obj_is_valid(listening_indicator_)) {
-            StopListeningIndicatorPulseLocked();
-            listening_indicator_ = nullptr;
-            listening_indicator_dot_ = nullptr;
-            listening_indicator_visible_.store(false, std::memory_order_release);
-            return;
-        }
-        lv_obj_move_foreground(listening_indicator_);
-    }
-
-    void SetListeningIndicatorVisibleLocked(bool visible) {
-        if (visible) {
-            if (!EnsureListeningIndicatorObjectLocked()) {
-                listening_indicator_visible_.store(false, std::memory_order_release);
-                return;
-            }
-            lv_obj_clear_flag(listening_indicator_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(listening_indicator_);
-            StartListeningIndicatorPulseLocked();
-            listening_indicator_visible_.store(true, std::memory_order_release);
-            return;
-        }
-
-        if (listening_indicator_ != nullptr) {
-            StopListeningIndicatorPulseLocked();
-            if (lv_obj_is_valid(listening_indicator_)) {
-                lv_obj_add_flag(listening_indicator_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                listening_indicator_ = nullptr;
-                listening_indicator_dot_ = nullptr;
-            }
-        }
-        listening_indicator_visible_.store(false, std::memory_order_release);
-    }
-
-    void UpdateListeningIndicatorForState(bool is_listening) {
+    void OpenVolumeSettings() {
         if (display_ == nullptr) {
             return;
         }
-        if (listening_indicator_visible_.load(std::memory_order_acquire) ==
-            is_listening) {
+        power_save_timer_->WakeUp();
+        DisplayLockGuard lock(display_);
+        EnsureSettingsUiLocked();
+        if (settings_panel_ == nullptr) {
+            return;
+        }
+        settings_open_.store(true, std::memory_order_release);
+        char text[96];
+        snprintf(
+            text,
+            sizeof(text),
+            "Volume %d\n\nTap left: -   Tap right: +\nSwipe down to close",
+            GetAudioCodec()->output_volume());
+        lv_label_set_text(settings_volume_label_, text);
+        lv_obj_remove_flag(settings_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(settings_panel_);
+    }
+
+    void CloseVolumeSettings() {
+        settings_open_.store(false, std::memory_order_release);
+        if (display_ == nullptr) {
             return;
         }
         DisplayLockGuard lock(display_);
-        SetListeningIndicatorVisibleLocked(is_listening);
+        if (settings_panel_ != nullptr) {
+            lv_obj_add_flag(settings_panel_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void AdjustVolumeFromSettings(bool increase) {
+        int volume = GetAudioCodec()->output_volume();
+        volume += increase ? 10 : -10;
+        volume = std::clamp(volume, 0, 100);
+        GetAudioCodec()->SetOutputVolume(volume);
+        OpenVolumeSettings();
     }
 
     void PollTouchpad() {
         static bool was_touched = false;
         static int64_t touch_start_time = 0;
         static int touch_start_x = -1;
+        static int touch_start_y = -1;
+        static int touch_last_y = -1;
         static int64_t last_release_ms = 0;       // デバウンス用 (= 直前 release 時刻)
         static int64_t listening_started_ms = 0;  // タイムアウト用 (= listening 突入時刻)
         static bool was_listening = false;        // listening 突入のエッジ検出
         const int64_t TOUCH_THRESHOLD_MS = 500;   // 触摸时长阈值，超过500ms视为长按
         const int64_t DEBOUNCE_MS = 300;          // 直前 release から N ms 以内の press は無視
         const int64_t LISTEN_TIMEOUT_MS = 30000;  // listening 状態に N ms 以上滞在で auto stop
+        const int EAR_TOUCH_TOP = 34;
+        const int EAR_TOUCH_BOTTOM = 205;
+        const int LEFT_EAR_TOUCH_RIGHT = 85;
+        const int RIGHT_EAR_TOUCH_LEFT = 235;
 
         auto& app = Application::GetInstance();
         int64_t now_ms = esp_timer_get_time() / 1000;
@@ -2517,7 +2442,6 @@ private:
         // 無限持続するのを防ぐ。 StopListening 後は listening_started_ms を 0 に
         // 戻して再発火を抑止 (次に listening 突入したら再セット)。
         bool is_listening = (app.GetDeviceState() == kDeviceStateListening);
-        UpdateListeningIndicatorForState(is_listening);
         if (is_listening && !was_listening) {
             listening_started_ms = now_ms;
             ESP_LOGI(TAG, "Listening entered at %d ms (timeout in %d ms)",
@@ -2552,6 +2476,8 @@ private:
             was_touched = true;
             touch_start_time = now_ms;
             touch_start_x = touch_point.x;
+            touch_start_y = touch_point.y;
+            touch_last_y = touch_point.y;
             // タッチ瞬時の PlaySound 直接呼び出しは行わない。 直後に
             // StartListening → EnableVoiceProcessing(true) → ResetDecoder で
             // playback queue がクリアされて音が消えるため。 代わりに
@@ -2560,11 +2486,33 @@ private:
             // の後) で OGG_POPUP を鳴らす経路に乗せる (= xiaozhi 標準の WakeWord
             // 経路と同じ仕組み)。
         }
+        else if (touch_point.num > 0 && was_touched) {
+            touch_last_y = touch_point.y;
+        }
         // 检测触摸释放
         else if (touch_point.num == 0 && was_touched) {
             was_touched = false;
             int64_t touch_duration = now_ms - touch_start_time;
+            int touch_end_y = touch_last_y;
             last_release_ms = now_ms;
+
+            if (settings_open_.load(std::memory_order_acquire)) {
+                if (touch_start_y >= 0 && touch_end_y - touch_start_y > 50) {
+                    CloseVolumeSettings();
+                } else if (touch_duration < TOUCH_THRESHOLD_MS) {
+                    AdjustVolumeFromSettings(
+                        touch_start_x >= DISPLAY_WIDTH / 2);
+                }
+                return;
+            }
+            if (
+                app.GetDeviceState() == kDeviceStateIdle &&
+                touch_start_y >= 0 &&
+                touch_start_y - touch_end_y > 50
+            ) {
+                OpenVolumeSettings();
+                return;
+            }
 
             // 只有短触才触发
             if (touch_duration < TOUCH_THRESHOLD_MS) {
@@ -2595,36 +2543,23 @@ private:
                     app.ToggleChatState();
                     return;
                 }
-                // listening 中の2回目タッチは Application::HandleToggleChatEvent
-                // の既定経路 (CloseAudioChannel = WS 切断 → gateway の recording
-                // slot が aborted_mid_capture として buffer 破棄) ではなく
-                // StopListening (= SendStopListening) に分岐させる。これで
-                // device-driven audio capture push 経路 (gateway 側
-                // audio_input_hook) が listen.stop を受けて buffer を Ogg 化 +
-                // 外部 hook へ POST できる。Vessel UX として「タッチで listen
-                // 開始 → 発話 → タッチで送信」を成立させるための fork 専用分岐。
+                bool in_ear_row = touch_start_y >= EAR_TOUCH_TOP &&
+                    touch_start_y <= EAR_TOUCH_BOTTOM;
+                bool left_ear = in_ear_row &&
+                    touch_start_x < LEFT_EAR_TOUCH_RIGHT;
+                bool right_ear = in_ear_row &&
+                    touch_start_x >= RIGHT_EAR_TOUCH_LEFT;
+
                 if (app.GetDeviceState() == kDeviceStateListening) {
-                    // 録音終了のフィードバック (= 全 LED 消灯)。 デバッグ目的、
-                    // MCP self.led.set_* 経由で上書き可能。
-                    SetAllRgbLeds(0, 0, 0);
-                    app.StopListening();
-                } else {
-                    // listening 開始は ToggleChatState ではなく StartListening
-                    // を使う。 ToggleChatState 経由は SetListeningMode に
-                    // GetDefaultListeningMode() (= AutoStop) を渡すため、
-                    // ペルソナ発話終了 (tts.stop) の Schedule 内で device が
-                    // 自動的に Listening 状態に再復帰してしまい (= xiaozhi の
-                    // 連続会話モデル、 application.cc:565)、 「タッチ駆動」 が
-                    // 破綻する (= 次のタッチが listen.stop 経路に入って即送信)。
-                    // StartListening 経由は HandleStartListeningEvent で
-                    // SetListeningMode(ManualStop) を強制するので、 tts.stop 後
-                    // は Idle に留まり、 次のタッチで明示的に listen 開始する
-                    // Vessel UX が成立する。 Idle 以外 (Speaking 等) でも
-                    // HandleStartListeningEvent が AbortSpeaking → ManualStop で
-                    // 適切に処理する。
-                    // 録音開始想定のフィードバック (= 全 LED 緑点灯、 控えめ
-                    // な輝度)。 実際の listen 起動は StartListening 経由で
-                    // 非同期処理。 タッチが取れたかどうかの体感を優先。
+                    if (left_ear || right_ear) {
+                        SetAllRgbLeds(0, 0, 0);
+                    }
+                    if (left_ear) {
+                        app.CancelListening();
+                    } else if (right_ear) {
+                        app.StopListening();
+                    }
+                } else if (right_ear) {
                     SetAllRgbLeds(0, 32, 0);
                     app.StartListening();
                 }
@@ -4008,7 +3943,10 @@ private:
                    kPositionTolerance;
     }
 
-    void StartXcBodyKnock(const std::string& behavior_id) {
+    void StartXcBodyBehavior(
+            const std::string& behavior_id,
+            uint64_t hold_us,
+            const char* success_subtype) {
         if (behavior_id.empty() || behavior_id.size() > 128) {
             throw std::invalid_argument(
                 "behavior_id must contain 1 to 128 characters");
@@ -4019,102 +3957,125 @@ private:
         PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
         if (!physical_behavior_owner_.compare_exchange_strong(
                 expected,
-                PhysicalBehaviorOwner::KNOCK,
+                PhysicalBehaviorOwner::REVIEWED,
                 std::memory_order_acq_rel)) {
             throw std::runtime_error("another physical behavior is active");
         }
 
         power_save_timer_->WakeUp();
-        xc_body_knock_id_ = behavior_id;
-        xc_body_knock_started_us_ = esp_timer_get_time();
-        xc_body_knock_step_.store(
-            KnockStep::STARTING, std::memory_order_relaxed);
-        xc_body_knock_active_.store(true, std::memory_order_release);
+        xc_body_behavior_id_ = behavior_id;
+        xc_body_behavior_hold_us_ = hold_us;
+        xc_body_behavior_success_subtype_ = success_subtype;
+        xc_body_behavior_started_us_ = esp_timer_get_time();
+        xc_body_behavior_step_.store(
+            ReviewedBehaviorStep::STARTING, std::memory_order_relaxed);
+        xc_body_behavior_active_.store(true, std::memory_order_release);
         if (!SetAvatarExpression("thinking")) {
-            xc_body_knock_active_.store(false, std::memory_order_release);
+            xc_body_behavior_active_.store(false, std::memory_order_release);
             physical_behavior_owner_.store(
                 PhysicalBehaviorOwner::IDLE, std::memory_order_release);
             throw std::runtime_error("thinking avatar is unavailable");
         }
 
         WriteHeadAngles(
-            XC_BODY_KNOCK_YAW_DEG,
-            XC_BODY_KNOCK_PITCH_DEG,
-            XC_BODY_KNOCK_SPEED_DPS);
-        xc_body_knock_step_.store(
-            KnockStep::MOVING_TO_POSE, std::memory_order_release);
+            XC_BODY_BEHAVIOR_YAW_DEG,
+            XC_BODY_BEHAVIOR_PITCH_DEG,
+            XC_BODY_BEHAVIOR_SPEED_DPS);
+        xc_body_behavior_step_.store(
+            ReviewedBehaviorStep::MOVING_TO_POSE, std::memory_order_release);
     }
 
-    void FinishXcBodyKnock(const char* subtype, uint64_t now_us) {
-        std::string behavior_id = xc_body_knock_id_;
+    void StartXcBodyKnock(const std::string& behavior_id) {
+        StartXcBodyBehavior(
+            behavior_id,
+            XC_BODY_KNOCK_HOLD_US,
+            "knock_complete");
+    }
+
+    void StartXcBodyAttention(const std::string& behavior_id) {
+        StartXcBodyBehavior(behavior_id, 0, "attention_complete");
+    }
+
+    void FinishXcBodyBehavior(const char* subtype, uint64_t now_us) {
+        std::string behavior_id = xc_body_behavior_id_;
         SetAvatarExpressionIfActive("idle");
-        xc_body_knock_active_.store(false, std::memory_order_release);
+        xc_body_behavior_active_.store(false, std::memory_order_release);
         physical_behavior_owner_.store(
             PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         Application::GetInstance().SendStackChanEvent(
             "behavior",
             subtype,
-            (now_us - xc_body_knock_started_us_) / 1000ULL,
+            (now_us - xc_body_behavior_started_us_) / 1000ULL,
             behavior_id.c_str());
     }
 
-    void MaybeAdvanceXcBodyKnock() {
-        if (!xc_body_knock_active_.load(std::memory_order_acquire)) {
+    void MaybeAdvanceXcBodyBehavior() {
+        if (!xc_body_behavior_active_.load(std::memory_order_acquire)) {
             return;
         }
 
         uint64_t now_us = esp_timer_get_time();
-        KnockStep step = xc_body_knock_step_.load(
+        ReviewedBehaviorStep step = xc_body_behavior_step_.load(
             std::memory_order_acquire);
-        if (step != KnockStep::RECOVERING_TO_IDLE &&
-            now_us - xc_body_knock_started_us_ >=
-                XC_BODY_KNOCK_TIMEOUT_US) {
+        if (step != ReviewedBehaviorStep::RECOVERING_TO_IDLE &&
+            now_us - xc_body_behavior_started_us_ >=
+                XC_BODY_BEHAVIOR_TIMEOUT_US) {
             WriteHeadAngles(
                 XC_BODY_IDLE_YAW_DEG,
                 XC_BODY_IDLE_PITCH_DEG,
-                XC_BODY_KNOCK_SPEED_DPS);
-            xc_body_knock_step_.store(
-                KnockStep::RECOVERING_TO_IDLE,
+                XC_BODY_BEHAVIOR_SPEED_DPS);
+            xc_body_behavior_step_.store(
+                ReviewedBehaviorStep::RECOVERING_TO_IDLE,
                 std::memory_order_release);
             return;
         }
 
         switch (step) {
-            case KnockStep::STARTING:
+            case ReviewedBehaviorStep::STARTING:
                 break;
-            case KnockStep::MOVING_TO_POSE:
+            case ReviewedBehaviorStep::MOVING_TO_POSE:
                 if (PhysicalMotionConfirmedAt(
-                        XC_BODY_KNOCK_YAW_DEG,
-                        XC_BODY_KNOCK_PITCH_DEG)) {
-                    xc_body_knock_hold_until_us_ =
-                        now_us + XC_BODY_KNOCK_HOLD_US;
-                    xc_body_knock_step_.store(
-                        KnockStep::HOLDING, std::memory_order_relaxed);
+                        XC_BODY_BEHAVIOR_YAW_DEG,
+                        XC_BODY_BEHAVIOR_PITCH_DEG)) {
+                    xc_body_behavior_hold_until_us_ =
+                        now_us + xc_body_behavior_hold_us_;
+                    xc_body_behavior_step_.store(
+                        xc_body_behavior_hold_us_ == 0
+                            ? ReviewedBehaviorStep::RETURNING_TO_IDLE
+                            : ReviewedBehaviorStep::HOLDING,
+                        std::memory_order_relaxed);
+                    if (xc_body_behavior_hold_us_ == 0) {
+                        WriteHeadAngles(
+                            XC_BODY_IDLE_YAW_DEG,
+                            XC_BODY_IDLE_PITCH_DEG,
+                            XC_BODY_BEHAVIOR_SPEED_DPS);
+                    }
                 }
                 break;
-            case KnockStep::HOLDING:
-                if (now_us >= xc_body_knock_hold_until_us_) {
+            case ReviewedBehaviorStep::HOLDING:
+                if (now_us >= xc_body_behavior_hold_until_us_) {
                     WriteHeadAngles(
                         XC_BODY_IDLE_YAW_DEG,
                         XC_BODY_IDLE_PITCH_DEG,
-                        XC_BODY_KNOCK_SPEED_DPS);
-                    xc_body_knock_step_.store(
-                        KnockStep::RETURNING_TO_IDLE,
+                        XC_BODY_BEHAVIOR_SPEED_DPS);
+                    xc_body_behavior_step_.store(
+                        ReviewedBehaviorStep::RETURNING_TO_IDLE,
                         std::memory_order_relaxed);
                 }
                 break;
-            case KnockStep::RETURNING_TO_IDLE:
+            case ReviewedBehaviorStep::RETURNING_TO_IDLE:
                 if (PhysicalMotionConfirmedAt(
                         XC_BODY_IDLE_YAW_DEG,
                         XC_BODY_IDLE_PITCH_DEG)) {
-                    FinishXcBodyKnock("knock_complete", now_us);
+                    FinishXcBodyBehavior(
+                        xc_body_behavior_success_subtype_, now_us);
                 }
                 break;
-            case KnockStep::RECOVERING_TO_IDLE:
+            case ReviewedBehaviorStep::RECOVERING_TO_IDLE:
                 if (PhysicalMotionConfirmedAt(
                         XC_BODY_IDLE_YAW_DEG,
                         XC_BODY_IDLE_PITCH_DEG)) {
-                    FinishXcBodyKnock("behavior_failed", now_us);
+                    FinishXcBodyBehavior("behavior_failed", now_us);
                 }
                 break;
         }
@@ -4162,7 +4123,7 @@ private:
                     WriteHeadAngles(
                         XC_BODY_IDLE_YAW_DEG,
                         XC_BODY_IDLE_PITCH_DEG,
-                        XC_BODY_KNOCK_SPEED_DPS);
+                        XC_BODY_BEHAVIOR_SPEED_DPS);
                     pending_touch_recovery_deadline_us_.store(
                         now_us + TOUCH_RECOVERY_TIMEOUT_US,
                         std::memory_order_relaxed);
@@ -4300,14 +4261,14 @@ private:
     void ServoTaskMain() {
         while (true) {
             if (!servo_ok_ || motion_driver_ == nullptr) {
-                MaybeAdvanceXcBodyKnock();
+                MaybeAdvanceXcBodyBehavior();
                 MaybeCompleteTouchReaction();
                 vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
                 continue;
             }
             motion_driver_->Tick();
             ServoWobbleStepAdvance();
-            MaybeAdvanceXcBodyKnock();
+            MaybeAdvanceXcBodyBehavior();
             MaybeCompleteTouchReaction();
             MaybeAutoReleaseTorque();
             taskYIELD();
@@ -4413,6 +4374,14 @@ private:
 
     void TouchPollTick() {
         if (!si12t_ok_ || si12t_ == nullptr) {
+            return;
+        }
+        if (Application::GetInstance().GetDeviceState() ==
+            kDeviceStateUpgrading) {
+            touch_pressed_prev_ = false;
+            touch_pressed_pending_ = false;
+            touch_pending_count_ = 0;
+            touch_press_start_us_ = 0;
             return;
         }
         Si12T::TouchState s = si12t_->ReadTouchState();
@@ -4608,6 +4577,87 @@ private:
         }
     }
 
+    // Draw only the avatar pixels that overlap the appliance bar. The full
+    // avatar stays behind the bar; this transparent strip restores the hat
+    // above it without covering either side's status icons.
+    void UpdateAvatarStatusOverlayLocked(const lv_image_dsc_t* source) {
+        constexpr int kOverlayHeight = 28;
+        constexpr size_t kColorBytes =
+            DISPLAY_WIDTH * kOverlayHeight * 2;
+        constexpr size_t kBufferBytes =
+            kColorBytes + DISPLAY_WIDTH * kOverlayHeight;
+
+        if (source->data == nullptr ||
+            source->header.cf != LV_COLOR_FORMAT_RGB565 ||
+            (source->header.w != 160 && source->header.w != DISPLAY_WIDTH) ||
+            (source->header.h != 120 && source->header.h != DISPLAY_HEIGHT) ||
+            source->header.stride < source->header.w * 2 ||
+            source->data_size < source->header.stride * source->header.h) {
+            if (avatar_status_overlay_ != nullptr) {
+                lv_obj_add_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+            }
+            return;
+        }
+        if (avatar_status_overlay_buffer_ == nullptr) {
+            avatar_status_overlay_buffer_ = static_cast<uint8_t*>(
+                heap_caps_malloc(
+                    kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (avatar_status_overlay_buffer_ == nullptr) {
+                ESP_LOGE(TAG, "Avatar status overlay allocation failed");
+                return;
+            }
+        }
+
+        const uint8_t background_low = source->data[0];
+        const uint8_t background_high = source->data[1];
+        uint8_t* alpha = avatar_status_overlay_buffer_ + kColorBytes;
+        for (int y = 0; y < kOverlayHeight; ++y) {
+            const int source_y = y * source->header.h / DISPLAY_HEIGHT;
+            for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+                const int source_x = x * source->header.w / DISPLAY_WIDTH;
+                const size_t source_offset =
+                    source_y * source->header.stride + source_x * 2;
+                const size_t pixel = y * DISPLAY_WIDTH + x;
+                const uint8_t low = source->data[source_offset];
+                const uint8_t high = source->data[source_offset + 1];
+                avatar_status_overlay_buffer_[pixel * 2] = low;
+                avatar_status_overlay_buffer_[pixel * 2 + 1] = high;
+                alpha[pixel] = low == background_low &&
+                    high == background_high ? LV_OPA_TRANSP : LV_OPA_COVER;
+            }
+        }
+
+        if (avatar_status_overlay_ == nullptr) {
+            avatar_status_overlay_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
+            avatar_status_overlay_dsc_.header.cf = LV_COLOR_FORMAT_RGB565A8;
+            avatar_status_overlay_dsc_.header.flags = 0;
+            avatar_status_overlay_dsc_.header.w = DISPLAY_WIDTH;
+            avatar_status_overlay_dsc_.header.h = kOverlayHeight;
+            avatar_status_overlay_dsc_.header.stride = DISPLAY_WIDTH * 2;
+            avatar_status_overlay_dsc_.data_size = kBufferBytes;
+            avatar_status_overlay_dsc_.data = avatar_status_overlay_buffer_;
+            avatar_status_overlay_ = lv_image_create(lv_screen_active());
+            lv_image_set_src(
+                avatar_status_overlay_, &avatar_status_overlay_dsc_);
+            lv_obj_align(avatar_status_overlay_, LV_ALIGN_TOP_MID, 0, 0);
+            lv_obj_clear_flag(
+                avatar_status_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+        } else {
+            lv_obj_invalidate(avatar_status_overlay_);
+        }
+
+        const bool avatar_visible = avatar_img_ != nullptr &&
+            !lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
+        if (appliance_status_visible_ && avatar_visible) {
+            lv_obj_clear_flag(
+                avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(avatar_status_overlay_);
+        } else {
+            lv_obj_add_flag(avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
     // Central mode-aware renderer. Caller must hold the display lock.
     //
     // Layered mode: picks a single image from the axis selected by
@@ -4644,8 +4694,8 @@ private:
         const int scale = dsc->header.w == 320 && dsc->header.h == 240
             ? 256 : 512;
         lv_image_set_scale(avatar_img_, scale);
-        lv_obj_move_foreground(avatar_img_);
-        BringListeningIndicatorToFrontLocked();
+        display_->PlaceBehindStatusBarLocked(avatar_img_);
+        UpdateAvatarStatusOverlayLocked(dsc);
         return true;
     }
 
@@ -4778,10 +4828,9 @@ private:
         lv_image_set_scale(avatar_img_, 512);
         lv_obj_align(avatar_img_, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(avatar_img_, LV_OBJ_FLAG_SCROLLABLE);
-        // Keep the avatar visually on top of the chat UI's emoji_label_,
-        // chat bubbles, etc. The status bar (clock/battery) lives on a
-        // separate sibling and is moved to foreground later if needed.
-        lv_obj_move_foreground(avatar_img_);
+        // Cover the normal content while keeping status and appliance UI
+        // above the avatar.
+        display_->PlaceBehindStatusBarLocked(avatar_img_);
         ESP_LOGI(TAG, "Avatar lv_image created on active screen");
         return true;
     }
@@ -4816,9 +4865,12 @@ private:
             return true;
         }
         bool was_off = (current_avatar_face_ == "off");
+        bool entering_avatar_view = false;
         bool ok;
         {
             DisplayLockGuard lock(display_);
+            entering_avatar_view = avatar_img_ == nullptr ||
+                lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
             if (avatar_img_ != nullptr) {
                 // Restore visibility if a previous SetAvatarOff() hid the
                 // layer. Cheap no-op when the flag is already clear.
@@ -4838,6 +4890,9 @@ private:
             ESP_LOGI(TAG, "Blink restored after avatar resume from OFF");
         }
         blink_enabled_before_off_ = false;
+        if (entering_avatar_view) {
+            display_->UpdateStatusBar(true);
+        }
         return ok;
     }
 
@@ -4868,6 +4923,10 @@ private:
             DisplayLockGuard lock(display_);
             if (avatar_img_ != nullptr) {
                 lv_obj_add_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (avatar_status_overlay_ != nullptr) {
+                lv_obj_add_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
             }
         }
         current_avatar_face_ = "off";
@@ -5810,6 +5869,40 @@ private:
                 cJSON_AddBoolToObject(root, "enabled", enabled);
                 cJSON_AddStringToObject(root, "takes_effect", "immediate");
                 cJSON_AddStringToObject(root, "persistence", "nvs");
+                return root;
+            });
+
+        mcp_server.AddTool(
+            "self.robot.xc_body_behavior",
+            "Run one reviewed XC Body physical behavior locally. kind=knock "
+            "owns the thinking avatar, head movement, ten-second hold, "
+            "neutral return, idle restoration, and completion event. "
+            "kind=attention uses the same physical engine but returns "
+            "immediately after reaching the reviewed attention pose.",
+            PropertyList({
+                Property("behavior_id", kPropertyTypeString),
+                Property("kind", kPropertyTypeString),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                const std::string& behavior_id =
+                    properties["behavior_id"].value<std::string>();
+                const std::string& kind =
+                    properties["kind"].value<std::string>();
+                if (kind == "knock") {
+                    StartXcBodyKnock(behavior_id);
+                } else if (kind == "attention") {
+                    StartXcBodyAttention(behavior_id);
+                } else {
+                    throw std::invalid_argument(
+                        "kind must be knock or attention");
+                }
+
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddBoolToObject(root, "ok", true);
+                cJSON_AddBoolToObject(root, "started", true);
+                cJSON_AddStringToObject(
+                    root, "behavior_id", behavior_id.c_str());
+                cJSON_AddStringToObject(root, "kind", kind.c_str());
                 return root;
             });
 
@@ -7449,6 +7542,30 @@ public:
         LoadBuiltInAvatar();
     }
 
+    void OnDeviceStateChanged(DeviceState state) override {
+        if (display_ == nullptr) {
+            return;
+        }
+        const bool appliance_mode = state == kDeviceStateIdle ||
+            state == kDeviceStateListening ||
+            state == kDeviceStateSpeaking;
+        DisplayLockGuard lock(display_);
+        appliance_status_visible_ = appliance_mode;
+        display_->SetApplianceStatusStyleLocked(appliance_mode);
+        display_->SetRecordingIndicatorLocked(
+            state == kDeviceStateListening);
+        if (avatar_status_overlay_ != nullptr) {
+            if (appliance_mode && current_avatar_face_ != "off") {
+                lv_obj_clear_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(avatar_status_overlay_);
+            } else {
+                lv_obj_add_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
     virtual AudioCodec* GetAudioCodec() override {
         static CoreS3AudioCodec audio_codec(i2c_bus_,
             AUDIO_INPUT_SAMPLE_RATE,
@@ -7473,13 +7590,13 @@ public:
     }
 
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-        static bool last_discharging = false;
-        charging = pmic_->IsCharging();
         discharging = pmic_->IsDischarging();
-        if (discharging != last_discharging) {
-            power_save_timer_->SetEnabled(discharging);
-            last_discharging = discharging;
-        }
+        charging = !discharging &&
+            (pmic_->IsCharging() || pmic_->IsChargingDone());
+        // SetEnabled is idempotent. Applying the observed source state on
+        // every telemetry update also handles an externally powered boot,
+        // where the initial false must disable the timer enabled at setup.
+        power_save_timer_->SetEnabled(discharging);
 
         level = pmic_->GetBatteryLevel();
         return true;

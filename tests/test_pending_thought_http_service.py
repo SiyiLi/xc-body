@@ -99,18 +99,26 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
         )
         runtime.pending_thought_id.assert_awaited_once_with()
 
-    def test_summary_state_requires_exact_downstream_bearer(self):
+    def test_control_routes_require_exact_downstream_bearer(self):
         inner = RecordingApp()
         app = _BearerAuthApp(inner, "downstream-secret")
 
-        missing = asyncio.run(call_app(app, "/summary/v1"))
-        accepted = asyncio.run(
-            call_app(app, "/summary/v1", "Bearer downstream-secret")
+        paths = (
+            "/summary/v1",
+            "/voice/v1/capture",
+            "/voice/v1/abandon",
+            "/voice/v1/answer",
         )
+        for path in paths:
+            with self.subTest(path=path):
+                missing = asyncio.run(call_app(app, path))
+                accepted = asyncio.run(
+                    call_app(app, path, "Bearer downstream-secret")
+                )
 
-        self.assertEqual(missing[0]["status"], 401)
-        self.assertEqual(accepted[0]["status"], 204)
-        self.assertEqual(len(inner.calls), 1)
+                self.assertEqual(missing[0]["status"], 401)
+                self.assertEqual(accepted[0]["status"], 204)
+        self.assertEqual(len(inner.calls), len(paths))
 
     def test_only_network_visible_bind_requires_downstream_token(self):
         for host in ("127.0.0.1", "::1", "localhost"):

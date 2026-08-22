@@ -24,6 +24,7 @@ services:
       MCP_HTTP_ALLOWED_HOSTS: 43.143.37.91
       PYTHONPATH: /opt/xc-body
       STACKCHAN_NOTIFY_CONFIG: /opt/xc-body/deploy/notify.yml
+      STACKCHAN_AUDIO_HOOK_URL: https://43.143.37.91/xc-body/voice/v1/capture
       VISION_URL: https://43.143.37.91/capture
       XDG_CONFIG_HOME: /state/config
     volumes:

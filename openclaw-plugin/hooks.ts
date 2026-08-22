@@ -10,11 +10,16 @@ const CHILD_MESSAGE_LIMIT = 8;
 export function registerCompletionHooks(
   api: OpenClawPluginApi,
   integration: CompletionIntegration,
+  ignoreRun: (runId: string) => boolean = () => false,
 ): void {
   api.on(
     "agent_end",
     async (event) => {
-      if (!event.success || !event.runId) {
+      if (
+        !event.success ||
+        !event.runId ||
+        ignoreRun(event.runId)
+      ) {
         return;
       }
       await integration.handle(

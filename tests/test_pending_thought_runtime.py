@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_runtime import (
     PendingThoughtRuntime,
@@ -88,7 +88,13 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 300)
         self.assertEqual(request.data, _FRAMED_OPUS)
         self.assertEqual(request.get_header("X-message-id"), "eval:42")
-        self.assertEqual(caller.calls, [("get_status", {})])
+        self.assertEqual(
+            caller.calls,
+            [
+                ("get_status", {}),
+                ("set_avatar", {"face": "idle"}),
+            ],
+        )
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_tell_error_is_not_marked_complete(self, urlopen):
@@ -165,6 +171,56 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         self.assertTrue(asyncio.run(runtime.is_ready()))
         caller.status["session_id"] = "device-session-2"
         self.assertFalse(asyncio.run(runtime.is_ready()))
+
+    def test_direct_tell_restores_idle_base_view(self):
+        runtime = PendingThoughtRuntime()
+        runtime.machine = Mock(pending_thought_id="eval:waiting")
+        runtime.body = Mock()
+
+        asyncio.run(runtime.tell_direct("robot:1", b"audio"))
+
+        runtime.body.restore_base_view.assert_called_once_with()
+
+    @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
+    def test_direct_tell_reuses_firmware_attention_behavior(self, urlopen):
+        response = Mock()
+        response.read.return_value = b'{"ok": true}'
+        urlopen.return_value.__enter__.return_value = response
+        caller = RecordingCaller()
+        body = ready_body(
+            caller,
+            playback_url="http://127.0.0.1:8080/play",
+        )
+
+        body.tell_direct("robot:1", b"audio")
+
+        self.assertEqual(
+            caller.calls,
+            [
+                ("get_status", {}),
+                (
+                    "perform_behavior",
+                    {"behavior_id": "robot:1", "kind": "attention"},
+                ),
+            ],
+        )
+        self.assertEqual(urlopen.call_args.args[0].data, b"audio")
+
+    def test_base_view_cache_is_invalidated_for_replacement_session(self):
+        caller = RecordingCaller()
+        body = ready_body(caller)
+        body.set_base_view()
+        caller.calls.clear()
+
+        body.mark_avatar_ready("device-session-2")
+        caller.status["session_id"] = "device-session-2"
+        body.set_base_view()
+
+        self.assertEqual(
+            caller.calls,
+            [("set_avatar", {"face": "idle"})],
+        )
+
 
 
 if __name__ == "__main__":

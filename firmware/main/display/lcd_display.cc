@@ -220,7 +220,7 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
             .avoid_tearing = true,
         }
     };
-    
+
     display_ = lvgl_port_add_disp_rgb(&display_cfg, &rgb_cfg);
     if (display_ == nullptr) {
         ESP_LOGE(TAG, "Failed to add RGB display");
@@ -321,6 +321,9 @@ LcdDisplay::~LcdDisplay() {
     if (status_bar_ != nullptr) {
         lv_obj_del(status_bar_);
     }
+    if (appliance_bar_ != nullptr) {
+        lv_obj_del(appliance_bar_);
+    }
     if (top_bar_ != nullptr) {
         lv_obj_del(top_bar_);
     }
@@ -350,6 +353,102 @@ void LcdDisplay::Unlock() {
     lvgl_port_unlock();
 }
 
+void LcdDisplay::CreateApplianceStatusWidgetsLocked(
+    lv_obj_t* screen,
+    const lv_font_t* icon_font,
+    lv_color_t background_color) {
+#if CONFIG_BOARD_TYPE_STACKCHAN
+    (void)background_color;
+    static const int32_t appliance_columns[] = {
+        LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
+        LV_GRID_TEMPLATE_LAST,
+    };
+    static const int32_t appliance_rows[] = {
+        LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST,
+    };
+    constexpr int kAvatarOpeningWidth = 64;
+    constexpr int kApplianceBarHeight = 28;
+    constexpr uint32_t kApplianceBarColor = 0x081418;
+    const int side_width = (width_ - kAvatarOpeningWidth) / 2;
+
+    appliance_bar_ = lv_obj_create(screen);
+    lv_obj_set_size(appliance_bar_, width_, kApplianceBarHeight);
+    lv_obj_align(appliance_bar_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_radius(appliance_bar_, 0, 0);
+    lv_obj_set_style_bg_color(
+        appliance_bar_, lv_color_hex(kApplianceBarColor), 0);
+    lv_obj_set_style_bg_opa(appliance_bar_, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(appliance_bar_, 0, 0);
+    lv_obj_set_style_pad_all(appliance_bar_, 0, 0);
+    lv_obj_clear_flag(appliance_bar_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(appliance_bar_, LV_OBJ_FLAG_HIDDEN);
+
+    auto create_icon_grid = [&](lv_align_t align) {
+        lv_obj_t* grid = lv_obj_create(appliance_bar_);
+        lv_obj_set_size(grid, side_width, kApplianceBarHeight);
+        lv_obj_align(grid, align, 0, 0);
+        lv_obj_set_style_radius(grid, 0, 0);
+        lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(grid, 0, 0);
+        lv_obj_set_style_pad_all(grid, 0, 0);
+        lv_obj_set_grid_dsc_array(
+            grid, appliance_columns, appliance_rows);
+        lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+        return grid;
+    };
+    auto create_slot = [&](lv_obj_t* grid, int column) {
+        lv_obj_t* slot = lv_obj_create(grid);
+        lv_obj_set_grid_cell(
+            slot, LV_GRID_ALIGN_STRETCH, column, 1,
+            LV_GRID_ALIGN_STRETCH, 0, 1);
+        lv_obj_set_style_radius(slot, 0, 0);
+        lv_obj_set_style_bg_opa(slot, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(slot, 0, 0);
+        lv_obj_set_style_pad_all(slot, 0, 0);
+        lv_obj_clear_flag(slot, LV_OBJ_FLAG_SCROLLABLE);
+        return slot;
+    };
+
+    appliance_left_bar_ = create_icon_grid(LV_ALIGN_TOP_LEFT);
+    lv_obj_t* left_slots[] = {
+        create_slot(appliance_left_bar_, 0),
+        create_slot(appliance_left_bar_, 1),
+        create_slot(appliance_left_bar_, 2),
+    };
+    appliance_network_label_ = lv_label_create(left_slots[0]);
+    lv_label_set_text(appliance_network_label_, "");
+    lv_obj_set_style_text_font(appliance_network_label_, icon_font, 0);
+    lv_obj_set_style_text_color(
+        appliance_network_label_, lv_color_white(), 0);
+    lv_obj_center(appliance_network_label_);
+
+    appliance_right_bar_ = create_icon_grid(LV_ALIGN_TOP_RIGHT);
+    lv_obj_t* right_slots[] = {
+        create_slot(appliance_right_bar_, 0),
+        create_slot(appliance_right_bar_, 1),
+        create_slot(appliance_right_bar_, 2),
+    };
+    recording_label_ = lv_label_create(right_slots[1]);
+    lv_label_set_text(recording_label_, FONT_AWESOME_MICROPHONE);
+    lv_obj_set_style_text_font(recording_label_, icon_font, 0);
+    lv_obj_set_style_text_color(
+        recording_label_, lv_color_hex(0xE0352B), 0);
+    lv_obj_center(recording_label_);
+    lv_obj_add_flag(recording_label_, LV_OBJ_FLAG_HIDDEN);
+
+    appliance_battery_label_ = lv_label_create(right_slots[2]);
+    lv_label_set_text(appliance_battery_label_, "");
+    lv_obj_set_style_text_font(appliance_battery_label_, icon_font, 0);
+    lv_obj_set_style_text_color(
+        appliance_battery_label_, lv_color_white(), 0);
+    lv_obj_center(appliance_battery_label_);
+#else
+    (void)screen;
+    (void)icon_font;
+    (void)background_color;
+#endif
+}
+
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
@@ -357,7 +456,7 @@ void LcdDisplay::SetupUI() {
         ESP_LOGW(TAG, "SetupUI() called multiple times, skipping duplicate call");
         return;
     }
-    
+
     Display::SetupUI();  // Mark SetupUI as called
     DisplayLockGuard lock(this);
 
@@ -423,6 +522,8 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(battery_label_, icon_font, 0);
     lv_obj_set_style_text_color(battery_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_margin_left(battery_label_, lvgl_theme->spacing(2), 0);
+    CreateApplianceStatusWidgetsLocked(
+        screen, icon_font, lvgl_theme->background_color());
 
     /* Layer 2: Status bar - for center text labels */
     status_bar_ = lv_obj_create(screen);
@@ -876,24 +977,28 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
 
     // Right icons container
-    lv_obj_t* right_icons = lv_obj_create(top_bar_);
-    lv_obj_set_size(right_icons, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(right_icons, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(right_icons, 0, 0);
-    lv_obj_set_style_pad_all(right_icons, 0, 0);
-    lv_obj_set_flex_flow(right_icons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(right_icons, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    right_icons_ = lv_obj_create(top_bar_);
+    lv_obj_set_size(right_icons_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(right_icons_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(right_icons_, 0, 0);
+    lv_obj_set_style_pad_all(right_icons_, 0, 0);
+    lv_obj_set_flex_flow(right_icons_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(
+        right_icons_, LV_FLEX_ALIGN_END,
+        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    mute_label_ = lv_label_create(right_icons);
+    mute_label_ = lv_label_create(right_icons_);
     lv_label_set_text(mute_label_, "");
     lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
 
-    battery_label_ = lv_label_create(right_icons);
+    battery_label_ = lv_label_create(right_icons_);
     lv_label_set_text(battery_label_, "");
     lv_obj_set_style_text_font(battery_label_, icon_font, 0);
     lv_obj_set_style_text_color(battery_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_margin_left(battery_label_, lvgl_theme->spacing(2), 0);
+    CreateApplianceStatusWidgetsLocked(
+        screen, icon_font, lvgl_theme->background_color());
 
     /* Layer 2: Status bar - for center text labels */
     status_bar_ = lv_obj_create(screen);
@@ -1171,7 +1276,17 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         lv_obj_set_style_text_font(network_label_, icon_font, 0);
     }
-
+    if (appliance_network_label_ != nullptr) {
+        lv_obj_set_style_text_font(
+            appliance_network_label_, icon_font, 0);
+    }
+    if (recording_label_ != nullptr) {
+        lv_obj_set_style_text_font(recording_label_, icon_font, 0);
+    }
+    if (appliance_battery_label_ != nullptr) {
+        lv_obj_set_style_text_font(
+            appliance_battery_label_, icon_font, 0);
+    }
     // Set parent text color
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
@@ -1189,7 +1304,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_bg_opa(top_bar_, LV_OPA_50, 0);
         lv_obj_set_style_bg_color(top_bar_, lvgl_theme->background_color(), 0);
     }
-    
+
     // Update status bar elements
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
@@ -1289,6 +1404,94 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // No errors occurred. Save theme to settings
     Display::SetTheme(lvgl_theme);
+    if (appliance_status_style_) {
+        ApplyApplianceStatusStyleLocked(true);
+    }
+}
+
+void LcdDisplay::ApplyApplianceStatusStyleLocked(bool enabled) {
+    if (top_bar_ == nullptr || status_bar_ == nullptr ||
+        network_label_ == nullptr || mute_label_ == nullptr ||
+        battery_label_ == nullptr || appliance_bar_ == nullptr) {
+        return;
+    }
+
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    lv_obj_set_style_bg_opa(top_bar_, LV_OPA_50, 0);
+    lv_obj_set_style_bg_color(top_bar_, theme->background_color(), 0);
+
+    if (enabled) {
+        lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(appliance_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(appliance_bar_);
+    } else {
+        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(appliance_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void LcdDisplay::SetApplianceStatusStyleLocked(bool enabled) {
+    if (appliance_status_style_ == enabled) {
+        return;
+    }
+    appliance_status_style_ = enabled;
+    ApplyApplianceStatusStyleLocked(enabled);
+}
+
+void LcdDisplay::SetRecordingIconOpacity(void* object, int32_t opacity) {
+    auto* label = static_cast<lv_obj_t*>(object);
+    if (label != nullptr && lv_obj_is_valid(label)) {
+        lv_obj_set_style_opa(label, static_cast<lv_opa_t>(opacity), 0);
+    }
+}
+
+void LcdDisplay::StopRecordingIconPulseLocked() {
+    if (recording_label_ == nullptr) {
+        return;
+    }
+    lv_anim_delete(recording_label_, nullptr);
+    if (lv_obj_is_valid(recording_label_)) {
+        lv_obj_set_style_opa(recording_label_, LV_OPA_COVER, 0);
+    }
+}
+
+void LcdDisplay::SetRecordingIndicatorLocked(bool visible) {
+    if (recording_label_ == nullptr || !lv_obj_is_valid(recording_label_)) {
+        return;
+    }
+    StopRecordingIconPulseLocked();
+    if (!visible) {
+        lv_obj_add_flag(recording_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_remove_flag(recording_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, recording_label_);
+    lv_anim_set_values(&animation, LV_OPA_COVER, LV_OPA_40);
+    lv_anim_set_exec_cb(&animation, SetRecordingIconOpacity);
+    lv_anim_set_duration(&animation, 700);
+    lv_anim_set_reverse_duration(&animation, 700);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_in_out);
+    lv_anim_set_repeat_count(&animation, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&animation);
+}
+
+void LcdDisplay::PlaceBehindStatusBarLocked(lv_obj_t* object) {
+    if (object == nullptr || top_bar_ == nullptr ||
+        lv_obj_get_parent(object) != lv_obj_get_parent(top_bar_)) {
+        return;
+    }
+    int32_t object_index = lv_obj_get_index(object);
+    int32_t top_bar_index = lv_obj_get_index(top_bar_);
+    int32_t target_index = object_index < top_bar_index
+        ? top_bar_index - 1 : top_bar_index;
+    if (object_index != target_index) {
+        lv_obj_move_to_index(object, target_index);
+    }
 }
 
 void LcdDisplay::SetHideSubtitle(bool hide) {

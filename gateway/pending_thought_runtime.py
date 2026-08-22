@@ -7,6 +7,7 @@ import base64
 import json
 import urllib.request
 from collections.abc import Callable, Mapping
+from threading import RLock
 from typing import Any
 
 from gateway.pending_thought import KnockWaitTell
@@ -34,6 +35,8 @@ class StackChanThoughtBody:
         self._playback_url = playback_url
         self._playback_token = playback_token
         self._verified_session_id: str | None = None
+        self._base_view: str | None = None
+        self._operation_lock = RLock()
 
     def mark_avatar_ready(self, session_id: str) -> None:
         """Bind reviewed-avatar verification to one device session."""
@@ -42,6 +45,8 @@ class StackChanThoughtBody:
             raise PendingThoughtRuntimeError(
                 "reviewed avatar verification requires a device session"
             )
+        if session_id != self._verified_session_id:
+            self._base_view = None
         self._verified_session_id = session_id
 
     def is_ready(self) -> bool:
@@ -55,22 +60,58 @@ class StackChanThoughtBody:
             return False
         return ready_device_session_id(status) == self._verified_session_id
 
+    def set_base_view(self) -> None:
+        """Keep the idle avatar visible without redundant device calls."""
+
+        with self._operation_lock:
+            if self._base_view == "avatar":
+                return
+            self._call("set_avatar", {"face": "idle"})
+            self._base_view = "avatar"
+
+    def restore_base_view(self) -> None:
+        """Force the base view after a transient interaction ends."""
+
+        with self._operation_lock:
+            self._base_view = None
+            self.set_base_view()
+
     def knock(self, thought_id: str) -> None:
         """Run the firmware-owned silent knock through physical completion."""
 
-        self._require_ready()
-        self._call("perform_knock", {"behavior_id": thought_id})
+        with self._operation_lock:
+            self._require_ready()
+            self._base_view = "avatar"
+            self._call("perform_knock", {"behavior_id": thought_id})
 
     def tell(self, thought_id: str, audio_base64: str) -> None:
         """Play prepared audio after firmware reports acknowledgment."""
 
-        self._require_ready()
-        self._play_audio(audio_base64, thought_id)
+        with self._operation_lock:
+            self._require_ready()
+            self._play_audio(audio_base64, thought_id)
+            self._base_view = None
+            self.set_base_view()
+
+    def tell_direct(self, turn_id: str, audio: bytes) -> None:
+        """Run the firmware-owned attention behavior, then speak."""
+
+        with self._operation_lock:
+            self._require_ready()
+            self._base_view = "avatar"
+            self._call(
+                "perform_behavior",
+                {"behavior_id": turn_id, "kind": "attention"},
+            )
+            self._play_audio_bytes(audio, turn_id)
+            self._base_view = None
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
+        self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
+
+    def _play_audio_bytes(self, payload: bytes, thought_id: str) -> None:
         if not self._playback_url:
             raise PendingThoughtRuntimeError("audio playback URL is not configured")
-        payload = base64.b64decode(audio_base64)
         request = urllib.request.Request(
             self._playback_url,
             data=payload,
@@ -169,13 +210,31 @@ class PendingThoughtRuntime:
         return await asyncio.to_thread(self.body.is_ready)
 
     async def pending_thought_id(self) -> str | None:
-        """Return the current unexpired offer without blocking the loop."""
+        """Return the current unexpired offer without device side effects."""
 
         if self.machine is None:
             return None
         return await asyncio.to_thread(
             lambda: self.machine.pending_thought_id
         )
+
+    async def reconcile_base_view(self) -> str | None:
+        """Expire stale offers and explicitly align the device base view."""
+
+        pending_id = await self.pending_thought_id()
+        if self.body is not None:
+            await asyncio.to_thread(self.body.set_base_view)
+        return pending_id
+
+    async def tell_direct(self, turn_id: str, audio: bytes) -> None:
+        """Serialize a direct answer against pending-offer body operations."""
+
+        if self.machine is None or self.body is None:
+            raise PendingThoughtRuntimeError("runtime session is not initialized")
+        try:
+            await asyncio.to_thread(self.body.tell_direct, turn_id, audio)
+        finally:
+            await asyncio.to_thread(self.body.restore_base_view)
 
     async def consider_thought(
         self, payload: Mapping[str, object]

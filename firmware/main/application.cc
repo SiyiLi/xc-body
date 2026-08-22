@@ -211,6 +211,7 @@ void Application::Run() {
         MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING |
         MAIN_EVENT_STOP_LISTENING |
+        MAIN_EVENT_CANCEL_LISTENING |
         MAIN_EVENT_ACTIVATION_DONE |
         MAIN_EVENT_STATE_CHANGED;
 
@@ -244,6 +245,10 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_START_LISTENING) {
             HandleStartListeningEvent();
+        }
+
+        if (bits & MAIN_EVENT_CANCEL_LISTENING) {
+            HandleCancelListeningEvent();
         }
 
         if (bits & MAIN_EVENT_STOP_LISTENING) {
@@ -504,9 +509,9 @@ void Application::CheckNewVersion() {
                 "%d%% %uKB/s",
                 progress,
                 speed / 1024);
-            Schedule([display, message = std::string(buffer)]() {
-                display->SetChatMessage("system", message.c_str());
-            });
+            // OTA itself runs on the application task. Scheduling this back
+            // to that same blocked task leaves the screen frozen at 0%.
+            display->SetChatMessage("system", buffer);
         });
     firmware_upgrade_in_progress_.store(false);
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
@@ -855,6 +860,11 @@ void Application::StopListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
 }
 
+void Application::CancelListening() {
+    InvalidatePendingListeningRequest();
+    xEventGroupSetBits(event_group_, MAIN_EVENT_CANCEL_LISTENING);
+}
+
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
     
@@ -996,6 +1006,24 @@ void Application::HandleStopListeningEvent() {
     } else if (state == kDeviceStateListening) {
         if (protocol_) {
             protocol_->SendStopListening();
+        }
+        SetDeviceState(kDeviceStateIdle);
+    }
+}
+
+void Application::HandleCancelListeningEvent() {
+    auto state = GetDeviceState();
+
+    if (state == kDeviceStateConnecting) {
+        listening_profile_ = ListeningProfileAfterStop(listening_profile_);
+        play_popup_on_listening_ = false;
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            protocol_->SendCancelListening();
+        }
+        SetDeviceState(kDeviceStateIdle);
+    } else if (state == kDeviceStateListening) {
+        if (protocol_) {
+            protocol_->SendCancelListening();
         }
         SetDeviceState(kDeviceStateIdle);
     }
@@ -1190,6 +1218,7 @@ void Application::HandleStateChangedEvent() {
             // Do nothing
             break;
     }
+    board.OnDeviceStateChanged(new_state);
 }
 
 void Application::Schedule(std::function<void()>&& callback) {
@@ -1281,9 +1310,9 @@ bool Application::UpgradeFirmware(
                 "%d%% %uKB/s",
                 progress,
                 speed / 1024);
-            Schedule([display, message = std::string(buffer)]() {
-                display->SetChatMessage("system", message.c_str());
-            });
+            // UpgradeFirmware runs on the application task, so update the
+            // display here instead of queuing work behind the download.
+            display->SetChatMessage("system", buffer);
         });
 
     if (!upgrade_success) {

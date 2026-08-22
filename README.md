@@ -35,15 +35,15 @@ turning it off should make the room feel a little emptier.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   cloud rendezvous host. The public route is `https://43.143.37.91`; raw
   service ports remain private.
-- The robot and source run firmware `0.1.11`.
-  The last fully recorded OTA acceptance covered consecutive updates from
-  `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Forced unhealthy-boot
-  rollback remains untested.
-- Camera and microphone input, durable queues, quiet hours, free-form motion,
-  Home Assistant, and Stick S3 integration are not part of the current scope.
+- Milestone 4 direct conversation and appliance UX remain under physical
+  acceptance. Exact candidate identifiers live in source metadata and release
+  manifests. Forced unhealthy-boot rollback remains untested.
+- Deliberate tap-to-talk microphone input is part of Milestone 4. Camera input,
+  always-on capture, durable queues, quiet hours, free-form motion, Home
+  Assistant, and Stick S3 integration are not part of the current scope.
 
 The active scope and remaining acceptance work are in
-[`docs/MILESTONE_3.md`](docs/MILESTONE_3.md). The current system structure is
+[`docs/MILESTONE_4.md`](docs/MILESTONE_4.md). The current system structure is
 in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future milestone direction
 is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -89,12 +89,15 @@ The VM services and local OpenClaw plugin have separate deployment boundaries:
 
 ```sh
 scripts/deploy.sh
-scripts/deploy-openclaw-plugin.sh
+XC_BODY_OPENCLAW_SESSION_KEY=<session-key> \
+XC_BODY_TELEGRAM_TARGET=<target> scripts/deploy-openclaw-plugin.sh
 scripts/publish-firmware-release.sh
 ```
 
 Each command requires fresh permission for its own deployment surface. None of
-them flashes the robot.
+them flashes the robot. The OpenClaw plugin controller requires the exact
+existing conversation session and fixed Telegram target so it cannot silently
+install a completion-only configuration with direct conversation disabled.
 
 ## Start Here
 

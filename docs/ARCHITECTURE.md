@@ -105,6 +105,24 @@ It has no network listener and never returns the saved token.
 
 The knock never receives prepared audio. No text-to-`say` fallback exists.
 
+### Direct conversation
+
+1. Existing firmware touch and device-driven capture submit one bounded Opus
+   recording to the pending service mailbox.
+2. The native OpenClaw plugin claims it, uses native media transcription, and
+   admits one user turn into the configured existing session.
+3. The final visible answer returns to the pending service exactly once.
+4. The pending runtime requests a deterministic firmware-owned `attention`
+   behavior through the shared StackChan gateway behavior boundary.
+5. The gateway reuses its servo lane, correlated completion waiter, timeout,
+   and recovery path. Prepared Opus playback starts only after the firmware
+   reports physical settle and neutral return.
+6. The pending offer, if any, is untouched and its base view is restored after
+   either success or failure.
+
+The direct flow does not call raw movement tools, create a pending offer, or
+add another device transport.
+
 ### Firmware OTA
 
 1. The publisher first builds the exact StackChan target. The packager accepts
@@ -161,7 +179,9 @@ engine, or cross-process pending state.
 - Internet traffic uses TLS. Control routes also require bearer authentication.
 - Credentials, Wi-Fi settings, personal assets, and tokens stay out of Git.
 - Raw gateway ports and `/capture` remain private.
-- Camera and microphone input are not enabled for the current product path.
+- Camera and always-on microphone input are not enabled. Milestone 4 permits
+  only deliberate, bounded tap-to-talk capture through the direct-conversation
+  path above.
 - OpenClaw chooses meaning; deterministic code chooses physical execution.
 - Servo commands remain within reviewed yaw and pitch limits.
 - Generated hashes and previews are build evidence, not physical acceptance.

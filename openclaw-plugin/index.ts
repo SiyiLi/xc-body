@@ -5,6 +5,7 @@ import {
   parsePluginConfig,
   submitSummary,
 } from "./core.ts";
+import { DirectConversationService } from "./direct-conversation.ts";
 import { registerCompletionHooks } from "./hooks.ts";
 
 export default definePluginEntry({
@@ -25,6 +26,35 @@ export default definePluginEntry({
       complete: (params) => api.runtime.llm.complete(params),
       submit: (payload) => submitSummary(config, payload),
     });
-    registerCompletionHooks(api, integration);
+    let directService: DirectConversationService | undefined;
+    if (
+      config.voiceUrl &&
+      config.sessionKey &&
+      config.telegramTarget
+    ) {
+      directService = new DirectConversationService(api, {
+        voiceUrl: config.voiceUrl,
+        token: config.token,
+        sessionKey: config.sessionKey,
+        telegramTarget: config.telegramTarget,
+        agentId: config.agentId,
+        pollMs: config.pollMs,
+        timeoutMs: config.timeoutMs,
+      });
+      api.registerService({
+        id: "xc-body-direct-conversation",
+        start() {
+          directService?.start();
+        },
+        async stop() {
+          await directService?.stop();
+        },
+      });
+    }
+    registerCompletionHooks(
+      api,
+      integration,
+      (runId) => directService?.isDirectRun(runId) ?? false,
+    );
   },
 });

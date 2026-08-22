@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 RESPONSE_TIMEOUT = 10.0
 WEBSOCKET_PING_INTERVAL_S = 20
 WEBSOCKET_PING_TIMEOUT_S = 20
-XC_BODY_KNOCK_TIMEOUT_S = 22.0
+XC_BODY_BEHAVIOR_TIMEOUT_S = 22.0
 
 ToolCall = tuple[str, dict[str, Any]]
 ToolCallResult = tuple[Any, dict[str, Any] | None]
@@ -824,6 +824,16 @@ class ESP32Manager:
                                     session_id=session_id,
                                 )
                             )
+                    elif state == "cancel":
+                        if self._device_driven_session_id == session_id:
+                            self._device_driven_session_id = None
+                            frames = stop_recording()
+                            logger.info(
+                                "device-driven listen cancelled: "
+                                "session=%s discarded_frames=%d",
+                                session_id,
+                                len(frames),
+                            )
                     else:
                         logger.debug(
                             "listen message with unknown state=%r "
@@ -973,7 +983,11 @@ class ESP32Manager:
 
         if event_type == "behavior":
             behavior_id = payload.get("behavior_id")
-            if subtype not in {"knock_complete", "behavior_failed"}:
+            if subtype not in {
+                "knock_complete",
+                "attention_complete",
+                "behavior_failed",
+            }:
                 logger.warning(
                     "Malformed behavior event: subtype=%r", subtype
                 )
@@ -1105,10 +1119,15 @@ class ESP32Manager:
         result = await self.call_tools([(name, arguments)])
         return result[0]
 
-    async def perform_xc_body_knock(
-        self, behavior_id: str
+    async def _perform_xc_body_behavior(
+        self,
+        behavior_id: str,
+        *,
+        device_tool: str,
+        arguments: dict[str, Any],
+        success_subtype: str,
     ) -> ToolCallResult:
-        """Run the firmware-owned knock and await physical completion."""
+        """Run one firmware-owned behavior and await physical completion."""
 
         connection = self._connection
         if not connection or not connection.connected:
@@ -1133,34 +1152,68 @@ class ESP32Manager:
             self._behavior_waiters[key] = waiter
             try:
                 _started, error = await connection.call_tool(
-                    "self.robot.xc_body_knock",
-                    {"behavior_id": behavior_id},
+                    device_tool,
+                    arguments,
                 )
                 if error:
                     return None, error
                 event = await asyncio.wait_for(
-                    waiter, timeout=XC_BODY_KNOCK_TIMEOUT_S
+                    waiter, timeout=XC_BODY_BEHAVIOR_TIMEOUT_S
                 )
             except asyncio.TimeoutError:
                 return None, {
                     "code": -32000,
-                    "message": "robot knock did not complete",
+                    "message": "robot behavior did not complete",
                 }
             except ConnectionError as exc:
                 return None, {"code": -32000, "message": str(exc)}
             finally:
                 self._behavior_waiters.pop(key, None)
 
-        if event.get("subtype") != "knock_complete":
+        if event.get("subtype") != success_subtype:
             return None, {
                 "code": -32000,
-                "message": "robot knock failed",
+                "message": "robot behavior failed",
             }
         return {
             "ok": True,
             "behavior_id": behavior_id,
             "duration_ms": event["duration_ms"],
         }, None
+
+    async def perform_xc_body_knock(
+        self, behavior_id: str
+    ) -> ToolCallResult:
+        """Run the firmware-owned knock and await physical completion."""
+
+        return await self._perform_xc_body_behavior(
+            behavior_id,
+            device_tool="self.robot.xc_body_knock",
+            arguments={"behavior_id": behavior_id},
+            success_subtype="knock_complete",
+        )
+
+    async def perform_xc_body_behavior(
+        self, behavior_id: str, kind: str
+    ) -> ToolCallResult:
+        """Run a reviewed firmware behavior through the shared waiter."""
+
+        success_subtypes = {
+            "knock": "knock_complete",
+            "attention": "attention_complete",
+        }
+        success_subtype = success_subtypes.get(kind)
+        if success_subtype is None:
+            return None, {
+                "code": -32602,
+                "message": "kind must be knock or attention",
+            }
+        return await self._perform_xc_body_behavior(
+            behavior_id,
+            device_tool="self.robot.xc_body_behavior",
+            arguments={"behavior_id": behavior_id, "kind": kind},
+            success_subtype=success_subtype,
+        )
 
     def _fail_behavior_waiters(self, session_id: str) -> None:
         for key, waiter in list(self._behavior_waiters.items()):

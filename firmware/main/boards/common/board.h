@@ -13,6 +13,7 @@
 #include "backlight.h"
 #include "camera.h"
 #include "assets.h"
+#include "device_state.h"
 
 /**
  * Network events for unified callback
@@ -92,6 +93,7 @@ public:
     virtual void OnTtsStop() {}
     virtual bool IsTouchReactionActive() const { return false; }
     virtual void OnAssetsUpdated() {}
+    virtual void OnDeviceStateChanged(DeviceState state) { (void)state; }
 
     // Phase 4.5 avatar (saiverse-stackchan-addon): dynamic avatar set fetch
     // notification dispatched from Application::OnIncomingJson. The cJSON

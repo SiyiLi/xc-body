@@ -11,6 +11,7 @@
 
 #include <string>
 #include <chrono>
+#include <cstddef>
 
 class LvglDisplay : public Display {
 public:
@@ -24,6 +25,7 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80);
+    static bool FormatCurrentTime(char* buffer, size_t size);
 
 protected:
     esp_pm_lock_handle_t pm_lock_ = nullptr;
@@ -34,12 +36,15 @@ protected:
     lv_obj_t *notification_label_ = nullptr;
     lv_obj_t *mute_label_ = nullptr;
     lv_obj_t *battery_label_ = nullptr;
+    lv_obj_t* appliance_network_label_ = nullptr;
+    lv_obj_t* appliance_battery_label_ = nullptr;
     lv_obj_t* low_battery_popup_ = nullptr;
     lv_obj_t* low_battery_label_ = nullptr;
     
     const char* battery_icon_ = nullptr;
     const char* network_icon_ = nullptr;
     bool muted_ = false;
+    bool appliance_status_style_ = false;
 
     std::chrono::system_clock::time_point last_status_update_time_;
     esp_timer_handle_t notification_timer_ = nullptr;
