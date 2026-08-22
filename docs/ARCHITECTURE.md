@@ -110,15 +110,21 @@ The knock never receives prepared audio. No text-to-`say` fallback exists.
 1. The publisher first builds the exact StackChan target. The packager accepts
    only an app whose embedded version matches the source and whose descriptor
    identifies XC Body StackChan.
-2. The publisher uploads the versioned app and checksum, verifies the remote
-   bytes, then replaces the stable manifest. Caddy serves the files read-only.
+2. The publisher uploads the versioned app, assets, and checksums, verifies the
+   remote bytes, then replaces the stable manifest. Caddy serves the files
+   read-only.
 3. On boot, firmware checks the stable HTTPS manifest. If its version is newer,
    firmware verifies HTTPS, size, hash, image format, and StackChan identity
    while writing the inactive app partition.
-4. The bootloader starts the new slot pending verification. Firmware marks it
+4. On the new app's first boot, firmware proves the installed assets bytes and
+   internal structure against the matching manifest. A mismatch triggers one
+   bounded, in-place verified assets download and reloads the reviewed avatar.
+   Power loss is non-atomic for this single assets partition; static fallback
+   keeps the app bootable and a later boot retries.
+5. The bootloader starts the new slot pending verification. Firmware marks it
    valid only after the authenticated gateway completes MCP tool discovery;
-   otherwise it remains eligible for bootloader rollback.
-5. After a rollback, the recovered slot records the failed version and disables
+   otherwise it remains eligible for rollback.
+6. After a rollback, the recovered slot records the failed version and disables
    automatic boot OTA until it is explicitly re-enabled through USB or the
    configuration screen.
 

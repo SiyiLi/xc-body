@@ -33,10 +33,10 @@ turning it off should make the room feel a little emptier.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   cloud rendezvous host. The public route is `https://43.143.37.91`; raw
   service ports remain private.
-- The robot runs accepted firmware `0.1.6`; the next source version is `0.1.7`.
-  Two consecutive no-USB boot updates, `0.1.4` to `0.1.5` and `0.1.5` to
-  `0.1.6`, survived validation reboots and restored the reviewed avatar.
-  Forced unhealthy-boot rollback remains untested.
+- The robot runs firmware `0.1.7`; the next source version is `0.1.8`. The last
+  fully recorded OTA acceptance covered consecutive updates from `0.1.4` to
+  `0.1.5` and from `0.1.5` to `0.1.6`. Forced unhealthy-boot rollback remains
+  untested.
 - Camera and microphone input, durable queues, quiet hours, free-form motion,
   Home Assistant, and Stick S3 integration are not part of the current scope.
 
@@ -73,9 +73,13 @@ scripts/stackchan_usb.py monitor --seconds 30
 Flashing firmware requires separate explicit permission.
 
 Routine OTA starting with `0.1.2` requires only publishing a newer release and
-rebooting the robot. The authenticated `upgrade_firmware` gateway tool provides
-a no-USB bridge from `0.1.1` and an emergency fallback. USB remains the local
-maintenance and recovery path.
+rebooting the robot. Starting with `0.1.8`, the same release also updates the
+assets partition when its verified manifest digest differs. Assets OTA is
+single-partition and therefore non-atomic under power loss; the application
+stays bootable with static fallback and retries on a later boot. The
+authenticated `upgrade_firmware` gateway tool provides a no-USB bridge from
+`0.1.1` and an emergency fallback. USB remains the local maintenance and
+recovery path.
 
 ## Deployment
 

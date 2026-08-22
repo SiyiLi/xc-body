@@ -45,6 +45,13 @@ public:
     const std::string& GetFirmwareUrl() const { return firmware_url_; }
     const std::string& GetFirmwareSha256() const { return firmware_sha256_; }
     size_t GetFirmwareSize() const { return firmware_size_; }
+    bool HasAssetsForCurrentVersion() const {
+        return has_assets_ && assets_version_ == current_version_;
+    }
+    const std::string& GetAssetsVersion() const { return assets_version_; }
+    const std::string& GetAssetsUrl() const { return assets_url_; }
+    const std::string& GetAssetsSha256() const { return assets_sha256_; }
+    size_t GetAssetsSize() const { return assets_size_; }
     const std::string& GetActivationMessage() const { return activation_message_; }
     const std::string& GetActivationCode() const { return activation_code_; }
     std::string GetCheckVersionUrl();
@@ -64,6 +71,11 @@ private:
     std::string firmware_url_;
     std::string firmware_sha256_;
     size_t firmware_size_ = 0;
+    bool has_assets_ = false;
+    std::string assets_version_;
+    std::string assets_url_;
+    std::string assets_sha256_;
+    size_t assets_size_ = 0;
     std::string activation_challenge_;
     std::string serial_number_;
     int activation_timeout_ms_ = 30000;

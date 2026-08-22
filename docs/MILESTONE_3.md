@@ -38,10 +38,11 @@ completed MCP initialization, restored the reviewed layered avatar, and
 survived a validation reboot without rollback. Configuration mode advertised
 the reviewed `XCBODY-3341` SSID on `0.1.6`.
 
-The robot now runs valid firmware `0.1.6` on `ota_0` with gateway runtime
-`0.1.2` and Caddy `2.11.4`. The accepted app SHA-256 is
+The robot now runs firmware `0.1.7`. The last fully recorded acceptance set
+used firmware `0.1.6` on `ota_0`, gateway runtime `0.1.2`, and Caddy `2.11.4`.
+Its accepted app SHA-256 is
 `3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
-OpenClaw was not part of these OTA tests.
+OpenClaw was not part of those OTA tests.
 
 Firmware records a pending target before switching slots. If the bootloader
 rolls back, the recovered slot records the failed version and disables

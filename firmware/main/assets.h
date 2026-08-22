@@ -29,10 +29,20 @@ public:
     ~Assets();
 
     bool Download(std::string url, std::function<void(int progress, size_t speed)> progress_callback);
+    bool DownloadVerified(
+        const std::string& url,
+        const std::string& expected_sha256,
+        size_t expected_size,
+        std::function<void(int progress, size_t speed)> progress_callback);
+    bool Verify(const std::string& expected_sha256, size_t expected_size);
     bool Apply(bool refresh_display_theme = true);
     bool GetAssetData(const std::string& name, void*& ptr, size_t& size);
 
     inline bool partition_valid() const { return partition_valid_; }
+    inline bool has_partition() const { return partition_ != nullptr; }
+    inline size_t partition_size() const {
+        return partition_ == nullptr ? 0 : partition_->size;
+    }
     inline std::string default_assets_url() const { return default_assets_url_; }
 
 private:

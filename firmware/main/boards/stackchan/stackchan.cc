@@ -16,6 +16,7 @@ using ScsBus = FeetechScs;
 static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include "avatar_images.h"
 #include "avatar_set.h"
+#include "assets.h"
 #include "usb_control.h"
 #include "avatar_set_fetcher.h"
 
@@ -537,12 +538,10 @@ private:
     std::atomic<bool> listening_indicator_visible_{false};
     static constexpr int LISTENING_INDICATOR_DOT_SIZE_PX = 14;
 
-    // Dynamic avatar set loaded via the load_avatar_set MCP tool. Stays
-    // unloaded by default — the index-based image lookups then fall back
-    // to the static const tables in avatar_images.h (placeholder or local
-    // override). See docs/intent/stackchan_avatar_pipeline.md in the
-    // SAIVerse repository.
+    // Reviewed avatar loaded from the flashed assets partition. A later
+    // load_avatar_set call may still replace it as a development override.
     AvatarSet avatar_set_;
+    std::atomic<bool> reviewed_avatar_active_{false};
 
     // ---- Avatar rendering state (Phase 4.5-a) -----------------------------
     //
@@ -4864,6 +4863,25 @@ private:
         return SetAvatarExpression(face);
     }
 
+    void LoadBuiltInAvatar() {
+        void* data = nullptr;
+        size_t size = 0;
+        if (!Assets::GetInstance().GetAssetData(
+                "xc-body-layered.rgb565le", data, size)) {
+            ESP_LOGE(TAG, "Reviewed avatar is missing from assets partition");
+            return;
+        }
+        reviewed_avatar_active_.store(
+            avatar_set_.LoadFromFlash(
+                AvatarSet::Mode::kLayeredNative,
+                static_cast<const uint8_t*>(data),
+                size),
+            std::memory_order_release);
+        if (!reviewed_avatar_active_.load(std::memory_order_acquire)) {
+            ESP_LOGE(TAG, "Failed to load reviewed avatar from flash");
+        }
+    }
+
     // Schedule a one-shot/periodic timer that keeps trying to install the
     // initial avatar image until the LVGL screen tree is ready (i.e. after
     // Application::Start() has run Display::SetupUI()).
@@ -7368,6 +7386,7 @@ public:
         // but moving the scan is safer for any future I2C peripheral too.
         InitializeSpi();
         InitializeIli9342Display();
+        LoadBuiltInAvatar();
         InitializeCamera();
         InitializeFt6336TouchPad();
         GetBacklight()->RestoreBrightness();
@@ -7382,6 +7401,10 @@ public:
         InitializeMouthSequenceTask();
         RegisterMcpTools();
         StartStackChanUsbControl();
+    }
+
+    void OnAssetsUpdated() override {
+        LoadBuiltInAvatar();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -7487,6 +7510,17 @@ public:
             return;
         }
 
+        static constexpr char kReviewedAvatarChecksum[] =
+            "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7";
+        if (reviewed_avatar_active_.load(std::memory_order_acquire) &&
+            mode_enum == AvatarSet::Mode::kLayeredNative &&
+            static_cast<size_t>(size_j->valuedouble) ==
+                AvatarSet::kLayeredNativePayloadBytes &&
+            req_checksum == kReviewedAvatarChecksum) {
+            SendAvatarSetLoaded(true, req_checksum, "");
+            return;
+        }
+
         // Take the in-progress guard. exchange(true) returns the previous
         // value, so if another fetch was already running we reject this
         // request rather than racing on avatar_set_'s PSRAM swap. The
@@ -7566,11 +7600,18 @@ public:
             avatar_set_,
             ctx->url, ctx->token,
             ctx->mode, ctx->expected_size, ctx->expected_sha256,
-            [expected_sha256](bool ok,
-                              const std::string& actual_checksum,
-                              const std::string& error_code) {
+            [this, expected_sha256](
+                    bool ok,
+                    const std::string& actual_checksum,
+                    const std::string& error_code) {
                 const std::string& correlation =
                     actual_checksum.empty() ? expected_sha256 : actual_checksum;
+                if (ok) {
+                    reviewed_avatar_active_.store(
+                        actual_checksum ==
+                            "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7",
+                        std::memory_order_release);
+                }
                 SendAvatarSetLoaded(ok, correlation, error_code);
             });
 

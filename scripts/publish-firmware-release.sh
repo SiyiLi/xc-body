@@ -8,6 +8,7 @@ IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
 PUBLIC_ROOT="${XC_BODY_FIRMWARE_URL:-https://43.143.37.91/firmware}"
 REMOTE_ROOT=/data/xc-body/firmware
 OTA_ASSET=xc-body-stackchan-ota.bin
+ASSETS_ASSET=xc-body-stackchan-assets.bin
 SSH_OPTIONS=(
   -i "$IDENTITY"
   -o IdentitiesOnly=yes
@@ -39,13 +40,19 @@ release_dir=$1
 root=$2
 expected_version=$3
 ota_asset=xc-body-stackchan-ota.bin
+assets_asset=xc-body-stackchan-assets.bin
 
 [ -f "$release_dir/manifest.json" ] \
   || { echo "[FATAL] firmware release is missing: $release_dir" >&2; exit 65; }
 cd "$release_dir"
 sha256sum -c "$ota_asset.sha256"
-manifest_version=$(sed -nE \
+sha256sum -c "$assets_asset.sha256"
+manifest_versions=$(sed -nE \
   's/^[[:space:]]*"version": "([^"]+)",?$/\1/p' manifest.json)
+manifest_version_count=$(printf '%s\n' "$manifest_versions" | wc -l | tr -d ' ')
+[ "$manifest_version_count" -eq 2 ] \
+  || { echo "[FATAL] release manifest version count mismatch" >&2; exit 65; }
+manifest_version=$(printf '%s\n' "$manifest_versions" | sort -u)
 [ "$manifest_version" = "$expected_version" ] \
   || { echo "[FATAL] release manifest version mismatch" >&2; exit 65; }
 manifest_tmp=$root/.manifest.json.$$
@@ -78,6 +85,7 @@ version=$(sed -nE \
 release=v$version
 output_dir=$REPO/build/firmware-release/$release
 ota_url=$PUBLIC_ROOT/releases/$release/$OTA_ASSET
+assets_url=$PUBLIC_ROOT/releases/$release/$ASSETS_ASSET
 
 "$REPO/scripts/build_firmware.sh"
 
@@ -93,20 +101,24 @@ scp "${SSH_OPTIONS[@]}" \
   "$output_dir/manifest.json" \
   "$output_dir/$OTA_ASSET" \
   "$output_dir/$OTA_ASSET.sha256" \
+  "$output_dir/$ASSETS_ASSET" \
+  "$output_dir/$ASSETS_ASSET.sha256" \
   "$TARGET:$stage/"
 
 ssh "${SSH_OPTIONS[@]}" -T "$TARGET" bash -s -- \
   "$stage" "$REMOTE_ROOT/releases/$release" "$REMOTE_ROOT" \
-  "$OTA_ASSET" "$replace" <<'REMOTE'
+  "$OTA_ASSET" "$ASSETS_ASSET" "$replace" <<'REMOTE'
 set -eu
 stage=$1
 release_dir=$2
 root=$3
 ota_asset=$4
-replace=$5
+assets_asset=$5
+replace=$6
 
 cd "$stage"
 sha256sum -c "$ota_asset.sha256"
+sha256sum -c "$assets_asset.sha256"
 if [ -e "$release_dir" ]; then
   [ "$replace" = true ] || {
     echo "[FATAL] firmware release already exists: $release_dir" >&2
@@ -115,7 +127,8 @@ if [ -e "$release_dir" ]; then
   rm -rf "$release_dir"
 fi
 chmod 0755 "$stage"
-chmod 0644 manifest.json "$ota_asset" "$ota_asset.sha256"
+chmod 0644 manifest.json "$ota_asset" "$ota_asset.sha256" \
+  "$assets_asset" "$assets_asset.sha256"
 mv "$stage" "$release_dir"
 manifest_tmp=$root/.manifest.json.$$
 install -m 0644 "$release_dir/manifest.json" "$manifest_tmp"
@@ -125,3 +138,4 @@ REMOTE
 echo "published=$release"
 echo "manifest=$PUBLIC_ROOT/manifest.json"
 echo "firmware=$ota_url"
+echo "assets=$assets_url"

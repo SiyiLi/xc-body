@@ -45,7 +45,20 @@ void ClearPendingUpdate(Settings& settings) {
 }
 
 bool IsHttpsUrl(const std::string& url) {
-    return url.rfind("https://", 0) == 0;
+    constexpr size_t kSchemeLength = 8;
+    if (url.rfind("https://", 0) != 0) {
+        return false;
+    }
+    size_t authority_end = url.find_first_of("/?#", kSchemeLength);
+    if (authority_end == std::string::npos) {
+        authority_end = url.size();
+    }
+    if (authority_end == kSchemeLength ||
+        url.find('@', kSchemeLength) < authority_end) {
+        return false;
+    }
+    size_t host_end = url.find(':', kSchemeLength);
+    return host_end == std::string::npos || host_end > kSchemeLength;
 }
 
 bool IsSha256Hex(const std::string& value) {
@@ -473,6 +486,60 @@ esp_err_t Ota::CheckVersion() {
         }
     } else {
         ESP_LOGE(TAG, "XC Body OTA manifest has no firmware section");
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    has_assets_ = false;
+    assets_version_.clear();
+    assets_url_.clear();
+    assets_sha256_.clear();
+    assets_size_ = 0;
+    cJSON *assets = cJSON_GetObjectItem(root, "assets");
+    if (cJSON_IsObject(assets)) {
+        cJSON *version = cJSON_GetObjectItem(assets, "version");
+        cJSON *url = cJSON_GetObjectItem(assets, "url");
+        cJSON *sha256 = cJSON_GetObjectItem(assets, "sha256");
+        cJSON *size = cJSON_GetObjectItem(assets, "size");
+        if (cJSON_IsString(version)) {
+            assets_version_ = version->valuestring;
+        }
+        if (cJSON_IsString(url)) {
+            assets_url_ = url->valuestring;
+        }
+        if (cJSON_IsString(sha256)) {
+            assets_sha256_ = sha256->valuestring;
+        }
+        if (cJSON_IsNumber(size) && size->valueint > 0 &&
+            size->valuedouble == static_cast<double>(size->valueint)) {
+            assets_size_ = static_cast<size_t>(size->valueint);
+        }
+
+        std::array<uint32_t, 3> assets_parts;
+        auto assets_partition = esp_partition_find_first(
+            ESP_PARTITION_TYPE_ANY,
+            ESP_PARTITION_SUBTYPE_ANY,
+            "assets");
+        if (!cJSON_IsString(version) || !cJSON_IsString(url) ||
+            !cJSON_IsString(sha256) || !cJSON_IsNumber(size) ||
+            assets_version_ != firmware_version_ ||
+            !ParseSemanticVersion(assets_version_, assets_parts) ||
+            !IsHttpsUrl(assets_url_) || !IsSha256Hex(assets_sha256_) ||
+            assets_partition == nullptr || assets_size_ == 0 ||
+            assets_size_ > assets_partition->size) {
+            ESP_LOGE(TAG, "XC Body OTA assets entry is invalid");
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        has_assets_ = true;
+        ESP_LOGI(
+            TAG,
+            "Manifest assets: version=%s sha256=%s size=%u",
+            assets_version_.c_str(),
+            assets_sha256_.c_str(),
+            assets_size_);
+    } else {
+        ESP_LOGE(TAG, "XC Body OTA manifest has no assets section");
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }

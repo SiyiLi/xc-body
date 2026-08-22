@@ -344,11 +344,11 @@ void Application::ActivationTask() {
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
 
-    // Check for new assets version
-    CheckAssetsVersion();
-
-    // Check for new firmware version
+    // Check the release manifest before applying partition-backed assets. This
+    // avoids leaving display theme pointers into an assets mapping that an
+    // in-place assets update must unmap and replace.
     CheckNewVersion();
+    CheckAssetsVersion();
 
     // Initialize the protocol
     InitializeProtocol();
@@ -368,8 +368,8 @@ void Application::CheckAssetsVersion() {
     auto display = board.GetDisplay();
     auto& assets = Assets::GetInstance();
 
-    if (!assets.partition_valid()) {
-        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
+    if (!assets.has_partition()) {
+        ESP_LOGW(TAG, "Assets partition is unavailable for board %s", BOARD_NAME);
         return;
     }
     
@@ -378,8 +378,6 @@ void Application::CheckAssetsVersion() {
     std::string download_url = settings.GetString("download_url");
 
     if (!download_url.empty()) {
-        settings.EraseKey("download_url");
-
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
         Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
@@ -407,10 +405,13 @@ void Application::CheckAssetsVersion() {
             SetDeviceState(kDeviceStateActivating);
             return;
         }
+        settings.EraseKey("download_url");
     }
 
-    // Apply assets
-    assets.Apply();
+    // Apply assets only after manifest-driven updates have finished.
+    if (assets.Apply()) {
+        board.OnAssetsUpdated();
+    }
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
 }
@@ -448,7 +449,64 @@ void Application::CheckNewVersion() {
             ota_->GetFirmwareVersion(),
             ota_->GetFirmwareSha256(),
             ota_->GetFirmwareSize());
+        return;
     }
+
+    if (!ota_->HasAssetsForCurrentVersion()) {
+        return;
+    }
+
+    auto& assets = Assets::GetInstance();
+    const std::string& sha256 = ota_->GetAssetsSha256();
+    size_t size = ota_->GetAssetsSize();
+    if (assets.Verify(sha256, size)) {
+        return;
+    }
+
+    bool expected = false;
+    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
+            expected, true)) {
+        ESP_LOGW(TAG, "Another XC Body update is already in progress");
+        return;
+    }
+
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    Alert(
+        Lang::Strings::OTA_UPGRADE,
+        Lang::Strings::LOADING_ASSETS,
+        "cloud_arrow_down",
+        Lang::Sounds::OGG_UPGRADE);
+    SetDeviceState(kDeviceStateUpgrading);
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    bool success = assets.DownloadVerified(
+        ota_->GetAssetsUrl(),
+        sha256,
+        size,
+        [this, display](int progress, size_t speed) {
+            char buffer[32];
+            snprintf(
+                buffer,
+                sizeof(buffer),
+                "%d%% %uKB/s",
+                progress,
+                speed / 1024);
+            Schedule([display, message = std::string(buffer)]() {
+                display->SetChatMessage("system", message.c_str());
+            });
+        });
+    firmware_upgrade_in_progress_.store(false);
+    board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    if (!success) {
+        ESP_LOGW(
+            TAG,
+            "Assets update failed; keeping retry metadata and continuing "
+            "with static fallback");
+        SetDeviceState(kDeviceStateActivating);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Assets update verified; applying after update checks");
 }
 
 void Application::InitializeProtocol() {
