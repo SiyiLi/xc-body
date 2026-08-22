@@ -13,16 +13,79 @@
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/sha256.h>
 #ifdef SOC_HMAC_SUPPORTED
 #include <esp_hmac.h>
 #endif
 
+#include <array>
+#include <cctype>
 #include <cstring>
 #include <vector>
 #include <sstream>
 #include <algorithm>
 
 #define TAG "Ota"
+
+namespace {
+
+constexpr char kManifestProduct[] = "xc-body";
+constexpr char kStackChanProjectName[] = "xc_body_stackchan";
+
+bool IsHttpsUrl(const std::string& url) {
+    return url.rfind("https://", 0) == 0;
+}
+
+bool IsSha256Hex(const std::string& value) {
+    return value.size() == 64 && std::all_of(
+        value.begin(),
+        value.end(),
+        [](unsigned char character) {
+            return std::isdigit(character) ||
+                (character >= 'a' && character <= 'f');
+        });
+}
+
+std::string Sha256Hex(const std::array<unsigned char, 32>& digest) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result(64, '0');
+    for (size_t index = 0; index < digest.size(); ++index) {
+        result[index * 2] = kHex[digest[index] >> 4];
+        result[index * 2 + 1] = kHex[digest[index] & 0x0f];
+    }
+    return result;
+}
+
+class Sha256Context {
+public:
+    Sha256Context() {
+        mbedtls_sha256_init(&context_);
+    }
+
+    ~Sha256Context() {
+        mbedtls_sha256_free(&context_);
+    }
+
+    bool Start() {
+        return mbedtls_sha256_starts(&context_, 0) == 0;
+    }
+
+    bool Update(const char* data, size_t size) {
+        return mbedtls_sha256_update(
+            &context_,
+            reinterpret_cast<const unsigned char*>(data),
+            size) == 0;
+    }
+
+    bool Finish(std::array<unsigned char, 32>& digest) {
+        return mbedtls_sha256_finish(&context_, digest.data()) == 0;
+    }
+
+private:
+    mbedtls_sha256_context context_;
+};
+
+}  // namespace
 
 
 Ota::Ota() {
@@ -71,11 +134,8 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     return http;
 }
 
-/* 
- * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
- */
+// Parse the XC Body firmware manifest.
 esp_err_t Ota::CheckVersion() {
-    auto& board = Board::GetInstance();
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
@@ -90,11 +150,12 @@ esp_err_t Ota::CheckVersion() {
 
     auto http = SetupHttp();
 
-    std::string data = board.GetSystemInfoJson();
-    std::string method = data.length() > 0 ? "POST" : "GET";
-    http->SetContent(std::move(data));
+    if (!IsHttpsUrl(url)) {
+        ESP_LOGE(TAG, "XC Body OTA manifest URL must use HTTPS");
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    if (!http->Open(method, url)) {
+    if (!http->Open("GET", url)) {
         int last_error = http->GetLastError();
         ESP_LOGE(TAG, "Failed to open HTTP connection, code=0x%x", last_error);
         return last_error;
@@ -106,7 +167,7 @@ esp_err_t Ota::CheckVersion() {
         return status_code;
     }
 
-    data = http->ReadAll();
+    std::string data = http->ReadAll();
     http->Close();
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
@@ -116,6 +177,19 @@ esp_err_t Ota::CheckVersion() {
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON *schema_version = cJSON_GetObjectItem(root, "schema_version");
+    cJSON *product = cJSON_GetObjectItem(root, "product");
+    cJSON *hardware = cJSON_GetObjectItem(root, "hardware");
+    if (!cJSON_IsNumber(schema_version) || schema_version->valueint != 1 ||
+        !cJSON_IsString(product) ||
+        strcmp(product->valuestring, kManifestProduct) != 0 ||
+        !cJSON_IsString(hardware) ||
+        strcmp(hardware->valuestring, BOARD_NAME) != 0) {
+        ESP_LOGE(TAG, "Rejected incompatible XC Body OTA manifest");
+        cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
@@ -225,6 +299,8 @@ esp_err_t Ota::CheckVersion() {
     }
 
     has_new_version_ = false;
+    firmware_sha256_.clear();
+    firmware_size_ = 0;
     cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
     if (cJSON_IsObject(firmware)) {
         cJSON *version = cJSON_GetObjectItem(firmware, "version");
@@ -235,8 +311,19 @@ esp_err_t Ota::CheckVersion() {
         if (cJSON_IsString(url)) {
             firmware_url_ = url->valuestring;
         }
+        cJSON *sha256 = cJSON_GetObjectItem(firmware, "sha256");
+        if (cJSON_IsString(sha256)) {
+            firmware_sha256_ = sha256->valuestring;
+        }
+        cJSON *size = cJSON_GetObjectItem(firmware, "size");
+        if (cJSON_IsNumber(size) && size->valueint > 0) {
+            firmware_size_ = static_cast<size_t>(size->valueint);
+        }
 
-        if (cJSON_IsString(version) && cJSON_IsString(url)) {
+        if (cJSON_IsString(version) && cJSON_IsString(url) &&
+            cJSON_IsString(sha256) && cJSON_IsNumber(size) &&
+            IsHttpsUrl(firmware_url_) &&
+            IsSha256Hex(firmware_sha256_) && firmware_size_ > 0) {
             // Check if the version is newer, for example, 0.1.0 is newer than 0.0.1
             has_new_version_ = IsNewVersionAvailable(current_version_, firmware_version_);
             if (has_new_version_) {
@@ -244,14 +331,15 @@ esp_err_t Ota::CheckVersion() {
             } else {
                 ESP_LOGI(TAG, "Current is the latest version");
             }
-            // If the force flag is set to 1, the given version is forced to be installed
-            cJSON *force = cJSON_GetObjectItem(firmware, "force");
-            if (cJSON_IsNumber(force) && force->valueint == 1) {
-                has_new_version_ = true;
-            }
+        } else {
+            ESP_LOGE(TAG, "XC Body OTA firmware entry is incomplete or invalid");
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_RESPONSE;
         }
     } else {
-        ESP_LOGW(TAG, "No firmware section found!");
+        ESP_LOGE(TAG, "XC Body OTA manifest has no firmware section");
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
     }
 
     cJSON_Delete(root);
@@ -278,17 +366,32 @@ void Ota::MarkCurrentVersionValid() {
     }
 }
 
-bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
-    ESP_LOGI(TAG, "Upgrading firmware from %s", firmware_url.c_str());
+bool Ota::Upgrade(
+    const std::string& firmware_url,
+    const std::string& expected_sha256,
+    size_t expected_size,
+    std::function<void(int progress, size_t speed)> callback) {
+    if (!IsHttpsUrl(firmware_url) || !IsSha256Hex(expected_sha256) ||
+        expected_size == 0) {
+        ESP_LOGE(TAG, "Rejected invalid XC Body firmware metadata");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Starting verified XC Body firmware download");
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
         ESP_LOGE(TAG, "Failed to get update partition");
         return false;
     }
+    if (expected_size > update_partition->size) {
+        ESP_LOGE(TAG, "Firmware image exceeds OTA partition");
+        return false;
+    }
 
     ESP_LOGI(TAG, "Writing to partition %s at offset 0x%lx", update_partition->label, update_partition->address);
     bool image_header_checked = false;
+    bool update_started = false;
     std::string image_header;
 
     auto network = Board::GetInstance().GetNetwork();
@@ -300,12 +403,18 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 
     if (http->GetStatusCode() != 200) {
         ESP_LOGE(TAG, "Failed to get firmware, status code: %d", http->GetStatusCode());
+        http->Close();
         return false;
     }
 
     size_t content_length = http->GetBodyLength();
-    if (content_length == 0) {
-        ESP_LOGE(TAG, "Failed to get content length");
+    if (content_length != expected_size) {
+        ESP_LOGE(
+            TAG,
+            "Firmware size mismatch: HTTP=%u manifest=%u",
+            content_length,
+            expected_size);
+        http->Close();
         return false;
     }
 
@@ -313,24 +422,50 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
     char* buffer = (char*)heap_caps_malloc(PAGE_SIZE, MALLOC_CAP_INTERNAL);
     if (buffer == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate buffer");
+        http->Close();
         return false;
     }
+
+    Sha256Context sha256;
+    if (!sha256.Start()) {
+        ESP_LOGE(TAG, "Failed to initialize SHA-256");
+        http->Close();
+        heap_caps_free(buffer);
+        return false;
+    }
+
+    auto fail_download = [&]() {
+        if (update_started) {
+            esp_ota_abort(update_handle);
+        }
+        http->Close();
+        heap_caps_free(buffer);
+        return false;
+    };
 
     size_t buffer_offset = 0;  // Current data size in buffer
     size_t total_read = 0, recent_read = 0;
     auto last_calc_time = esp_timer_get_time();
     while (true) {
+        size_t read_offset = buffer_offset;
         int ret = http->Read(buffer + buffer_offset, PAGE_SIZE - buffer_offset);
         if (ret < 0) {
             ESP_LOGE(TAG, "Failed to read HTTP data: %s", esp_err_to_name(ret));
-            heap_caps_free(buffer);
-            return false;
+            return fail_download();
+        }
+        if (ret > 0 && !sha256.Update(buffer + read_offset, ret)) {
+            ESP_LOGE(TAG, "Failed to update firmware SHA-256");
+            return fail_download();
         }
 
         // Calculate speed and progress every second
         recent_read += ret;
         total_read += ret;
         buffer_offset += ret;
+        if (total_read > expected_size) {
+            ESP_LOGE(TAG, "Firmware download exceeded manifest size");
+            return fail_download();
+        }
         if (esp_timer_get_time() - last_calc_time >= 1000000 || ret == 0) {
             size_t progress = total_read * 100 / content_length;
             ESP_LOGI(TAG, "Progress: %u%% (%u/%u), Speed: %uB/s", progress, total_read, content_length, recent_read);
@@ -342,18 +477,28 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
         }
 
         if (!image_header_checked) {
-            image_header.append(buffer, buffer_offset);
+            image_header.append(buffer + read_offset, ret);
             if (image_header.size() >= sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
                 esp_app_desc_t new_app_info;
                 memcpy(&new_app_info, image_header.data() + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t), sizeof(esp_app_desc_t));
-
-                if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
-                    esp_ota_abort(update_handle);
-                    ESP_LOGE(TAG, "Failed to begin OTA");
-                    heap_caps_free(buffer);
-                    return false;
+                if (new_app_info.magic_word != ESP_APP_DESC_MAGIC_WORD ||
+                    strncmp(
+                        new_app_info.project_name,
+                        kStackChanProjectName,
+                        sizeof(new_app_info.project_name)) != 0) {
+                    ESP_LOGE(TAG, "Rejected non-StackChan XC Body firmware");
+                    return fail_download();
                 }
 
+                if (esp_ota_begin(
+                        update_partition,
+                        expected_size,
+                        &update_handle) != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to begin OTA");
+                    return fail_download();
+                }
+
+                update_started = true;
                 image_header_checked = true;
                 std::string().swap(image_header);
             }
@@ -361,13 +506,13 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 
         // Write to flash when buffer is full (4KB) or it's the last chunk
         bool is_last_chunk = (ret == 0);
-        if (buffer_offset == PAGE_SIZE || (is_last_chunk && buffer_offset > 0)) {
+        if (image_header_checked &&
+            (buffer_offset == PAGE_SIZE ||
+             (is_last_chunk && buffer_offset > 0))) {
             auto err = esp_ota_write(update_handle, buffer, buffer_offset);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
-                esp_ota_abort(update_handle);
-                heap_caps_free(buffer);
-                return false;
+                return fail_download();
             }
 
             buffer_offset = 0;
@@ -377,10 +522,23 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
             break;
         }
     }
+
+    if (!image_header_checked || total_read != expected_size) {
+        ESP_LOGE(TAG, "Firmware download was incomplete");
+        return fail_download();
+    }
+
+    std::array<unsigned char, 32> digest;
+    if (!sha256.Finish(digest) || Sha256Hex(digest) != expected_sha256) {
+        ESP_LOGE(TAG, "Firmware SHA-256 did not match manifest");
+        return fail_download();
+    }
+
     http->Close();
     heap_caps_free(buffer);
 
     esp_err_t err = esp_ota_end(update_handle);
+    update_started = false;
     if (err != ESP_OK) {
         if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
             ESP_LOGE(TAG, "Image validation failed, image is corrupted");
@@ -401,7 +559,11 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 }
 
 bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback) {
-    return Upgrade(firmware_url_, callback);
+    return Upgrade(
+        firmware_url_,
+        firmware_sha256_,
+        firmware_size_,
+        callback);
 }
 
 

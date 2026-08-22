@@ -1,10 +1,12 @@
-menu "Xiaozhi Assistant"
+menu "XC Body Firmware"
 
 config OTA_URL
-    string "Default OTA URL"
-    default "https://api.tenclass.net/xiaozhi/ota/"
+    string "XC Body OTA manifest URL"
+    default ""
     help
-        The application will access this URL to check for new firmwares and server address.
+        HTTPS URL of an XC Body firmware manifest. Leave empty to disable
+        automatic update checks. XC Body does not use the upstream Xiaozhi
+        firmware channel because it may replace the reviewed StackChan image.
 
 config DISABLE_OTA_WEBSOCKET_CONFIG
     bool "Ignore the websocket section of the OTA response"
@@ -17,7 +19,7 @@ config DISABLE_OTA_WEBSOCKET_CONFIG
         fallback URL are owned by the user via the WiFi config UI or
         CONFIG_DEFAULT_WEBSOCKET_URL / CONFIG_DEFAULT_WEBSOCKET_TOKEN /
         CONFIG_DEFAULT_WEBSOCKET_FALLBACK_URL Kconfig values, not the
-        upstream OTA server.
+        configured OTA service.
 
         Disable this option to restore the original xiaozhi-esp32
         behavior, where the OTA server may overwrite NVS

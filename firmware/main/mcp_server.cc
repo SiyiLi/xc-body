@@ -149,17 +149,21 @@ void McpServer::AddUserOnlyTools() {
         });
 
     // Firmware upgrade
-    AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
+    AddUserOnlyTool("self.upgrade_firmware", "Install a verified XC Body firmware image, then reboot.",
         PropertyList({
-            Property("url", kPropertyTypeString, "The URL of the firmware binary file to download and install")
+            Property("url", kPropertyTypeString),
+            Property("sha256", kPropertyTypeString),
+            Property("size", kPropertyTypeInteger, 1, 0x3f0000)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
-            ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
+            auto sha256 = properties["sha256"].value<std::string>();
+            auto size = properties["size"].value<int>();
+            ESP_LOGI(TAG, "User requested verified XC Body firmware upgrade");
             
             auto& app = Application::GetInstance();
-            app.Schedule([url, &app]() {
-                bool success = app.UpgradeFirmware(url);
+            app.Schedule([url, sha256, size, &app]() {
+                bool success = app.UpgradeFirmware(url, "", sha256, size);
                 if (!success) {
                     ESP_LOGE(TAG, "Firmware upgrade failed");
                 }

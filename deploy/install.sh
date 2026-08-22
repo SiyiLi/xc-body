@@ -13,6 +13,10 @@ avatar_sha256=${4:-}
 deployment_kind=${5:-}
 root=/data/xc-body
 deploy_dir=$root/deploy
+runtime_tag=${runtime_image%@*}
+caddy_tag=${caddy_image%@*}
+runtime_repository=${runtime_tag%:*}
+caddy_repository=${caddy_tag%:*}
 
 [[ "$runtime_image" =~ ^docker\.tc\.nvda\.ai/.+@sha256:[0-9a-f]{64}$ ]] \
   || die "invalid runtime image reference" 64
@@ -31,6 +35,7 @@ exec 9>/tmp/xc-body-deploy.lock
 flock -n 9 || die "another XC Body deployment is running" 75
 test -r "$deploy_dir/gateway.env" \
   || die "missing private gateway environment" 66
+install -d -m 0755 "$root/firmware" "$root/firmware/releases"
 
 echo "[deploy] pulling TC Artifactory images"
 docker pull "$runtime_image"
@@ -95,7 +100,7 @@ done
 
 echo "[deploy] starting pending-thought service"
 pending_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-"${compose[@]}" up -d --force-recreate pending proxy
+"${compose[@]}" up -d --force-recreate pending
 attempt=0
 while [ "$attempt" -lt 90 ]; do
   if docker exec xc-body-pending python3 -c \
@@ -129,6 +134,18 @@ state_tmp=$root/gateway-state/.last-deploy-state.$$
   printf 'deployed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$state_tmp"
 mv "$state_tmp" "$root/gateway-state/last-deploy-state.txt"
+
+cleanup_dangling_images() {
+  local repository=$1 image_ids
+  image_ids=$(docker image ls "$repository" --no-trunc \
+    --format '{{if eq .Tag "<none>"}}{{.ID}}{{end}}' \
+    | sed '/^$/d' | sort -u)
+  [ -z "$image_ids" ] || docker image rm $image_ids
+}
+
+cleanup_dangling_images "$runtime_repository"
+[ "$caddy_repository" = "$runtime_repository" ] \
+  || cleanup_dangling_images "$caddy_repository"
 
 docker ps --filter name=^/xc-body- \
   --format '{{.Names}}={{.Status}} image={{.Image}}'

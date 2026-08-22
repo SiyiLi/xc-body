@@ -14,6 +14,10 @@
 	handle_path /gateway-mcp/* {
 		reverse_proxy gateway:8767
 	}
+	handle_path /firmware/* {
+		root * /srv/firmware
+		file_server
+	}
 	handle /avatar_set/* {
 		reverse_proxy gateway:8766
 	}

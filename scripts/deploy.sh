@@ -4,12 +4,19 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET="${XC_BODY_DEPLOY_TARGET:-medchain@43.143.37.91}"
-IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519_medchain}"
+IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
 REGISTRY=docker.tc.nvda.ai
 REGISTRY_REPO=$REGISTRY/nvcr.io/xc-body
-RUNTIME_TAG=$REGISTRY_REPO:xc-body-0.1.0
-CADDY_TAG=$REGISTRY_REPO:caddy-2.11.4
-CADDY_SOURCE=caddy:2.11.4-alpine
+RUNTIME_VERSION=$(sed -nE \
+  's/^version = "([^"]+)"$/\1/p' "$REPO/pyproject.toml")
+[[ "$RUNTIME_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "[FATAL] invalid gateway version: $RUNTIME_VERSION" >&2
+  exit 65
+}
+RUNTIME_TAG=$REGISTRY_REPO:xc-body-$RUNTIME_VERSION
+CADDY_VERSION=2.11.4
+CADDY_TAG=$REGISTRY_REPO:caddy-$CADDY_VERSION
+CADDY_SOURCE=caddy:$CADDY_VERSION-alpine
 EXPECTED_AVATAR_SHA256=daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
@@ -23,6 +30,7 @@ SSH_OPTIONS=(
 
 candidate=0
 status_only=0
+cleanup_images_only=0
 build_root=""
 
 die() {
@@ -32,11 +40,14 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--candidate] | --status
+Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images
 
 Build linux/amd64 production images, push them to TC Artifactory, and deploy
 their exact digests to the XC Body rendezvous VM. Use --candidate only for an
 explicitly authorized deployment from uncommitted runtime inputs.
+
+--cleanup-images removes unused images from the XC Body repository on the
+rendezvous VM. Images referenced by any container are preserved.
 EOF
 }
 
@@ -68,10 +79,51 @@ docker ps -a --filter name=^/xc-body- \
   --format '{{.Names}}={{.Status}} image={{.Image}}'
 echo "[status] deployment"
 cat /data/xc-body/gateway-state/last-deploy-state.txt 2>/dev/null || true
+echo "[status] hosting"
+df -h /data/xc-body
+stat -c '%A %U:%G %n' \
+  /data/xc-body \
+  /data/xc-body/deploy \
+  /data/xc-body/caddy-state
+docker inspect xc-body-proxy \
+  --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+sed -n '1,160p' /data/xc-body/deploy/Caddyfile
 echo "[status] gateway"
 docker logs --tail 35 xc-body-gateway 2>&1 || true
 echo "[status] pending"
 docker logs --tail 50 xc-body-pending 2>&1 || true
+REMOTE
+}
+
+cleanup_vm_images() {
+  require_command ssh
+  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+  ssh_vm bash -s -- "$REGISTRY_REPO" <<'REMOTE'
+set -euo pipefail
+repository=$1
+used=$(mktemp)
+removed=$(mktemp)
+trap 'rm -f "$used" "$removed"' EXIT
+
+docker ps -aq --no-trunc | while IFS= read -r container; do
+  docker inspect --format '{{.Image}}' "$container"
+done | sort -u > "$used"
+
+docker image ls "$repository" --no-trunc \
+  --format '{{.Repository}}:{{.Tag}}|{{.ID}}' \
+  | while IFS='|' read -r reference image_id; do
+      if grep -Fxq "$image_id" "$used"; then
+        echo "preserved=$reference"
+        continue
+      fi
+      if [ "$reference" = "$repository:<none>" ]; then
+        reference=$image_id
+      fi
+      docker image rm "$reference"
+      echo "$reference" >> "$removed"
+    done
+
+echo "removed_images=$(wc -l < "$removed" | tr -d ' ')"
 REMOTE
 }
 
@@ -134,9 +186,15 @@ build_and_push_runtime() {
 
 mirror_caddy() {
   echo "[push] Caddy runtime"
-  docker pull --platform linux/amd64 "$CADDY_SOURCE"
-  docker tag "$CADDY_SOURCE" "$CADDY_TAG"
-  docker push "$CADDY_TAG"
+  docker buildx build \
+    --platform linux/amd64 \
+    --provenance=false \
+    --sbom=false \
+    --build-arg "CADDY_SOURCE=$CADDY_SOURCE" \
+    --output \
+      "type=image,name=$CADDY_TAG,oci-mediatypes=false,push=true" \
+    -f "$REPO/deploy/Dockerfile.caddy" \
+    "$REPO/deploy"
 }
 
 manifest_digest() {
@@ -187,6 +245,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --candidate) candidate=1 ;;
     --status) status_only=1 ;;
+    --cleanup-images) cleanup_images_only=1 ;;
     -h|--help)
       usage
       exit 0
@@ -200,8 +259,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$status_only" = "1" ]; then
-  [ "$candidate" = "0" ] || die "--status and --candidate conflict" 64
+  [ "$candidate" = "0" ] && [ "$cleanup_images_only" = "0" ] \
+    || die "deployment modes conflict" 64
   deployment_status
+  exit 0
+fi
+if [ "$cleanup_images_only" = "1" ]; then
+  [ "$candidate" = "0" ] || die "deployment modes conflict" 64
+  cleanup_vm_images
   exit 0
 fi
 

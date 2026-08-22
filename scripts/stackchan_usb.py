@@ -14,12 +14,14 @@ import time
 import tty
 from collections.abc import Sequence
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 
 REQUEST_PREFIX = b"XC_BODY_REQUEST "
 RESPONSE_PREFIX = b"XC_BODY_RESPONSE "
 DEFAULT_TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
+MAX_MANIFEST_BYTES = 64 * 1024
 
 
 class UsbControlError(RuntimeError):
@@ -61,9 +63,12 @@ def _open_port(path: str) -> tuple[int, list[object]]:
 def _close_port(descriptor: int, previous: list[object]) -> None:
     try:
         termios.tcsetattr(descriptor, termios.TCSANOW, previous)
+    except (OSError, termios.error):
+        pass
+    try:
+        os.close(descriptor)
     except OSError:
         pass
-    os.close(descriptor)
 
 
 def _write_all(descriptor: int, payload: bytes, timeout: float) -> None:
@@ -139,6 +144,84 @@ def _gateway_url(value: str) -> str:
     return value
 
 
+def _https_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise argparse.ArgumentTypeError(
+            "manifest URL must use https:// and include a host"
+        )
+    if parsed.username or parsed.password:
+        raise argparse.ArgumentTypeError(
+            "manifest URL must not contain credentials"
+        )
+    return value
+
+
+def _firmware_from_manifest(url: str, timeout: float) -> dict[str, object]:
+    request = Request(url, headers={"User-Agent": "XC-Body-USB"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            final_url = response.geturl()
+            try:
+                _https_url(final_url)
+            except (TypeError, argparse.ArgumentTypeError) as error:
+                raise UsbControlError(
+                    "OTA manifest redirect must remain on HTTPS"
+                ) from error
+            encoded = response.read(MAX_MANIFEST_BYTES + 1)
+    except OSError as error:
+        raise UsbControlError(f"cannot download OTA manifest: {error}") from error
+    if len(encoded) > MAX_MANIFEST_BYTES:
+        raise UsbControlError("OTA manifest exceeds 65536 bytes")
+    try:
+        manifest = json.loads(encoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise UsbControlError("OTA manifest is not valid JSON") from error
+    if not isinstance(manifest, dict):
+        raise UsbControlError("OTA manifest must be an object")
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("product") != "xc-body"
+        or manifest.get("hardware") != "stackchan"
+    ):
+        raise UsbControlError("OTA manifest is not for XC Body StackChan")
+    firmware = manifest.get("firmware")
+    if not isinstance(firmware, dict):
+        raise UsbControlError("OTA manifest has no firmware object")
+    version = firmware.get("version")
+    ota_url = firmware.get("url")
+    sha256 = firmware.get("sha256")
+    size = firmware.get("size")
+    if not isinstance(version, str) or not version:
+        raise UsbControlError("OTA manifest firmware version is invalid")
+    if not isinstance(ota_url, str):
+        raise UsbControlError("OTA manifest firmware URL is invalid")
+    try:
+        _https_url(ota_url)
+    except argparse.ArgumentTypeError as error:
+        raise UsbControlError(str(error)) from error
+    if (
+        not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdef" for character in sha256)
+    ):
+        raise UsbControlError("OTA manifest SHA-256 is invalid")
+    if (
+        not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+        or size > 0x3F0000
+    ):
+        raise UsbControlError("OTA manifest firmware size is invalid")
+    return {
+        "command": "update",
+        "url": ota_url,
+        "sha256": sha256,
+        "size": size,
+        "version": version,
+    }
+
+
 def _configure_request(args: argparse.Namespace) -> dict[str, object]:
     request: dict[str, object] = {"command": "configure"}
     if args.url is not None:
@@ -212,6 +295,11 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("reboot", help="reboot through the application path")
+    update = commands.add_parser(
+        "update",
+        help="queue a verified XC Body firmware release",
+    )
+    update.add_argument("--manifest", required=True, type=_https_url)
     monitor = commands.add_parser("monitor", help="stream firmware logs")
     monitor.add_argument(
         "--seconds",
@@ -231,6 +319,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "configure":
             request = _configure_request(args)
+        elif args.command == "update":
+            request = _firmware_from_manifest(args.manifest, args.timeout)
         else:
             request = {"command": args.command}
         response = _send_request(path, request, args.timeout)

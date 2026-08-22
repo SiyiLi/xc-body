@@ -1055,6 +1055,10 @@ async def _dispatch_mcp_tool(
             "self.get_device_status",
             {},
         ),
+        "upgrade_firmware": (
+            "self.upgrade_firmware",
+            arguments,
+        ),
         "take_photo": (
             "self.camera.take_photo",
             arguments,
@@ -1275,6 +1279,33 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 inputSchema={
                     "type": "object",
                     "properties": {},
+                },
+            ),
+            Tool(
+                name="upgrade_firmware",
+                description=(
+                    "User-authorized maintenance only: install a verified "
+                    "XC Body StackChan firmware image and reboot."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "pattern": "^https://",
+                        },
+                        "sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                        },
+                        "size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 0x3F0000,
+                        },
+                    },
+                    "required": ["url", "sha256", "size"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(

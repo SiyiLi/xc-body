@@ -4,6 +4,7 @@ import threading
 import types
 import unittest
 from contextlib import contextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -98,6 +99,7 @@ class StackChanEventSessionTests(unittest.TestCase):
             )
 
         self.assertIsInstance(session, fake_session_class)
+        self.assertEqual(session.read_timeout_seconds, timedelta(seconds=60))
         self.assertEqual(
             session._receive_notification_type.__name__,
             "StackChanServerNotification",
@@ -211,9 +213,16 @@ def fake_mcp_sdk():
         pass
 
     class FakeClientSession:
-        def __init__(self, read_stream, write_stream, message_handler):
+        def __init__(
+            self,
+            read_stream,
+            write_stream,
+            read_timeout_seconds,
+            message_handler,
+        ):
             self.read_stream = read_stream
             self.write_stream = write_stream
+            self.read_timeout_seconds = read_timeout_seconds
             self.message_handler = message_handler
             self._receive_notification_type = object
 

@@ -223,7 +223,8 @@ def build_app(
     @asynccontextmanager
     async def lifespan(_app: Any):
         headers = {"Authorization": f"Bearer {config.token}"}
-        async with httpx.AsyncClient(headers=headers, timeout=60.0) as client:
+        timeout = httpx.Timeout(60.0, read=None)
+        async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
             async with streamable_http_client(
                 config.url,
                 http_client=client,
