@@ -1,55 +1,86 @@
 # Roadmap
 
-The North Star is broader than any individual milestone. Work on only one
-milestone at a time.
+## Milestone Index
 
-## Milestone 1: Manual Embodiment
+- [Milestone 1: OpenClaw Gets a Body](MILESTONE_1.md) — complete.
+- [Milestone 2: Knock, Wait, Tell](MILESTONE_2.md) — complete.
+- [Milestone 3: Continuity and Restraint](MILESTONE_3.md) — active.
 
-OpenClaw manually selects deterministic intentions. StackChan presents them
-safely and returns to idle. Native faces, restrained motion, and safe return
-were proven on the physical device.
-
-## Milestone 2: Knock, Wait, Tell
-
-An OpenClaw background result may be ignored, remembered, or offered silently.
-StackChan waits for a deliberate head pat or stroke before playing
-OpenClaw-prepared audio. Complete: OpenClaw chose an offer, a physical head
-stroke acknowledged it, and the robot played clear speech.
-
-## Milestone 3: Continuity and Restraint
-
-In progress. Native OpenClaw completion integration is one part: successful
-subagent and cron completions may be classified and offered through XC Body.
-The broader milestone adds a 30-minute in-process offer lifetime, bounded
-submission retries, automatic robot-session restoration, supervised process
-recovery, and connected idle display dimming. Process restart forgets old
-offers; no durable queue or policy database is planned.
+The milestone files own current scope and acceptance. This roadmap describes
+future direction only; it does not authorize implementation.
 
 ## Milestone 4: Ambient Life
 
-Sparse deterministic blinking, gaze, touch reactions, and circadian sleep make
-the body feel alive without consuming model turns or constantly moving servos.
+Make StackChan feel quietly present between explicit interactions without
+consuming model turns or constantly driving the servos.
+
+Potential scope:
+
+- sparse deterministic blinking and gaze shifts;
+- subtle breathing or posture changes within reviewed servo limits;
+- local touch reactions that do not create agent messages;
+- time-aware waking, dimming, and sleep behavior;
+- strict activity budgets that prevent repetitive motion; and
+- immediate suspension of ambient behavior during active expressions,
+  playback, reconnect recovery, or low-power states.
+
+Ambient behavior remains local and deterministic. It must not invent thoughts,
+speak without consent, expose private information, or compete with OpenClaw's
+semantic intentions.
+
+Milestone 4 succeeds when a multi-day physical run feels alive but not noisy,
+wearing, or distracting, and all active interactions still take priority.
 
 ## Milestone 5: Direct Conversation and Senses
 
-Deliberate voice input, speech output, privacy indicators, and explicitly
-requested vision allow richer interaction without an always-on surveillance
-model.
+Add deliberate conversation and explicitly requested sensing while preserving
+clear privacy boundaries.
+
+Potential scope:
+
+- a physical or explicit software action that starts voice input;
+- visible indicators whenever microphone or camera capture is active;
+- bounded speech recognition and response playback;
+- user-requested single-frame vision rather than continuous observation;
+- cancellation, timeout, and offline behavior that fail closed; and
+- clear handling rules for captured audio, images, transcripts, and logs.
+
+Always-on recording, passive face recognition, room surveillance, and hidden
+capture are excluded. Camera or microphone use must be obvious to people near
+the robot and must stop when the requested interaction ends.
+
+Milestone 5 succeeds when a user can intentionally start and end a private,
+understandable conversation without weakening the existing semantic, consent,
+or recovery boundaries.
 
 ## Milestone 6: Stick S3 Continuity
 
-StackChan becomes the public home body while Stick S3 remains the portable,
-private channel. Pending thoughts and acknowledgments are shared without
-duplicating notifications.
+Connect StackChan and XC Buddy as two physical channels for the same OpenClaw
+identity without turning either device into a second agent.
 
-## Explicitly Deferred Until Proven Valuable
+Potential scope:
 
-- Face recognition.
+- StackChan remains the public home body;
+- Stick S3 remains a portable, private channel;
+- OpenClaw owns shared identity, memory, and judgment;
+- offers and acknowledgments route to the appropriate available device;
+- cross-device deduplication prevents repeated notifications;
+- private content never moves to the public body without explicit consent; and
+- either device remains usable when the other is offline.
+
+This milestone requires an explicit cross-repository protocol and deployment
+plan. XC Body must not modify `xc-buddy` without separate authorization.
+
+Milestone 6 succeeds when switching devices feels like changing channels to
+the same agent, with no duplicate personality, memory, or notification stream.
+
+## Deferred Until Proven Valuable
+
 - Always-on microphone or camera.
-- Home Assistant.
+- Face recognition.
+- Home Assistant integration.
 - Free-form model-generated movement.
 - Multiple robots.
 - Rich simulated emotion models.
-- Long autonomous monologues.
-- Generated dances.
-- A new mobile companion app.
+- Long autonomous monologues or generated dances.
+- A new mobile companion application.

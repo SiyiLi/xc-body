@@ -416,77 +416,38 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
-    const int MAX_RETRY = 10;
-    int retry_count = 0;
-    int retry_delay = 10; // Initial retry delay in seconds
+    auto policy = Ota::GetPolicyStatus();
+    if (!policy.automatic_updates_enabled) {
+        ESP_LOGW(
+            TAG,
+            "Automatic OTA is disabled%s%s",
+            policy.failed_version.empty() ? "" : " after rollback of ",
+            policy.failed_version.c_str());
+        return;
+    }
 
-    auto& board = Board::GetInstance();
-    while (true) {
-        auto display = board.GetDisplay();
-        display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+    if (ota_->GetCheckVersionUrl().empty()) {
+        ESP_LOGI(TAG, "XC Body OTA is disabled: no manifest URL configured");
+        return;
+    }
 
-        esp_err_t err = ota_->CheckVersion();
-        if (err != ESP_OK) {
-            retry_count++;
-            if (retry_count >= MAX_RETRY) {
-                ESP_LOGE(TAG, "Too many retries, exit version check");
-                return;
-            }
+    Board::GetInstance().GetDisplay()->SetStatus(
+        Lang::Strings::CHECKING_NEW_VERSION);
+    esp_err_t err = ota_->CheckVersion();
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "XC Body OTA check failed, continuing startup: %s",
+            esp_err_to_name(err));
+        return;
+    }
 
-            char error_message[128];
-            snprintf(error_message, sizeof(error_message), "code=%d, url=%s", err, ota_->GetCheckVersionUrl().c_str());
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, error_message);
-            Alert(Lang::Strings::ERROR, buffer, "cloud_slash", Lang::Sounds::OGG_EXCLAMATION);
-
-            ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (GetDeviceState() == kDeviceStateIdle) {
-                    break;
-                }
-            }
-            retry_delay *= 2; // Double the retry delay
-            continue;
-        }
-        retry_count = 0;
-        retry_delay = 10; // Reset retry delay
-
-        if (ota_->HasNewVersion()) {
-            if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
-                return; // This line will never be reached after reboot
-            }
-            // If upgrade failed, continue to normal operation
-        }
-
-        // No new version, mark the current version as valid
-        ota_->MarkCurrentVersionValid();
-        if (!ota_->HasActivationCode() && !ota_->HasActivationChallenge()) {
-            // Exit the loop if done checking new version
-            break;
-        }
-
-        display->SetStatus(Lang::Strings::ACTIVATION);
-        // Activation code is shown to the user and waiting for the user to input
-        if (ota_->HasActivationCode()) {
-            ShowActivationCode(ota_->GetActivationCode(), ota_->GetActivationMessage());
-        }
-
-        // This will block the loop until the activation is done or timeout
-        for (int i = 0; i < 10; ++i) {
-            ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
-            esp_err_t err = ota_->Activate();
-            if (err == ESP_OK) {
-                break;
-            } else if (err == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(10000));
-            }
-            if (GetDeviceState() == kDeviceStateIdle) {
-                break;
-            }
-        }
+    if (ota_->HasNewVersion()) {
+        UpgradeFirmware(
+            ota_->GetFirmwareUrl(),
+            ota_->GetFirmwareVersion(),
+            ota_->GetFirmwareSha256(),
+            ota_->GetFirmwareSize());
     }
 }
 
@@ -1153,9 +1114,21 @@ void Application::Reboot() {
     esp_restart();
 }
 
-bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
+bool Application::UpgradeFirmware(
+    const std::string& url,
+    const std::string& version,
+    const std::string& expected_sha256,
+    size_t expected_size) {
+    bool expected = false;
+    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
+            expected, true)) {
+        ESP_LOGW(TAG, "Firmware upgrade already in progress");
+        return false;
+    }
+
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
+    auto previous_state = GetDeviceState();
 
     std::string upgrade_url = url;
     std::string version_info = version.empty() ? "(Manual upgrade)" : version;
@@ -1179,21 +1152,36 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     audio_service_.Stop();
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    bool upgrade_success = Ota::Upgrade(upgrade_url, [this, display](int progress, size_t speed) {
-        char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-        Schedule([display, message = std::string(buffer)]() {
-            display->SetChatMessage("system", message.c_str());
+    bool upgrade_success = Ota::Upgrade(
+        upgrade_url,
+        version,
+        expected_sha256,
+        expected_size,
+        [this, display](int progress, size_t speed) {
+            char buffer[32];
+            snprintf(
+                buffer,
+                sizeof(buffer),
+                "%d%% %uKB/s",
+                progress,
+                speed / 1024);
+            Schedule([display, message = std::string(buffer)]() {
+                display->SetChatMessage("system", message.c_str());
+            });
         });
-    });
 
     if (!upgrade_success) {
+        firmware_upgrade_in_progress_.store(false);
         // Upgrade failed, restart audio service and continue running
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); // Restore power save level
         Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
         vTaskDelay(pdMS_TO_TICKS(3000));
+        SetDeviceState(
+            previous_state == kDeviceStateActivating
+                ? kDeviceStateActivating
+                : kDeviceStateIdle);
         return false;
     } else {
         // Upgrade success, reboot immediately

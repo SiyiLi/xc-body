@@ -4,7 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET="${XC_BODY_DEPLOY_TARGET:-medchain@43.143.37.91}"
-IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519_medchain}"
+IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
 SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(

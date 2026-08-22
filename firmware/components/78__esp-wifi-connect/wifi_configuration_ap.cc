@@ -105,6 +105,11 @@ void WifiConfigurationAp::SetSsidPrefix(const std::string &ssid_prefix)
     ssid_prefix_ = ssid_prefix;
 }
 
+void WifiConfigurationAp::SetSsid(const std::string &ssid)
+{
+    ssid_ = ssid;
+}
+
 void WifiConfigurationAp::Start()
 {
     // Register event handlers
@@ -142,6 +147,10 @@ void WifiConfigurationAp::Start()
 
 std::string WifiConfigurationAp::GetSsid()
 {
+    if (!ssid_.empty()) {
+        return ssid_;
+    }
+
     // Get MAC and use it to generate a unique SSID
     uint8_t mac[6];
 #if CONFIG_IDF_TARGET_ESP32P4

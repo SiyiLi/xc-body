@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, Literal, Union
 
 from gateway.pending_thought import KnockWaitTell, is_head_acknowledgment
@@ -123,6 +124,7 @@ def create_stackchan_client_session(
     session = ClientSession(
         read_stream,
         write_stream,
+        read_timeout_seconds=timedelta(seconds=60),
         message_handler=message_handler,
     )
     if not hasattr(session, "_receive_notification_type"):

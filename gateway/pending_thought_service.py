@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,7 @@ async def prepare_pending_runtime(
                 "mode": "layered-320x240",
                 "timeout": 120,
             },
+            read_timeout_seconds=timedelta(seconds=150),
         )
         require_reviewed_avatar_load(loaded)
     except AvatarVerificationError as exc:

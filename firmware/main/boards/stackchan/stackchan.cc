@@ -7,6 +7,7 @@
 #include "i2c_device.h"
 #include "axp2101.h"
 #include "mcp_server.h"
+#include "ota.h"
 #include "settings.h"
 #include "led_strip.h"
 #include "feetech_scs.h"
@@ -2477,6 +2478,7 @@ private:
     void PollTouchpad() {
         static bool was_touched = false;
         static int64_t touch_start_time = 0;
+        static int touch_start_x = -1;
         static int64_t last_release_ms = 0;       // デバウンス用 (= 直前 release 時刻)
         static int64_t listening_started_ms = 0;  // タイムアウト用 (= listening 突入時刻)
         static bool was_listening = false;        // listening 突入のエッジ検出
@@ -2524,6 +2526,7 @@ private:
             }
             was_touched = true;
             touch_start_time = now_ms;
+            touch_start_x = touch_point.x;
             // タッチ瞬時の PlaySound 直接呼び出しは行わない。 直後に
             // StartListening → EnableVoiceProcessing(true) → ResetDecoder で
             // playback queue がクリアされて音が消えるため。 代わりに
@@ -2540,6 +2543,19 @@ private:
 
             // 只有短触才触发
             if (touch_duration < TOUCH_THRESHOLD_MS) {
+                if (app.GetDeviceState() == kDeviceStateWifiConfiguring) {
+                    bool enabled = touch_start_x >= DISPLAY_WIDTH / 2;
+                    app.Schedule([enabled]() {
+                        Ota::SetAutomaticUpdatesEnabled(enabled);
+                        auto display = Board::GetInstance().GetDisplay();
+                        display->ShowNotification(
+                            enabled
+                                ? "Automatic OTA enabled"
+                                : "Automatic OTA disabled",
+                            3000);
+                    });
+                    return;
+                }
                 if (app.GetDeviceState() == kDeviceStateStarting) {
                     EnterWifiConfigMode();
                     return;

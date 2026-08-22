@@ -5,6 +5,7 @@ import sys
 import types
 import unittest
 from contextlib import contextmanager, redirect_stderr
+from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_runtime import PendingThoughtRuntime
@@ -105,8 +106,9 @@ class PendingThoughtServiceTests(unittest.TestCase):
 
     def test_runtime_preparation_rejects_disconnected_device(self):
         class Session:
-            async def call_tool(self, name, arguments):
+            async def call_tool(self, name, arguments, **kwargs):
                 del arguments
+                del kwargs
                 if name == "load_avatar_set":
                     return {
                         "ok": True,
@@ -137,8 +139,9 @@ class PendingThoughtServiceTests(unittest.TestCase):
             def __init__(self):
                 self.session_ids = iter(("device-session-1", "device-session-2"))
 
-            async def call_tool(self, name, arguments):
+            async def call_tool(self, name, arguments, **kwargs):
                 del arguments
+                del kwargs
                 if name == "load_avatar_set":
                     return {
                         "ok": True,
@@ -193,6 +196,12 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertIs(runtime.machine, machine)
         self.assertEqual(machine.pending_thought_id, "cron:waiting")
         runtime.mark_avatar_ready.assert_called_once_with("device-session-2")
+        self.assertEqual(
+            session.call_tool.call_args_list[1].kwargs[
+                "read_timeout_seconds"
+            ],
+            timedelta(seconds=150),
+        )
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_offer_gesture_posts_prepared_audio(self, urlopen):
@@ -215,7 +224,8 @@ class PendingThoughtServiceTests(unittest.TestCase):
             async def initialize(self):
                 pass
 
-            async def call_tool(self, name, arguments):
+            async def call_tool(self, name, arguments, **kwargs):
+                del kwargs
                 upstream_calls.append((name, arguments))
                 if name == "load_avatar_set":
                     return {

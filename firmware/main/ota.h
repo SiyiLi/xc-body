@@ -1,11 +1,19 @@
 #ifndef _OTA_H
 #define _OTA_H
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
 #include <esp_err.h>
 #include "board.h"
+
+struct OtaPolicyStatus {
+    bool automatic_updates_enabled = true;
+    std::string pending_version;
+    std::string failed_version;
+    int rollback_reset_reason = 0;
+};
 
 class Ota {
 public:
@@ -21,12 +29,22 @@ public:
     bool HasActivationCode() { return has_activation_code_; }
     bool HasServerTime() { return has_server_time_; }
     bool StartUpgrade(std::function<void(int progress, size_t speed)> callback);
-    static bool Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback);
-    void MarkCurrentVersionValid();
+    static bool Upgrade(
+        const std::string& firmware_url,
+        const std::string& expected_version,
+        const std::string& expected_sha256,
+        size_t expected_size,
+        std::function<void(int progress, size_t speed)> callback);
+    static OtaPolicyStatus GetPolicyStatus();
+    static void SetAutomaticUpdatesEnabled(bool enabled);
+    static void RecordRollbackIfNeeded();
+    static void MarkCurrentVersionValid();
 
     const std::string& GetFirmwareVersion() const { return firmware_version_; }
     const std::string& GetCurrentVersion() const { return current_version_; }
     const std::string& GetFirmwareUrl() const { return firmware_url_; }
+    const std::string& GetFirmwareSha256() const { return firmware_sha256_; }
+    size_t GetFirmwareSize() const { return firmware_size_; }
     const std::string& GetActivationMessage() const { return activation_message_; }
     const std::string& GetActivationCode() const { return activation_code_; }
     std::string GetCheckVersionUrl();
@@ -44,13 +62,13 @@ private:
     std::string current_version_;
     std::string firmware_version_;
     std::string firmware_url_;
+    std::string firmware_sha256_;
+    size_t firmware_size_ = 0;
     std::string activation_challenge_;
     std::string serial_number_;
     int activation_timeout_ms_ = 30000;
 
     std::function<void(int progress, size_t speed)> upgrade_callback_;
-    std::vector<int> ParseVersion(const std::string& version);
-    bool IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion);
     std::string GetActivationPayload();
     std::unique_ptr<Http> SetupHttp();
 };

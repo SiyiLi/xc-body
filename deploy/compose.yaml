@@ -68,6 +68,7 @@ services:
   proxy:
     container_name: xc-body-proxy
     image: ${XC_BODY_CADDY_IMAGE:?}
+    platform: linux/amd64
     restart: unless-stopped
     depends_on:
       - gateway
@@ -90,6 +91,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - /data/xc-body/caddy-state:/state
+      - /data/xc-body/firmware:/srv/firmware:ro
     security_opt:
       - no-new-privileges:true
 

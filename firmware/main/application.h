@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 #include <esp_timer.h>
 
+#include <cstddef>
 #include <string>
 #include <mutex>
 #include <deque>
@@ -110,7 +111,11 @@ public:
 
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
-    bool UpgradeFirmware(const std::string& url, const std::string& version = "");
+    bool UpgradeFirmware(
+        const std::string& url,
+        const std::string& version,
+        const std::string& expected_sha256,
+        size_t expected_size);
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
     void SendStackChanEvent(
@@ -155,6 +160,7 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
+    std::atomic<bool> firmware_upgrade_in_progress_{false};
 
     bool has_server_time_ = false;
     bool aborted_ = false;

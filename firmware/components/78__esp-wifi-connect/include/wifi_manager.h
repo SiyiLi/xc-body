@@ -78,7 +78,7 @@ public:
 
     // ==================== Config AP Mode ====================
     
-    void StartConfigAp();  // Non-blocking, auto-stops station if active
+    void StartConfigAp(const std::string& ssid = "");
     void StopConfigAp();   // Non-blocking
     
     bool IsConfigMode() const;

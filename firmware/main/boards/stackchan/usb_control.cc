@@ -13,6 +13,7 @@
 
 #include "application.h"
 #include "device_state_machine.h"
+#include "ota.h"
 #include "settings.h"
 
 namespace {
@@ -102,6 +103,26 @@ void AddGatewayStatus(cJSON* response) {
     cJSON_AddBoolToObject(response, "token_forced", IsTokenForced());
 }
 
+void AddOtaStatus(cJSON* response) {
+    auto status = Ota::GetPolicyStatus();
+    cJSON_AddBoolToObject(
+        response,
+        "automatic_ota_enabled",
+        status.automatic_updates_enabled);
+    cJSON_AddStringToObject(
+        response,
+        "ota_pending_version",
+        status.pending_version.c_str());
+    cJSON_AddStringToObject(
+        response,
+        "ota_failed_version",
+        status.failed_version.c_str());
+    cJSON_AddNumberToObject(
+        response,
+        "ota_rollback_reset_reason",
+        status.rollback_reset_reason);
+}
+
 void SendStatus() {
     auto& app = Application::GetInstance();
     auto& wifi = WifiManager::GetInstance();
@@ -110,6 +131,11 @@ void SendStatus() {
         response,
         "firmware",
         esp_app_get_description()->version);
+    cJSON_AddStringToObject(response, "product", "xc-body");
+    cJSON_AddStringToObject(
+        response,
+        "project",
+        esp_app_get_description()->project_name);
     cJSON_AddStringToObject(
         response,
         "state",
@@ -119,6 +145,7 @@ void SendStatus() {
     cJSON_AddStringToObject(response, "ip", wifi.GetIpAddress().c_str());
     cJSON_AddNumberToObject(response, "rssi", wifi.GetRssi());
     AddGatewayStatus(response);
+    AddOtaStatus(response);
     SendResponse(response);
 }
 
@@ -209,6 +236,56 @@ void ScheduleReboot() {
     });
 }
 
+void ScheduleFirmwareUpdate(const cJSON* request) {
+    const cJSON* url = cJSON_GetObjectItemCaseSensitive(request, "url");
+    const cJSON* version =
+        cJSON_GetObjectItemCaseSensitive(request, "version");
+    const cJSON* sha256 =
+        cJSON_GetObjectItemCaseSensitive(request, "sha256");
+    const cJSON* size = cJSON_GetObjectItemCaseSensitive(request, "size");
+    if (!IsString(url) || !IsString(version) || !IsString(sha256) ||
+        !cJSON_IsNumber(size) ||
+        size->valueint <= 0 || size->valueint > 0x3f0000) {
+        SendError("update", "invalid firmware metadata");
+        return;
+    }
+
+    std::string update_url = url->valuestring;
+    std::string expected_version = version->valuestring;
+    std::string expected_sha256 = sha256->valuestring;
+    int expected_size = size->valueint;
+    auto response = NewResponse("update", true);
+    cJSON_AddStringToObject(response, "status", "queued");
+    cJSON_AddBoolToObject(response, "completed", false);
+    SendResponse(response);
+    Application::GetInstance().Schedule(
+        [update_url, expected_version, expected_sha256, expected_size]() {
+            bool success = Application::GetInstance().UpgradeFirmware(
+                update_url,
+                expected_version,
+                expected_sha256,
+                expected_size);
+            if (!success) {
+                ESP_LOGE(kTag, "XC Body firmware update failed");
+            }
+        });
+}
+
+void SetAutomaticOta(const cJSON* request) {
+    const cJSON* enabled = cJSON_GetObjectItemCaseSensitive(
+        request, "enabled");
+    if (!cJSON_IsBool(enabled)) {
+        SendError("automatic_ota", "enabled must be a boolean");
+        return;
+    }
+
+    bool value = cJSON_IsTrue(enabled);
+    Ota::SetAutomaticUpdatesEnabled(value);
+    auto response = NewResponse("automatic_ota", true);
+    AddOtaStatus(response);
+    SendResponse(response);
+}
+
 void HandleRequest(const char* json) {
     cJSON* request = cJSON_Parse(json);
     if (request == nullptr || !cJSON_IsObject(request)) {
@@ -230,6 +307,11 @@ void HandleRequest(const char* json) {
         SaveGatewayConfig(request);
     } else if (std::strcmp(command->valuestring, "reboot") == 0) {
         ScheduleReboot();
+    } else if (std::strcmp(command->valuestring, "update") == 0) {
+        ScheduleFirmwareUpdate(request);
+    } else if (std::strcmp(
+                   command->valuestring, "automatic_ota") == 0) {
+        SetAutomaticOta(request);
     } else {
         SendError(command->valuestring, "unsupported command");
     }
@@ -237,24 +319,38 @@ void HandleRequest(const char* json) {
 }
 
 void UsbControlTask(void*) {
-    char line[kMaxRequestBytes];
+    std::string line;
+    line.reserve(kMaxRequestBytes);
+    bool overflow = false;
     ESP_LOGI(kTag, "USB maintenance control ready");
     while (true) {
-        if (std::fgets(line, sizeof(line), stdin) == nullptr) {
+        int character = std::getchar();
+        if (character == EOF) {
             clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
-        size_t length = std::strlen(line);
-        while (length > 0 &&
-               (line[length - 1] == '\n' || line[length - 1] == '\r')) {
-            line[--length] = '\0';
-        }
-        if (std::strncmp(line, kRequestPrefix, sizeof(kRequestPrefix) - 1) !=
-            0) {
+        if (character == '\r') {
             continue;
         }
-        HandleRequest(line + sizeof(kRequestPrefix) - 1);
+        if (character != '\n') {
+            if (line.size() < kMaxRequestBytes - 1) {
+                line.push_back(static_cast<char>(character));
+            } else {
+                overflow = true;
+            }
+            continue;
+        }
+        if (overflow) {
+            SendError("unknown", "request is too large");
+        } else if (line.compare(
+                       0,
+                       sizeof(kRequestPrefix) - 1,
+                       kRequestPrefix) == 0) {
+            HandleRequest(line.c_str() + sizeof(kRequestPrefix) - 1);
+        }
+        line.clear();
+        overflow = false;
     }
 }
 
