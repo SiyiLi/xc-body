@@ -636,17 +636,18 @@ private:
         HALF_FALLING,  // open -> closed transition
     };
     static constexpr int TTS_LIPSYNC_STEP_MS = 150;
+    static constexpr int64_t TTS_AUDIO_SILENCE_TIMEOUT_US = 3 * 1000 * 1000;
     esp_timer_handle_t tts_lipsync_timer_ = nullptr;
     std::atomic<bool> tts_lipsync_active_{false};
+    std::atomic<int64_t> last_tts_audio_frame_us_{0};
     TtsLipSyncShape tts_lipsync_shape_ = TtsLipSyncShape::CLOSED;
 
     // Phase 7: Si12T head-touch sensing.
     // Polling every TOUCH_POLL_MS samples Output1 (CH1..CH3 -> 3 head zones).
     // Edge detection on the OR of the three zones produces TAP / STROKE
     // gestures based on hold duration:
-    //   duration <  TAP_MAX_MS (400 ms)  -> TAP    -> face=surprised
-    //   duration >= STROKE_MIN_MS (600 ms) -> STROKE -> face=embarrassed + servo wobble
-    //   400 <= duration < 600 ms         -> treated as TAP (greyzone)
+    //   duration <  TAP_MAX_MS (400 ms)  -> TAP    -> face=surprised + servo wobble
+    //   duration >= STROKE_MIN_MS (400 ms) -> STROKE -> face=embarrassed + servo wobble
     // Reactions auto-revert to "idle" after REACTION_HOLD_MS (3 s). A
     // post-reaction COOLDOWN_MS lock-out prevents one head-pat from firing
     // a chain of events.
@@ -4123,7 +4124,7 @@ private:
             return;
         }
 
-        if (event == TouchEvent::STROKE) {
+        {
             bool settled =
                 !servo_wobble_active_.load(std::memory_order_acquire) &&
                 PhysicalMotionConfirmedAt(
@@ -4360,6 +4361,7 @@ private:
         // Use the IfActive variant so a tap during set_avatar("off") does
         // not pop the avatar back over the WiFi config / settings screens.
         SetAvatarExpressionIfActive("surprised");
+        StartServoWobble();
         ScheduleIdleRevert();
     }
 
@@ -4460,7 +4462,6 @@ private:
             if (duration_ms >= STROKE_MIN_MS) {
                 HandleStroke(duration_ms);
             } else {
-                // Treat the 400-600 ms grey zone as TAP.
                 HandleTap(duration_ms);
             }
             cooldown_until_us_ = now_us + (uint64_t)COOLDOWN_MS * 1000ULL;
@@ -5106,6 +5107,14 @@ private:
         if (!tts_lipsync_active_.load(std::memory_order_acquire)) {
             return;
         }
+        const int64_t last_frame_us =
+            last_tts_audio_frame_us_.load(std::memory_order_acquire);
+        if (esp_timer_get_time() - last_frame_us >
+            TTS_AUDIO_SILENCE_TIMEOUT_US) {
+            ESP_LOGW(TAG, "TTS audio stalled; stopping lip-sync");
+            StopTtsLipSync();
+            return;
+        }
         if (display_ == nullptr) {
             return;
         }
@@ -5173,6 +5182,8 @@ private:
         // Start the cycle from a known resting position so the first audible
         // frame opens the mouth from closed.
         tts_lipsync_shape_ = TtsLipSyncShape::CLOSED;
+        last_tts_audio_frame_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
         SetMouthShape("closed");
         esp_timer_start_once(tts_lipsync_timer_,
                              (uint64_t)TTS_LIPSYNC_STEP_MS * 1000);
@@ -7459,6 +7470,14 @@ public:
     // board via Application::OnIncomingJson() -> Board::OnTtsStart/Stop().
     virtual void OnTtsStart() override {
         StartTtsLipSync();
+    }
+
+    virtual void OnTtsAudioFrame() override {
+        last_tts_audio_frame_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
+        if (!tts_lipsync_active_.load(std::memory_order_acquire)) {
+            StartTtsLipSync();
+        }
     }
 
     virtual void OnTtsStop() override {

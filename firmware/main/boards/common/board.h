@@ -88,6 +88,7 @@ public:
     // stackchan boards are unaffected; boards with an avatar / mouth display
     // override these to drive lip-sync animation while TTS audio is playing.
     virtual void OnTtsStart() {}
+    virtual void OnTtsAudioFrame() {}
     virtual void OnTtsStop() {}
     virtual void OnAssetsUpdated() {}
 

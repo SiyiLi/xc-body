@@ -528,8 +528,10 @@ void Application::InitializeProtocol() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     
-    protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+    protocol_->OnIncomingAudio([this, &board](
+            std::unique_ptr<AudioStreamPacket> packet) {
         if (GetDeviceState() == kDeviceStateSpeaking) {
+            board.OnTtsAudioFrame();
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
