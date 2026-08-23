@@ -23,61 +23,33 @@ camera input, microphone input, and free-form motion are out of scope.
 
 ## Current Status
 
-The source implements the scoped plugin, offer lifetime, bounded retries,
-robot-session recovery, supervisor recovery, and idle display dimming.
+The complete recovery matrix has physical acceptance with this exact set:
 
-The native completion path has candidate physical evidence from 2026-08-21:
-one eligible completion produced one knock, a head touch acknowledged it, and
-the resulting speech was clear. That run does not complete the milestone
-because the full recovery matrix was not accepted with one exact version set.
+- firmware `0.1.11`, source `3fdbf32`, app SHA-256
+  `325b8f2e2f6d7acb6213f03477495c4e00d41bc44dfe19ff572d03997208c2e9`;
+- gateway and pending runtime `0.1.5`, deployed source `db6defb`, image digest
+  `sha256:f9bdb345d4d8d781cc7d088559f597c76d2ff1722e53e12306282a324b73480c`;
+- reviewed avatar SHA-256
+  `daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7`;
+- OpenClaw `2026.7.1-2` with plugin source `3fdbf32`; and
+- Caddy `2.11.4`, image digest
+  `sha256:542fa24d69f2bb305fcf0201e298bbd8e0cd5a3f35706a664e08e8675619474a`.
 
-The physical no-USB OTA path is accepted. On 2026-08-22, the robot completed
-two consecutive boot updates: `0.1.4` to `0.1.5`, then `0.1.5` to `0.1.6`.
-Each image installed in the inactive slot, authenticated with the gateway,
-completed MCP initialization, restored the reviewed layered avatar, and
-survived a validation reboot without rollback. Configuration mode advertised
-the reviewed `XCBODY-3341` SSID on `0.1.6`.
+The run proved fresh useful operation after an OpenClaw restart, a bounded
+OpenClaw-to-VM route failure, a robot reboot, a gateway restart, and a pending
+service restart. A pending offer survived robot reconnect without a second
+knock. Restarting the pending service forgot its old offer. A real 30-minute
+expiry ignored the old touch and accepted a fresh offer. No failed submission
+was replayed later. Clear speech followed each accepted fresh touch, and the
+control path remained usable after the extended idle period.
 
-The robot now runs firmware `0.1.11`. The last fully recorded OTA acceptance
-set used firmware `0.1.6` on `ota_0`, gateway runtime `0.1.2`, and Caddy
-`2.11.4`.
-Its accepted app SHA-256 is
-`3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
-OpenClaw was not part of those OTA tests.
-
-Firmware `0.1.11`, gateway runtime `0.1.5`, and OpenClaw `2026.7.1-2`
-physically passed the native touch-to-speech path. Audio transfer began after
-the head stroke, playback remained silent until the head reaction settled,
-and one clear prepared-Opus result completed. The tested app SHA-256 is
-`325b8f2e2f6d7acb6213f03477495c4e00d41bc44dfe19ff572d03997208c2e9`.
-
-Firmware records a pending target before switching slots. If the bootloader
-rolls back, the recovered slot records the failed version and disables
-automatic boot OTA until local USB or configuration-screen control clears the
-block. Those local controls are physically exercised; forced unhealthy-boot
-rollback remains untested.
-
-The physical run used gateway runtime `0.1.2`. Current gateway source is
-`0.1.5`, with bounded MCP request deadlines and prepared-audio caching, but it
-has not been deployed or physically accepted. The complete run therefore
-remains unreproduced with one exact current version set.
+Firmware `0.1.11` was delivered by the accepted no-USB OTA path. Earlier
+consecutive updates from `0.1.4` through `0.1.6` also installed into inactive
+slots, restored the reviewed avatar, and survived validation reboots.
 
 ## Remaining Acceptance
 
-Run one versioned physical matrix proving fresh completions after:
-
-1. an OpenClaw restart;
-2. a temporary OpenClaw-to-VM interruption;
-3. a robot reboot;
-4. a VM gateway restart; and
-5. a pending-service restart.
-
-The same run must prove that an offer survives robot reconnect, expires after
-30 minutes, never creates a delayed burst, and that idle display dimming keeps
-the authenticated control transport usable.
-
 OTA acceptance still must prove automatic rollback after an unhealthy boot.
-The compatible-image checks and USB recovery remain implemented but have not
-been exercised as destructive physical tests. The intermittent Si12T I2C
-crash seen during the first `0.1.3` download must also be resolved or shown not
-to recur.
+Compatible-image checks and USB recovery are implemented. The intermittent
+Si12T I2C crash seen during the first `0.1.3` download did not recur in the
+accepted runs but has not been root-caused.
