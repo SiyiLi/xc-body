@@ -85,6 +85,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
         urlopen.assert_called_once()
         request = urlopen.call_args.args[0]
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 300)
         self.assertEqual(request.data, _FRAMED_OPUS)
         self.assertEqual(request.get_header("X-message-id"), "eval:42")
         self.assertEqual(caller.calls, [("get_status", {})])

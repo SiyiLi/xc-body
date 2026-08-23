@@ -68,6 +68,10 @@ public:
 
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+    bool AcceptsIncomingAudio() {
+        return GetDeviceState() == kDeviceStateSpeaking ||
+               audio_service_.IsPreparedAudioPending();
+    }
     std::string GetConnectedGatewayUrl() const {
         return protocol_ ? protocol_->GetConnectedUrl() : "";
     }
@@ -123,6 +127,7 @@ public:
         const char* subtype,
         uint64_t duration_ms,
         const char* behavior_id = nullptr);
+    void ResumePreparedAudioPlayback();
 
     // Phase 4.5 avatar: thread-safe generic WS text frame send.
     // Wraps Protocol::SendText through the main-task Schedule for the

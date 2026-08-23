@@ -21,6 +21,8 @@
 
 namespace {
 
+constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(5);
+
 ListeningProfile ParseListenProfile(const cJSON* root) {
     auto profile = cJSON_GetObjectItem(root, "profile");
     bool profile_present = profile != nullptr;
@@ -78,6 +80,12 @@ bool Application::SetDeviceState(DeviceState state) {
     return state_machine_.TransitionTo(state);
 }
 
+void Application::ResumePreparedAudioPlayback() {
+    if (audio_service_.ReleasePreparedAudioPlayback()) {
+        Board::GetInstance().OnTtsStart();
+    }
+}
+
 void Application::Initialize() {
     auto& board = Board::GetInstance();
     SetDeviceState(kDeviceStateStarting);
@@ -96,6 +104,11 @@ void Application::Initialize() {
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
+    };
+    callbacks.on_audio_output = [this]() {
+        if (GetDeviceState() == kDeviceStateSpeaking) {
+            Board::GetInstance().OnTtsAudioFrame();
+        }
     };
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
@@ -344,11 +357,11 @@ void Application::ActivationTask() {
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
 
-    // Check for new assets version
-    CheckAssetsVersion();
-
-    // Check for new firmware version
+    // Check the release manifest before applying partition-backed assets. This
+    // avoids leaving display theme pointers into an assets mapping that an
+    // in-place assets update must unmap and replace.
     CheckNewVersion();
+    CheckAssetsVersion();
 
     // Initialize the protocol
     InitializeProtocol();
@@ -368,8 +381,8 @@ void Application::CheckAssetsVersion() {
     auto display = board.GetDisplay();
     auto& assets = Assets::GetInstance();
 
-    if (!assets.partition_valid()) {
-        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
+    if (!assets.has_partition()) {
+        ESP_LOGW(TAG, "Assets partition is unavailable for board %s", BOARD_NAME);
         return;
     }
     
@@ -378,8 +391,6 @@ void Application::CheckAssetsVersion() {
     std::string download_url = settings.GetString("download_url");
 
     if (!download_url.empty()) {
-        settings.EraseKey("download_url");
-
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
         Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
@@ -407,10 +418,13 @@ void Application::CheckAssetsVersion() {
             SetDeviceState(kDeviceStateActivating);
             return;
         }
+        settings.EraseKey("download_url");
     }
 
-    // Apply assets
-    assets.Apply();
+    // Apply assets only after manifest-driven updates have finished.
+    if (assets.Apply()) {
+        board.OnAssetsUpdated();
+    }
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
 }
@@ -448,7 +462,64 @@ void Application::CheckNewVersion() {
             ota_->GetFirmwareVersion(),
             ota_->GetFirmwareSha256(),
             ota_->GetFirmwareSize());
+        return;
     }
+
+    if (!ota_->HasAssetsForCurrentVersion()) {
+        return;
+    }
+
+    auto& assets = Assets::GetInstance();
+    const std::string& sha256 = ota_->GetAssetsSha256();
+    size_t size = ota_->GetAssetsSize();
+    if (assets.Verify(sha256, size)) {
+        return;
+    }
+
+    bool expected = false;
+    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
+            expected, true)) {
+        ESP_LOGW(TAG, "Another XC Body update is already in progress");
+        return;
+    }
+
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    Alert(
+        Lang::Strings::OTA_UPGRADE,
+        Lang::Strings::LOADING_ASSETS,
+        "cloud_arrow_down",
+        Lang::Sounds::OGG_UPGRADE);
+    SetDeviceState(kDeviceStateUpgrading);
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    bool success = assets.DownloadVerified(
+        ota_->GetAssetsUrl(),
+        sha256,
+        size,
+        [this, display](int progress, size_t speed) {
+            char buffer[32];
+            snprintf(
+                buffer,
+                sizeof(buffer),
+                "%d%% %uKB/s",
+                progress,
+                speed / 1024);
+            Schedule([display, message = std::string(buffer)]() {
+                display->SetChatMessage("system", message.c_str());
+            });
+        });
+    firmware_upgrade_in_progress_.store(false);
+    board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    if (!success) {
+        ESP_LOGW(
+            TAG,
+            "Assets update failed; keeping retry metadata and continuing "
+            "with static fallback");
+        SetDeviceState(kDeviceStateActivating);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Assets update verified; applying after update checks");
 }
 
 void Application::InitializeProtocol() {
@@ -470,8 +541,11 @@ void Application::InitializeProtocol() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     
-    protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+    protocol_->OnIncomingAudio([this, &board](
+            std::unique_ptr<AudioStreamPacket> packet) {
+        if (audio_service_.IsPreparedAudioPending()) {
+            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else if (GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -487,6 +561,7 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            audio_service_.AbortPreparedAudio();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -498,7 +573,36 @@ void Application::InitializeProtocol() {
         auto type = cJSON_GetObjectItem(root, "type");
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
-            if (strcmp(state->valuestring, "start") == 0) {
+            if (strcmp(state->valuestring, "prepare") == 0) {
+                auto count = cJSON_GetObjectItem(root, "packet_count");
+                if (!cJSON_IsNumber(count) || count->valuedouble <= 0) {
+                    ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                    return;
+                }
+                size_t packet_count = static_cast<size_t>(count->valuedouble);
+                if (!audio_service_.BeginPreparedAudio(packet_count)) {
+                    ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                    return;
+                }
+                Schedule([this]() {
+                    aborted_ = false;
+                    SetDeviceState(kDeviceStateSpeaking);
+                });
+            } else if (strcmp(state->valuestring, "play") == 0) {
+                Schedule([this, &board]() {
+                    bool defer_playback = board.IsTouchReactionActive();
+                    if (!audio_service_.CommitPreparedAudio(defer_playback)) {
+                        ESP_LOGE(TAG, "Prepared audio transfer incomplete");
+                        SetDeviceState(kDeviceStateIdle);
+                        return;
+                    }
+                    if (!defer_playback) {
+                        board.OnTtsStart();
+                    } else if (!board.IsTouchReactionActive()) {
+                        ResumePreparedAudioPlayback();
+                    }
+                });
+            } else if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, &board]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
@@ -508,7 +612,15 @@ void Application::InitializeProtocol() {
                     board.OnTtsStart();
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                if (audio_service_.IsPreparedAudioPending()) {
+                    audio_service_.AbortPreparedAudio();
+                }
                 Schedule([this, &board]() {
+                    if (!audio_service_.WaitForPlaybackQueueEmpty(
+                            kPlaybackDrainTimeout)) {
+                        ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                    }
+                    audio_service_.AbortPreparedAudio();
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone
                         // xiaozhi-style conversational agent. Listening must
@@ -1020,7 +1132,11 @@ void Application::HandleStateChangedEvent() {
                 // For auto mode, wait for playback queue to be empty before enabling mic capture
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
-                    audio_service_.WaitForPlaybackQueueEmpty();
+                    if (!audio_service_.WaitForPlaybackQueueEmpty(
+                            kPlaybackDrainTimeout)) {
+                        ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                        audio_service_.AbortPreparedAudio();
+                    }
                 }
                 
                 // Send the start listening command

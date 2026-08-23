@@ -2,7 +2,7 @@
 
 This directory contains the XC Body firmware for the M5Stack StackChan
 K151/CoreS3. The ESP-IDF project is `xc_body`; its StackChan app identity is
-`xc_body_stackchan`. The current firmware version is `0.1.7`, and the app image
+`xc_body_stackchan`. The current firmware version is `0.1.11`, and the app image
 is `build/xc_body.bin`.
 
 ## Source Provenance
@@ -33,14 +33,30 @@ The build produces:
 
 - `build/xc_body.bin` for the app partition;
 - `build/merged-binary.bin` for full USB recovery; and
-- `releases/v0.1.7_stackchan.zip`.
+- `releases/v0.1.11_stackchan.zip`.
 
 ## Flash Layout
 
 The 16 MiB StackChan layout contains two `0x3f0000` app partitions and one
-8 MiB assets partition. Routine app-only flashing uses offset `0x20000` and
-preserves NVS. The merged recovery image starts at `0x0` and is not used for
-routine iteration.
+8 MiB assets partition. Routine releases starting with `0.1.8` deliver both
+the app and metadata-bound assets over OTA. Assets use one in-place partition:
+the verified update is non-atomic under power loss, while the app remains
+bootable with static fallback and retries on a later boot.
+
+For local recovery, flash the StackChan application and generated assets
+together:
+
+```sh
+esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX -b 460800 \
+  --before default_reset --after hard_reset \
+  write_flash \
+  0x20000 build/xc_body.bin \
+  0x800000 build/generated_assets.bin
+```
+
+This preserves NVS because it does not rewrite NVS or the partition table.
+The two-partition USB command is a recovery/local fallback. The merged recovery
+image starts at `0x0` and is recovery-only, not routine iteration.
 
 Firmware flashing always requires separate explicit permission. Detailed
 project rules are in [`../AGENTS.md`](../AGENTS.md).
@@ -48,7 +64,8 @@ project rules are in [`../AGENTS.md`](../AGENTS.md).
 The no-USB dual-slot OTA path is physically accepted through consecutive
 updates from `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Both images
 authenticated with the gateway, restored the reviewed avatar, and survived a
-validation reboot. The robot now runs `0.1.6` on `ota_0`; its app SHA-256 is
+validation reboot. The robot now runs `0.1.11`; the last fully recorded image
+was `0.1.6` on `ota_0`, with app SHA-256
 `3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
 
 After a bootloader rollback, firmware disables automatic boot OTA until it is

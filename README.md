@@ -22,21 +22,23 @@ turning it off should make the room feel a little emptier.
 
 ## Current Status
 
-- Milestones 1 and 2 have physical acceptance. Milestone 3 is in progress.
+- Milestones 1 and 2 have physical acceptance. The Milestone 3 recovery
+  matrix also has one exact physical acceptance run; forced unhealthy-boot
+  OTA rollback remains untested.
 - Native OpenClaw integration observes successful agent, subagent, and cron
   completions, chooses `offer` or `skip`, and submits accepted summaries to the
   authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
   submission retries, robot-session avatar restoration, supervisor recovery,
-  and connected idle display dimming. The complete recovery matrix still needs
-  one exact, versioned physical acceptance run.
+  and connected idle display dimming. OpenClaw, route, robot, gateway, pending
+  service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   cloud rendezvous host. The public route is `https://43.143.37.91`; raw
   service ports remain private.
-- The robot runs accepted firmware `0.1.6`; the next source version is `0.1.7`.
-  Two consecutive no-USB boot updates, `0.1.4` to `0.1.5` and `0.1.5` to
-  `0.1.6`, survived validation reboots and restored the reviewed avatar.
-  Forced unhealthy-boot rollback remains untested.
+- The robot and source run firmware `0.1.11`.
+  The last fully recorded OTA acceptance covered consecutive updates from
+  `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Forced unhealthy-boot
+  rollback remains untested.
 - Camera and microphone input, durable queues, quiet hours, free-form motion,
   Home Assistant, and Stick S3 integration are not part of the current scope.
 
@@ -73,9 +75,13 @@ scripts/stackchan_usb.py monitor --seconds 30
 Flashing firmware requires separate explicit permission.
 
 Routine OTA starting with `0.1.2` requires only publishing a newer release and
-rebooting the robot. The authenticated `upgrade_firmware` gateway tool provides
-a no-USB bridge from `0.1.1` and an emergency fallback. USB remains the local
-maintenance and recovery path.
+rebooting the robot. Starting with `0.1.8`, the same release also updates the
+assets partition when its verified manifest digest differs. Assets OTA is
+single-partition and therefore non-atomic under power loss; the application
+stays bootable with static fallback and retries on a later boot. The
+authenticated `upgrade_firmware` gateway tool provides a no-USB bridge from
+`0.1.1` and an emergency fallback. USB remains the local maintenance and
+recovery path.
 
 ## Deployment
 

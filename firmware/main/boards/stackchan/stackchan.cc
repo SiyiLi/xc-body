@@ -16,6 +16,7 @@ using ScsBus = FeetechScs;
 static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include "avatar_images.h"
 #include "avatar_set.h"
+#include "assets.h"
 #include "usb_control.h"
 #include "avatar_set_fetcher.h"
 
@@ -30,6 +31,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <esp_lcd_ili9341.h>
 #include <esp_timer.h>
 #include <esp_random.h>
+#include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -39,6 +41,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -46,6 +49,26 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <vector>
 
 #define TAG "StackChanBoard"
+
+namespace {
+
+constexpr char kReviewedAvatarChecksum[] =
+    "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7";
+
+std::string AvatarSha256Checksum(const uint8_t* data, size_t size) {
+    uint8_t digest[32];
+    if (mbedtls_sha256(data, size, digest, 0) != 0) {
+        return "";
+    }
+    char hex[65];
+    for (int index = 0; index < 32; ++index) {
+        std::snprintf(hex + index * 2, 3, "%02x", digest[index]);
+    }
+    hex[64] = '\0';
+    return std::string("sha256:") + hex;
+}
+
+}  // namespace
 
 class Pmic : public Axp2101 {
 public:
@@ -537,12 +560,10 @@ private:
     std::atomic<bool> listening_indicator_visible_{false};
     static constexpr int LISTENING_INDICATOR_DOT_SIZE_PX = 14;
 
-    // Dynamic avatar set loaded via the load_avatar_set MCP tool. Stays
-    // unloaded by default — the index-based image lookups then fall back
-    // to the static const tables in avatar_images.h (placeholder or local
-    // override). See docs/intent/stackchan_avatar_pipeline.md in the
-    // SAIVerse repository.
+    // Reviewed avatar loaded from the flashed assets partition. A later
+    // load_avatar_set call may still replace it as a development override.
     AvatarSet avatar_set_;
+    std::atomic<bool> reviewed_avatar_active_{false};
 
     // ---- Avatar rendering state (Phase 4.5-a) -----------------------------
     //
@@ -637,17 +658,18 @@ private:
         HALF_FALLING,  // open -> closed transition
     };
     static constexpr int TTS_LIPSYNC_STEP_MS = 150;
+    static constexpr int64_t TTS_AUDIO_SILENCE_TIMEOUT_US = 3 * 1000 * 1000;
     esp_timer_handle_t tts_lipsync_timer_ = nullptr;
     std::atomic<bool> tts_lipsync_active_{false};
+    std::atomic<int64_t> last_tts_audio_frame_us_{0};
     TtsLipSyncShape tts_lipsync_shape_ = TtsLipSyncShape::CLOSED;
 
     // Phase 7: Si12T head-touch sensing.
     // Polling every TOUCH_POLL_MS samples Output1 (CH1..CH3 -> 3 head zones).
     // Edge detection on the OR of the three zones produces TAP / STROKE
     // gestures based on hold duration:
-    //   duration <  TAP_MAX_MS (400 ms)  -> TAP    -> face=surprised
-    //   duration >= STROKE_MIN_MS (600 ms) -> STROKE -> face=embarrassed + servo wobble
-    //   400 <= duration < 600 ms         -> treated as TAP (greyzone)
+    //   duration <  TAP_MAX_MS (400 ms)  -> TAP    -> face=surprised + servo wobble
+    //   duration >= STROKE_MIN_MS (400 ms) -> STROKE -> face=embarrassed + servo wobble
     // Reactions auto-revert to "idle" after REACTION_HOLD_MS (3 s). A
     // post-reaction COOLDOWN_MS lock-out prevents one head-pat from firing
     // a chain of events.
@@ -2513,6 +2535,9 @@ private:
 
         ft6336_->UpdateTouchPoint();
         auto& touch_point = ft6336_->GetTouchPoint();
+        if (touch_point.num > 0) {
+            power_save_timer_->WakeUp();
+        }
 
         // 检测触摸开始
         if (touch_point.num > 0 && !was_touched) {
@@ -4095,7 +4120,7 @@ private:
         }
     }
 
-    bool StageTouchCompletion(TouchEvent event, uint64_t duration_ms) {
+    bool StageTouchReaction(TouchEvent event, uint64_t duration_ms) {
         PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
         if (!physical_behavior_owner_.compare_exchange_strong(
                 expected,
@@ -4115,7 +4140,7 @@ private:
         return true;
     }
 
-    void MaybeCompleteTouchAcknowledgment() {
+    void MaybeCompleteTouchReaction() {
         TouchEvent event = pending_touch_completion_.load(
             std::memory_order_acquire);
         uint64_t now_us = esp_timer_get_time();
@@ -4124,7 +4149,7 @@ private:
             return;
         }
 
-        if (event == TouchEvent::STROKE) {
+        {
             bool settled =
                 !servo_wobble_active_.load(std::memory_order_acquire) &&
                 PhysicalMotionConfirmedAt(
@@ -4147,13 +4172,13 @@ private:
                         std::memory_order_relaxed)) {
                     return;
                 }
-                ESP_LOGE(TAG,
-                         "touch reaction recovery failed; acknowledgment aborted");
+                ESP_LOGE(TAG, "touch reaction recovery failed");
                 pending_touch_completion_.store(
                     TouchEvent::IDLE, std::memory_order_release);
                 physical_behavior_owner_.store(
                     PhysicalBehaviorOwner::IDLE, std::memory_order_release);
                 SetAvatarExpressionIfActive("idle");
+                Application::GetInstance().ResumePreparedAudioPlayback();
                 Application::GetInstance().SendStackChanEvent(
                     "behavior",
                     "behavior_failed",
@@ -4164,18 +4189,13 @@ private:
             }
         }
 
-        uint64_t duration_ms = pending_touch_duration_ms_.load(
-            std::memory_order_relaxed);
         pending_touch_completion_.store(
             TouchEvent::IDLE, std::memory_order_release);
         pending_touch_recovering_.store(false, std::memory_order_relaxed);
         physical_behavior_owner_.store(
             PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         SetAvatarExpressionIfActive("idle");
-        Application::GetInstance().SendStackChanEvent(
-            "touch",
-            event == TouchEvent::TAP ? "tap" : "stroke",
-            duration_ms);
+        Application::GetInstance().ResumePreparedAudioPlayback();
     }
 
     // Servo wobble: yaw -A -> +A -> -A -> 0. Each step is dispatched only
@@ -4281,14 +4301,14 @@ private:
         while (true) {
             if (!servo_ok_ || motion_driver_ == nullptr) {
                 MaybeAdvanceXcBodyKnock();
-                MaybeCompleteTouchAcknowledgment();
+                MaybeCompleteTouchReaction();
                 vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
                 continue;
             }
             motion_driver_->Tick();
             ServoWobbleStepAdvance();
             MaybeAdvanceXcBodyKnock();
-            MaybeCompleteTouchAcknowledgment();
+            MaybeCompleteTouchReaction();
             MaybeAutoReleaseTorque();
             taskYIELD();
         }
@@ -4352,15 +4372,18 @@ private:
         if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
             return;
         }
-        if (!StageTouchCompletion(TouchEvent::TAP, duration_ms)) {
+        if (!StageTouchReaction(TouchEvent::TAP, duration_ms)) {
             return;
         }
         LogTouchEvent("TAP", duration_ms);
+        Application::GetInstance().SendStackChanEvent(
+            "touch", "tap", duration_ms);
         last_event_ = TouchEvent::TAP;
         last_event_us_ = esp_timer_get_time();
         // Use the IfActive variant so a tap during set_avatar("off") does
         // not pop the avatar back over the WiFi config / settings screens.
         SetAvatarExpressionIfActive("surprised");
+        StartServoWobble();
         ScheduleIdleRevert();
     }
 
@@ -4368,10 +4391,12 @@ private:
         if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
             return;
         }
-        if (!StageTouchCompletion(TouchEvent::STROKE, duration_ms)) {
+        if (!StageTouchReaction(TouchEvent::STROKE, duration_ms)) {
             return;
         }
         LogTouchEvent("STROKE", duration_ms);
+        Application::GetInstance().SendStackChanEvent(
+            "touch", "stroke", duration_ms);
         last_event_ = TouchEvent::STROKE;
         last_event_us_ = esp_timer_get_time();
         SetAvatarExpressionIfActive("embarrassed");
@@ -4461,7 +4486,6 @@ private:
             if (duration_ms >= STROKE_MIN_MS) {
                 HandleStroke(duration_ms);
             } else {
-                // Treat the 400-600 ms grey zone as TAP.
                 HandleTap(duration_ms);
             }
             cooldown_until_us_ = now_us + (uint64_t)COOLDOWN_MS * 1000ULL;
@@ -4864,6 +4888,32 @@ private:
         return SetAvatarExpression(face);
     }
 
+    void LoadBuiltInAvatar() {
+        reviewed_avatar_active_.store(false, std::memory_order_release);
+        void* data = nullptr;
+        size_t size = 0;
+        if (!Assets::GetInstance().GetAssetData(
+                "xc-body-layered.rgb565le", data, size)) {
+            ESP_LOGE(TAG, "Reviewed avatar is missing from assets partition");
+            return;
+        }
+        auto* bytes = static_cast<const uint8_t*>(data);
+        if (size != AvatarSet::kLayeredNativePayloadBytes ||
+            AvatarSha256Checksum(bytes, size) != kReviewedAvatarChecksum) {
+            ESP_LOGE(TAG, "Built-in avatar does not match reviewed SHA-256");
+            return;
+        }
+        reviewed_avatar_active_.store(
+            avatar_set_.LoadFromFlash(
+                AvatarSet::Mode::kLayeredNative,
+                bytes,
+                size),
+            std::memory_order_release);
+        if (!reviewed_avatar_active_.load(std::memory_order_acquire)) {
+            ESP_LOGE(TAG, "Failed to load reviewed avatar from flash");
+        }
+    }
+
     // Schedule a one-shot/periodic timer that keeps trying to install the
     // initial avatar image until the LVGL screen tree is ready (i.e. after
     // Application::Start() has run Display::SetupUI()).
@@ -5088,6 +5138,14 @@ private:
         if (!tts_lipsync_active_.load(std::memory_order_acquire)) {
             return;
         }
+        const int64_t last_frame_us =
+            last_tts_audio_frame_us_.load(std::memory_order_acquire);
+        if (esp_timer_get_time() - last_frame_us >
+            TTS_AUDIO_SILENCE_TIMEOUT_US) {
+            ESP_LOGW(TAG, "TTS audio stalled; stopping lip-sync");
+            StopTtsLipSync();
+            return;
+        }
         if (display_ == nullptr) {
             return;
         }
@@ -5155,6 +5213,8 @@ private:
         // Start the cycle from a known resting position so the first audible
         // frame opens the mouth from closed.
         tts_lipsync_shape_ = TtsLipSyncShape::CLOSED;
+        last_tts_audio_frame_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
         SetMouthShape("closed");
         esp_timer_start_once(tts_lipsync_timer_,
                              (uint64_t)TTS_LIPSYNC_STEP_MS * 1000);
@@ -7368,6 +7428,7 @@ public:
         // but moving the scan is safer for any future I2C peripheral too.
         InitializeSpi();
         InitializeIli9342Display();
+        LoadBuiltInAvatar();
         InitializeCamera();
         InitializeFt6336TouchPad();
         GetBacklight()->RestoreBrightness();
@@ -7382,6 +7443,10 @@ public:
         InitializeMouthSequenceTask();
         RegisterMcpTools();
         StartStackChanUsbControl();
+    }
+
+    void OnAssetsUpdated() override {
+        LoadBuiltInAvatar();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -7438,8 +7503,21 @@ public:
         StartTtsLipSync();
     }
 
+    virtual void OnTtsAudioFrame() override {
+        last_tts_audio_frame_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
+        if (!tts_lipsync_active_.load(std::memory_order_acquire)) {
+            StartTtsLipSync();
+        }
+    }
+
     virtual void OnTtsStop() override {
         StopTtsLipSync();
+    }
+
+    virtual bool IsTouchReactionActive() const override {
+        return physical_behavior_owner_.load(std::memory_order_acquire) ==
+            PhysicalBehaviorOwner::TOUCH;
     }
 
     // Phase 4.5 avatar (saiverse-stackchan-addon): handle the gateway's
@@ -7484,6 +7562,15 @@ public:
         } else {
             ESP_LOGW(TAG, "OnAvatarSetFetch: unknown mode '%s'", mode_j->valuestring);
             SendAvatarSetLoadedError(req_checksum, "unknown_mode");
+            return;
+        }
+
+        if (reviewed_avatar_active_.load(std::memory_order_acquire) &&
+            mode_enum == AvatarSet::Mode::kLayeredNative &&
+            static_cast<size_t>(size_j->valuedouble) ==
+                AvatarSet::kLayeredNativePayloadBytes &&
+            req_checksum == kReviewedAvatarChecksum) {
+            SendAvatarSetLoaded(true, req_checksum, "");
             return;
         }
 
@@ -7566,11 +7653,17 @@ public:
             avatar_set_,
             ctx->url, ctx->token,
             ctx->mode, ctx->expected_size, ctx->expected_sha256,
-            [expected_sha256](bool ok,
-                              const std::string& actual_checksum,
-                              const std::string& error_code) {
+            [this, expected_sha256](
+                    bool ok,
+                    const std::string& actual_checksum,
+                    const std::string& error_code) {
                 const std::string& correlation =
                     actual_checksum.empty() ? expected_sha256 : actual_checksum;
+                if (ok) {
+                    reviewed_avatar_active_.store(
+                        actual_checksum == kReviewedAvatarChecksum,
+                        std::memory_order_release);
+                }
                 SendAvatarSetLoaded(ok, correlation, error_code);
             });
 

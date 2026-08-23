@@ -17,9 +17,12 @@ PROJECT_NAME = "xc-body"
 HARDWARE_NAME = "stackchan"
 OTA_SOURCE_NAME = "xc_body.bin"
 MERGED_SOURCE_NAME = "merged-binary.bin"
+ASSETS_SOURCE_NAME = "generated_assets.bin"
 OTA_ASSET_NAME = "xc-body-stackchan-ota.bin"
 MERGED_ASSET_NAME = "xc-body-stackchan-merged.bin"
+ASSETS_ASSET_NAME = "xc-body-stackchan-assets.bin"
 OTA_SLOT_SIZE = 0x3F0000
+ASSETS_PARTITION_SIZE = 8 * 1024 * 1024
 APP_DESC_OFFSET = 0x20
 APP_DESC_MAGIC = 0xABCD5432
 APP_VERSION_OFFSET = 0x30
@@ -87,6 +90,7 @@ def package_release(
     sources = {
         OTA_ASSET_NAME: build_dir / OTA_SOURCE_NAME,
         MERGED_ASSET_NAME: build_dir / MERGED_SOURCE_NAME,
+        ASSETS_ASSET_NAME: build_dir / ASSETS_SOURCE_NAME,
     }
     missing = [str(path) for path in sources.values() if not path.is_file()]
     if missing:
@@ -95,6 +99,12 @@ def package_release(
     if ota_size <= 0 or ota_size > OTA_SLOT_SIZE:
         raise ValueError(
             f"OTA image is {ota_size} bytes; slot limit is {OTA_SLOT_SIZE}"
+        )
+    assets_size = sources[ASSETS_ASSET_NAME].stat().st_size
+    if assets_size <= 0 or assets_size > ASSETS_PARTITION_SIZE:
+        raise ValueError(
+            "assets image is "
+            f"{assets_size} bytes; partition limit is {ASSETS_PARTITION_SIZE}"
         )
     embedded_version, embedded_project = read_app_descriptor(
         sources[OTA_ASSET_NAME]
@@ -125,6 +135,9 @@ def package_release(
         }
 
     ota = packaged[OTA_ASSET_NAME]
+    assets = packaged[ASSETS_ASSET_NAME]
+    release_url = ota_url.rsplit("/", 1)[0]
+    assets_url = validate_ota_url(f"{release_url}/{ASSETS_ASSET_NAME}")
     manifest: dict[str, object] = {
         "schema_version": 1,
         "product": PROJECT_NAME,
@@ -134,6 +147,12 @@ def package_release(
             "url": ota_url,
             "sha256": ota["sha256"],
             "size": ota["size"],
+        },
+        "assets": {
+            "version": version,
+            "url": assets_url,
+            "sha256": assets["sha256"],
+            "size": assets["size"],
         },
         "recovery": packaged[MERGED_ASSET_NAME],
     }
@@ -175,10 +194,16 @@ def main() -> int:
         args.ota_url,
     )
     firmware = manifest["firmware"]
+    assets = manifest["assets"]
     assert isinstance(firmware, dict)
+    assert isinstance(assets, dict)
     print(
         f"Packaged XC Body firmware {version}: "
         f"{firmware['size']} bytes, sha256={firmware['sha256']}"
+    )
+    print(
+        f"Packaged XC Body assets {version}: "
+        f"{assets['size']} bytes, sha256={assets['sha256']}"
     )
     return 0
 

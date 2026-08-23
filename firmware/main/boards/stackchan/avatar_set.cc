@@ -61,6 +61,26 @@ const lv_image_dsc_t* AvatarSet::GetMatrix(int face_index, int eyes_index, int m
     return &matrix_table_[idx];
 }
 
+bool AvatarSet::LoadFromFlash(
+    Mode mode, const uint8_t* data, size_t image_data_size) {
+    if (data == nullptr) {
+        ESP_LOGW(TAG, "LoadFromFlash: data is null");
+        return false;
+    }
+    uint8_t* buffer = static_cast<uint8_t*>(
+        heap_caps_malloc(image_data_size, MALLOC_CAP_SPIRAM));
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "LoadFromFlash: PSRAM allocation failed");
+        return false;
+    }
+    std::memcpy(buffer, data, image_data_size);
+    if (!AdoptOwnedBuffer(mode, buffer, image_data_size)) {
+        heap_caps_free(buffer);
+        return false;
+    }
+    return true;
+}
+
 bool AvatarSet::AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_data_size) {
     if (owned_buffer == nullptr) {
         ESP_LOGW(TAG, "AdoptOwnedBuffer: owned_buffer is null");

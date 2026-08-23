@@ -31,6 +31,7 @@ SSH_OPTIONS=(
 candidate=0
 status_only=0
 cleanup_images_only=0
+restart_service=""
 build_root=""
 
 die() {
@@ -40,7 +41,8 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images
+Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images |
+       --restart-gateway | --restart-pending
 
 Build linux/amd64 production images, push them to TC Artifactory, and deploy
 their exact digests to the XC Body rendezvous VM. Use --candidate only for an
@@ -48,6 +50,9 @@ explicitly authorized deployment from uncommitted runtime inputs.
 
 --cleanup-images removes unused images from the XC Body repository on the
 rendezvous VM. Images referenced by any container are preserved.
+
+--restart-gateway and --restart-pending restart only the named production
+service. They do not rebuild images or restart the proxy.
 EOF
 }
 
@@ -125,6 +130,13 @@ docker image ls "$repository" --no-trunc \
 
 echo "removed_images=$(wc -l < "$removed" | tr -d ' ')"
 REMOTE
+}
+
+restart_vm_service() {
+  local service=$1
+  require_command ssh
+  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+  ssh_vm docker restart "xc-body-$service"
 }
 
 copy_runtime_inputs() {
@@ -246,6 +258,8 @@ while [ "$#" -gt 0 ]; do
     --candidate) candidate=1 ;;
     --status) status_only=1 ;;
     --cleanup-images) cleanup_images_only=1 ;;
+    --restart-gateway) restart_service=gateway ;;
+    --restart-pending) restart_service=pending ;;
     -h|--help)
       usage
       exit 0
@@ -257,6 +271,15 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ -n "$restart_service" ]; then
+  [ "$candidate" = "0" ] \
+    && [ "$status_only" = "0" ] \
+    && [ "$cleanup_images_only" = "0" ] \
+    || die "deployment modes conflict" 64
+  restart_vm_service "$restart_service"
+  exit 0
+fi
 
 if [ "$status_only" = "1" ]; then
   [ "$candidate" = "0" ] && [ "$cleanup_images_only" = "0" ] \

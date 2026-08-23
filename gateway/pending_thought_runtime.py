@@ -82,7 +82,7 @@ class StackChanThoughtBody:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=300) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise PendingThoughtRuntimeError(f"play audio: {exc}") from exc

@@ -14,10 +14,54 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <cbin_font.h>
+#include <mbedtls/sha256.h>
+
+#include <algorithm>
+#include <array>
+#include <cstring>
 
 
 #define TAG "Assets"
 #define PARTITION_LABEL "assets"
+
+namespace {
+
+bool IsSha256Hex(const std::string& value) {
+    return value.size() == 64 && std::all_of(
+        value.begin(), value.end(), [](unsigned char character) {
+            return (character >= '0' && character <= '9') ||
+                (character >= 'a' && character <= 'f');
+        });
+}
+
+bool IsAbsoluteHttpsUrl(const std::string& url) {
+    constexpr size_t kSchemeLength = 8;
+    if (url.rfind("https://", 0) != 0) {
+        return false;
+    }
+    size_t authority_end = url.find_first_of("/?#", kSchemeLength);
+    if (authority_end == std::string::npos) {
+        authority_end = url.size();
+    }
+    if (authority_end == kSchemeLength ||
+        url.find('@', kSchemeLength) < authority_end) {
+        return false;
+    }
+    size_t host_end = url.find(':', kSchemeLength);
+    return host_end == std::string::npos || host_end > kSchemeLength;
+}
+
+std::string Sha256Hex(const std::array<unsigned char, 32>& digest) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result(64, '0');
+    for (size_t index = 0; index < digest.size(); ++index) {
+        result[index * 2] = kHex[digest[index] >> 4];
+        result[index * 2 + 1] = kHex[digest[index] & 0x0f];
+    }
+    return result;
+}
+
+}  // namespace
 
 struct mmap_assets_table {
     char asset_name[32];          /*!< Name of the asset */
@@ -130,6 +174,12 @@ uint32_t Assets::LvglStrategy::CalculateChecksum(const char* data, uint32_t leng
 bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
     assets->partition_valid_ = false;
     assets_.clear();
+    checksum_valid_ = false;
+    if (mmap_handle_ != 0) {
+        esp_partition_munmap(mmap_handle_);
+        mmap_handle_ = 0;
+        mmap_root_ = nullptr;
+    }
 
     if (!Assets::FindPartition(assets)) {
         return false;
@@ -150,8 +200,6 @@ bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
         return false;
     }
 
-    assets->partition_valid_ = true;
-
     uint32_t stored_files = *(uint32_t*)(mmap_root_ + 0);
     uint32_t stored_chksum = *(uint32_t*)(mmap_root_ + 4);
     uint32_t stored_len = *(uint32_t*)(mmap_root_ + 8);
@@ -171,17 +219,40 @@ bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
         return false;
     }
 
-    checksum_valid_ = true;
+    if (stored_files > stored_len / sizeof(mmap_assets_table)) {
+        ESP_LOGE(TAG, "Assets file table exceeds stored payload");
+        return false;
+    }
+    size_t table_size = sizeof(mmap_assets_table) * stored_files;
+    size_t data_size = stored_len - table_size;
 
     for (uint32_t i = 0; i < stored_files; i++) {
         auto item = (const mmap_assets_table*)(mmap_root_ + 12 + i * sizeof(mmap_assets_table));
+        if (item->asset_offset > data_size ||
+            data_size - item->asset_offset < 2 ||
+            item->asset_size > data_size - item->asset_offset - 2) {
+            ESP_LOGE(TAG, "Assets file entry exceeds stored payload");
+            assets_.clear();
+            return false;
+        }
         auto asset = Asset{
             .size = static_cast<size_t>(item->asset_size),
-            .offset = static_cast<size_t>(12 + sizeof(mmap_assets_table) * stored_files + item->asset_offset)
+            .offset = static_cast<size_t>(
+                12 + table_size + item->asset_offset)
         };
-        assets_[item->asset_name] = asset;
+        std::string name(
+            item->asset_name,
+            strnlen(item->asset_name, sizeof(item->asset_name)));
+        if (name.empty()) {
+            ESP_LOGE(TAG, "Assets file entry has no name");
+            assets_.clear();
+            return false;
+        }
+        assets_[name] = asset;
     }
-    return checksum_valid_;
+    checksum_valid_ = true;
+    assets->partition_valid_ = checksum_valid_;
+    return assets->partition_valid_;
 }
 
 void Assets::LvglStrategy::UnApplyPartition(Assets* assets) {
@@ -192,7 +263,7 @@ void Assets::LvglStrategy::UnApplyPartition(Assets* assets) {
     }
     checksum_valid_ = false;
     assets_.clear();
-    (void)assets; // Unused parameter
+    assets->partition_valid_ = false;
 }
 
 bool Assets::LvglStrategy::GetAssetData(Assets* assets, const std::string& name, void*& ptr, size_t& size) {
@@ -392,7 +463,7 @@ void Assets::EmoteStrategy::UnApplyPartition(Assets* assets) {
     if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
         emote_unmount_assets(emote_display->GetEmoteHandle());
     }
-    (void)assets; // Unused parameter
+    assets->partition_valid_ = false;
 }
 
 bool Assets::EmoteStrategy::GetAssetData(Assets* assets, const std::string& name, void*& ptr, size_t& size) {
@@ -558,5 +629,179 @@ bool Assets::Download(std::string url, std::function<void(int progress, size_t s
         return false;
     }
 
+    return true;
+}
+
+bool Assets::Verify(
+    const std::string& expected_sha256,
+    size_t expected_size) {
+    if (partition_ == nullptr && !FindPartition(this)) {
+        return false;
+    }
+    if (!IsSha256Hex(expected_sha256) || expected_size == 0 ||
+        expected_size > partition_->size) {
+        ESP_LOGE(TAG, "Rejected invalid assets verification metadata");
+        return false;
+    }
+
+    constexpr size_t kBlockSize = 4096;
+    char* buffer = static_cast<char*>(
+        heap_caps_malloc(kBlockSize, MALLOC_CAP_INTERNAL));
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate assets verification buffer");
+        return false;
+    }
+
+    mbedtls_sha256_context context;
+    mbedtls_sha256_init(&context);
+    bool valid = mbedtls_sha256_starts(&context, 0) == 0;
+    for (size_t offset = 0; valid && offset < expected_size;) {
+        size_t length = std::min(kBlockSize, expected_size - offset);
+        valid = esp_partition_read(partition_, offset, buffer, length) == ESP_OK &&
+            mbedtls_sha256_update(
+                &context,
+                reinterpret_cast<const unsigned char*>(buffer),
+                length) == 0;
+        offset += length;
+    }
+    std::array<unsigned char, 32> digest;
+    valid = valid && mbedtls_sha256_finish(&context, digest.data()) == 0 &&
+        Sha256Hex(digest) == expected_sha256;
+    mbedtls_sha256_free(&context);
+    heap_caps_free(buffer);
+
+    if (!valid) {
+        ESP_LOGW(TAG, "Installed assets SHA-256 does not match manifest");
+        return false;
+    }
+    if (!partition_valid_ && !InitializePartition()) {
+        ESP_LOGE(TAG, "Assets bytes match but internal structure is invalid");
+        return false;
+    }
+    ESP_LOGI(TAG, "Installed assets match manifest SHA-256");
+    return true;
+}
+
+bool Assets::DownloadVerified(
+    const std::string& url,
+    const std::string& expected_sha256,
+    size_t expected_size,
+    std::function<void(int progress, size_t speed)> progress_callback) {
+    if (partition_ == nullptr && !FindPartition(this)) {
+        return false;
+    }
+    if (!IsAbsoluteHttpsUrl(url) ||
+        !IsSha256Hex(expected_sha256) || expected_size == 0 ||
+        expected_size > partition_->size) {
+        ESP_LOGE(TAG, "Rejected invalid verified assets metadata");
+        return false;
+    }
+
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(0);
+    if (!http->Open("GET", url) || http->GetStatusCode() != 200) {
+        ESP_LOGE(TAG, "Failed to open verified assets download");
+        http->Close();
+        return false;
+    }
+    if (http->GetBodyLength() != expected_size) {
+        ESP_LOGE(
+            TAG,
+            "Assets size mismatch: HTTP=%u manifest=%u",
+            http->GetBodyLength(),
+            expected_size);
+        http->Close();
+        return false;
+    }
+
+    const size_t sector_size = esp_partition_get_main_flash_sector_size();
+    char* buffer = static_cast<char*>(
+        heap_caps_malloc(sector_size, MALLOC_CAP_INTERNAL));
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate assets download buffer");
+        http->Close();
+        return false;
+    }
+
+    UnApplyPartition();
+    partition_valid_ = false;
+    mbedtls_sha256_context context;
+    mbedtls_sha256_init(&context);
+    bool sha_started = mbedtls_sha256_starts(&context, 0) == 0;
+    size_t total_written = 0;
+    size_t recent_written = 0;
+    size_t erased_sectors = 0;
+    auto last_calc_time = esp_timer_get_time();
+    bool success = sha_started;
+
+    while (success && total_written < expected_size) {
+        int read = http->Read(
+            buffer,
+            std::min(sector_size, expected_size - total_written));
+        if (read <= 0 || total_written + read > expected_size) {
+            ESP_LOGE(TAG, "Verified assets download ended early");
+            success = false;
+            break;
+        }
+        if (mbedtls_sha256_update(
+                &context,
+                reinterpret_cast<const unsigned char*>(buffer),
+                read) != 0) {
+            success = false;
+            break;
+        }
+
+        size_t needed_sectors =
+            (total_written + read + sector_size - 1) / sector_size;
+        while (success && erased_sectors < needed_sectors) {
+            success = esp_partition_erase_range(
+                partition_, erased_sectors * sector_size, sector_size) == ESP_OK;
+            ++erased_sectors;
+        }
+        if (success) {
+            success = esp_partition_write(
+                partition_, total_written, buffer, read) == ESP_OK;
+        }
+        if (!success) {
+            ESP_LOGE(TAG, "Failed writing verified assets partition");
+            break;
+        }
+
+        total_written += read;
+        recent_written += read;
+        if (esp_timer_get_time() - last_calc_time >= 1000000 ||
+            total_written == expected_size) {
+            if (progress_callback) {
+                progress_callback(
+                    total_written * 100 / expected_size, recent_written);
+            }
+            last_calc_time = esp_timer_get_time();
+            recent_written = 0;
+        }
+    }
+
+    char trailing_byte;
+    if (success && http->Read(&trailing_byte, 1) != 0) {
+        ESP_LOGE(TAG, "Verified assets download exceeded manifest size");
+        success = false;
+    }
+    std::array<unsigned char, 32> digest;
+    success = success && total_written == expected_size &&
+        mbedtls_sha256_finish(&context, digest.data()) == 0 &&
+        Sha256Hex(digest) == expected_sha256;
+    mbedtls_sha256_free(&context);
+    http->Close();
+    heap_caps_free(buffer);
+
+    if (!success) {
+        ESP_LOGE(TAG, "Verified assets download failed integrity checks");
+        InitializePartition();
+        return false;
+    }
+    if (!InitializePartition() || !Verify(expected_sha256, expected_size)) {
+        ESP_LOGE(TAG, "Downloaded assets failed installed verification");
+        return false;
+    }
+    ESP_LOGI(TAG, "Verified assets update completed");
     return true;
 }

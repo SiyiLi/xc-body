@@ -88,7 +88,10 @@ public:
     // stackchan boards are unaffected; boards with an avatar / mouth display
     // override these to drive lip-sync animation while TTS audio is playing.
     virtual void OnTtsStart() {}
+    virtual void OnTtsAudioFrame() {}
     virtual void OnTtsStop() {}
+    virtual bool IsTouchReactionActive() const { return false; }
+    virtual void OnAssetsUpdated() {}
 
     // Phase 4.5 avatar (saiverse-stackchan-addon): dynamic avatar set fetch
     // notification dispatched from Application::OnIncomingJson. The cJSON

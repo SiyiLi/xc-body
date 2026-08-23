@@ -100,6 +100,9 @@ public:
     // buffer until the swap commits (no black-frame flash on update).
     bool AdoptOwnedBuffer(Mode mode, uint8_t* owned_buffer, size_t image_data_size);
 
+    // Copy one flash-mapped avatar payload into PSRAM and adopt it.
+    bool LoadFromFlash(Mode mode, const uint8_t* data, size_t image_data_size);
+
     // Release the PSRAM buffer and clear all internal lv_image_dsc_t entries.
     // Safe to call multiple times.
     void Unload();

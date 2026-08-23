@@ -208,6 +208,17 @@ elseif(CONFIG_BOARD_TYPE_STACKCHAN)
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+    set(STACKCHAN_AVATAR_ASSET
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan/assets/xc-body-layered.rgb565le")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${STACKCHAN_AVATAR_ASSET}")
+    file(SHA256 "${STACKCHAN_AVATAR_ASSET}" STACKCHAN_AVATAR_SHA256)
+    if(NOT STACKCHAN_AVATAR_SHA256 STREQUAL
+       "daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7")
+        message(FATAL_ERROR "StackChan reviewed avatar checksum mismatch")
+    endif()
+    set(DEFAULT_ASSETS_EXTRA_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan/assets")
 elseif(CONFIG_BOARD_TYPE_M5STACK_CORE_TAB5)
     set(BOARD_TYPE "m5stack-tab5")
     set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
@@ -1143,6 +1154,8 @@ function(build_default_assets_bin)
     # Add default assets extra files if defined
     if(DEFAULT_ASSETS_EXTRA_FILES)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
+        file(GLOB DEFAULT_ASSETS_EXTRA_FILE_LIST
+            "${DEFAULT_ASSETS_EXTRA_FILES}/*")
     endif()
 
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
@@ -1155,6 +1168,7 @@ function(build_default_assets_bin)
         DEPENDS
             ${SDKCONFIG}
             ${PROJECT_DIR}/scripts/build_default_assets.py
+            ${DEFAULT_ASSETS_EXTRA_FILE_LIST}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
     )

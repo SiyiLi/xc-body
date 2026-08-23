@@ -100,7 +100,6 @@ PREPARED_OPUS_MAX_PACKET_BYTES = 1275
 PREPARED_OPUS_MAX_PACKETS = 4096
 PREPARED_OPUS_MAX_RECORDED_IDS = 1024
 PREPARED_OPUS_FRAME_DURATION_MS = 60
-PREPARED_OPUS_PREFILL_PACKETS = 6
 PREPARED_OPUS_START_DELAY_S = 0.05
 PREPARED_OPUS_RESULTS_KEY = web.AppKey("prepared_opus_results", dict)
 PREPARED_OPUS_LOCK_KEY = web.AppKey("prepared_opus_lock", asyncio.Lock)
@@ -607,33 +606,30 @@ async def _play_prepared_opus(gateway: "Gateway", packets: list[bytes]) -> None:
         raise RuntimeError("Gateway does not expose the TTS playback lock")
 
     async with tts_lock:
+        connection = esp32.connection
+        if connection is None or not connection.connected:
+            raise ConnectionError("No ESP32 device connected")
         started = False
         try:
-            await esp32.send_tts_state("start")
+            await connection.send_tts_state(
+                "prepare",
+                packet_count=len(packets),
+            )
             started = True
             await asyncio.sleep(PREPARED_OPUS_START_DELAY_S)
-            loop = asyncio.get_running_loop()
-            prefill_count = min(
-                len(packets), PREPARED_OPUS_PREFILL_PACKETS
+            for packet in packets:
+                await connection.send_audio_frame(packet)
+            await connection.send_tts_state("play")
+            await asyncio.sleep(
+                len(packets) * PREPARED_OPUS_FRAME_DURATION_MS / 1000
             )
-            for packet in packets[:prefill_count]:
-                await esp32.send_audio_frame(packet)
-            next_send_time = loop.time() + (
-                PREPARED_OPUS_FRAME_DURATION_MS / 1000
-            )
-            for packet in packets[prefill_count:]:
-                delay = next_send_time - loop.time()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                await esp32.send_audio_frame(packet)
-                next_send_time = max(next_send_time, loop.time())
-                next_send_time += PREPARED_OPUS_FRAME_DURATION_MS / 1000
+            if esp32.connection is not connection or not connection.connected:
+                raise ConnectionError(
+                    "ESP32 session changed during prepared playback"
+                )
         finally:
-            if started:
-                try:
-                    await esp32.send_tts_state("stop")
-                except ConnectionError:
-                    pass
+            if started and connection.connected:
+                await connection.send_tts_state("stop")
 
 
 async def handle_prepared_opus(request: web.Request) -> web.Response:

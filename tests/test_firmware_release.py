@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.package_firmware_release import (
+    ASSETS_ASSET_NAME,
     MERGED_ASSET_NAME,
     OTA_ASSET_NAME,
     STACKCHAN_PROJECT_NAME,
@@ -29,6 +30,7 @@ def package_test_release(
     image[0x50 : 0x50 + len(embedded_project)] = embedded_project.encode()
     (build_dir / "xc_body.bin").write_bytes(image)
     (build_dir / "merged-binary.bin").write_bytes(b"usb image")
+    (build_dir / "generated_assets.bin").write_bytes(b"assets image")
     package_release(
         build_dir,
         root / "release",
@@ -65,6 +67,24 @@ class FirmwareReleaseTests(unittest.TestCase):
             self.assertEqual(
                 (output_dir / MERGED_ASSET_NAME).read_bytes(),
                 b"usb image",
+            )
+            assets = manifest["assets"]
+            self.assertEqual(assets["version"], "0.1.0")
+            self.assertEqual(
+                assets["url"],
+                "https://example.test/xc-body-stackchan-assets.bin",
+            )
+            self.assertEqual(assets["size"], len(b"assets image"))
+            self.assertEqual(
+                assets["sha256"], hashlib.sha256(b"assets image").hexdigest()
+            )
+            self.assertEqual(
+                (output_dir / ASSETS_ASSET_NAME).read_bytes(), b"assets image"
+            )
+            checksum = output_dir / f"{ASSETS_ASSET_NAME}.sha256"
+            self.assertEqual(
+                checksum.read_text(),
+                f"{assets['sha256']}  {ASSETS_ASSET_NAME}\n",
             )
 
     def test_rejects_non_stackchan_app_image(self) -> None:
