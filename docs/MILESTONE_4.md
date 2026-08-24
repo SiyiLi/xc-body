@@ -17,6 +17,35 @@ Milestone 4 has two pillars:
 2. The display behaves like a useful appliance with an avatar, battery status,
    settings, and restrained power behavior.
 
+## Current Status
+
+The six-element idle clock and weather view has physical display acceptance.
+The remaining direct-conversation, touch-transition, settings, and power
+criteria stay open.
+
+### Weather icon acceptance record
+
+On 2026-08-27, the human observer accepted all 20 weather families on the
+CoreS3 display. The synchronized sweep held each icon for ten seconds over the
+real idle-screen background. All icons had clean transparent edges, all 20
+device calls succeeded, and the robot remained stable for the five-minute
+run. The production gateway was restored healthy afterward.
+
+Exact test inputs were:
+
+- XC Body firmware `0.2.13` app SHA-256:
+  `a6a39d38aea15412bdea60af1eca0ef7d5501565f8893533d5aec706774512dc`
+- XC Body assets `0.2.13` SHA-256:
+  `0ad8419b3b3c0ada26ff8ba7f890de3fa5604740682d5e930df410db8cff8fa4`
+- XC Body gateway `0.2.2` image digest:
+  `ee836572ccfff837c3ceef0e5a86fab26e28b5f6c9dc741a0a82a979877307ac`
+- OpenClaw version: none. The test called the device MCP directly and did not
+  exercise OpenClaw.
+- XC Body source: the repository commit containing this acceptance record.
+
+The physical artifacts were built from the same firmware source and weather
+assets recorded in that commit.
+
 ## Interaction Contracts
 
 Two interaction origins are explicit and remain behaviorally separate.
@@ -147,11 +176,20 @@ listening, and the level-bar battery uses the outer-right slot. The battery
 turns green while charging. There is no status text, clock, percentage, or
 center content. A clear low-battery warning remains available.
 
+After 60 seconds of safe idle with no pending offer, a full-screen local view
+replaces the avatar and status bar with six centered elements: hour, minute,
+weather icon, QWeather's native Chinese summary, temperature, and date. Any
+LCD or head touch restores the avatar before the existing interaction
+continues. Direct conversation, transient behavior, settings, and pending
+offers suppress the idle view.
+
 The base-view priority is intentionally small:
 
 1. settings while open;
 2. transient interaction feedback while active;
-3. avatar.
+3. pending-offer avatar;
+4. idle clock and weather after its timer expires; and
+5. ordinary avatar.
 
 ## Power Contract
 
@@ -171,13 +209,15 @@ Milestone 4 extends existing capabilities rather than replacing them:
 - accepted Edge TTS and prepared-Opus playback;
 - serialized motion, settle, and playback behavior;
 - CoreS3 output volume and NVS persistence;
-- AXP2101 battery telemetry and charging indication; and
+- AXP2101 battery telemetry and charging indication;
+- QWeather current conditions through the existing device MCP session; and
 - connected display dimming.
 
 ## Implementation Plan
 
 1. **Firmware UI:** keep the avatar full-screen, add the reviewed status grid,
-   ear touch zones, swipe-up settings, and persisted volume control.
+   idle clock and weather, ear touch zones, swipe-up settings, and persisted
+   volume control.
 2. **Display arbitration:** restore the correct avatar after expiry,
    acknowledgement, or a direct conversation.
 3. **Voice ingress:** enable the existing device-driven capture hook, add the
@@ -213,6 +253,8 @@ acceptance on the real robot.
   avatar afterward.
 - OpenClaw offers retain `knock -> wait -> tell` behavior.
 - Avatar, transient feedback, and settings transitions are deterministic.
+- The idle clock and weather never cover settings, an interaction, or a
+  pending offer, and touch restores the avatar without losing that touch.
 - Battery level remains visible while charging and discharging.
 - Volume changes immediately and survives reboot.
 - External-power and battery-idle behavior pass physical acceptance without

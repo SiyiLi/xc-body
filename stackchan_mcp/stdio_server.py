@@ -1122,6 +1122,10 @@ async def _dispatch_mcp_tool(
             "self.robot.set_touch_sensor_enabled",
             arguments,
         ),
+        "set_offer_pending": (
+            "self.display.set_offer_pending",
+            arguments,
+        ),
         "set_avatar": (
             "self.display.set_avatar",
             arguments,
@@ -1826,6 +1830,27 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         },
                     },
                     "required": ["enabled"],
+                },
+            ),
+            Tool(
+                name="set_offer_pending",
+                description=(
+                    "Synchronize the pending-offer flag used to suppress the "
+                    "idle screensaver. This is owned by the pending-thought "
+                    "service."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pending": {
+                            "type": "boolean",
+                            "description": (
+                                "True while one prepared offer awaits a "
+                                "deliberate head touch."
+                            ),
+                        },
+                    },
+                    "required": ["pending"],
                 },
             ),
             Tool(

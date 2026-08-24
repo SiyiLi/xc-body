@@ -9,6 +9,10 @@
                 "CONFIG_CAMERA_GC0308_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
                 "CONFIG_CAMERA_GC0308_DVP_YUV422_320X240_20FPS=y",
                 "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                "CONFIG_LV_FS_MEMFS_LETTER=77",
+                "CONFIG_LV_USE_BUILTIN_SPRINTF=y",
+                "CONFIG_LV_USE_FS_MEMFS=y",
+                "CONFIG_LV_USE_FONT_COMPRESSED=y",
                 "CONFIG_OTA_URL=\"https://43.143.37.91/firmware/manifest.json\""
             ]
         }

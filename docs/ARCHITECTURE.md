@@ -69,6 +69,15 @@ allowed-host checks, command serialization, status, avatar transfer, playback,
 and hardware tools. The semantic and pending-thought services use this shared
 device boundary instead of defining another device protocol.
 
+When its private QWeather configuration is complete, the gateway reads
+firmware's cached approximate public-IP coordinates, polls current conditions,
+and forwards the provider's icon code, whole-degree temperature, and native
+Chinese summary through the same device MCP session. Firmware resolves the
+location on a low-priority worker after the first Wi-Fi connection and again
+only when the connected SSID changes. It does not translate or invent weather
+text. A VPN or shared network exit may produce the wrong city; an empty or
+failed lookup falls back to central Shanghai.
+
 Raw movement tools remain behind the semantic boundary.
 
 ### StackChan firmware
@@ -76,6 +85,14 @@ Raw movement tools remain behind the semantic boundary.
 The firmware drives the display, servos, LEDs, audio, touch events, and USB
 maintenance channel. Deterministic firmware behaviors own expression timing,
 head movement, local reaction ordering, and idle restoration.
+
+The firmware also owns the Milestone 4 idle screen timing and LVGL rendering.
+The existing appliance UI update selects settings, transient interaction,
+pending-offer avatar, idle screen, or ordinary avatar in that order. The idle
+screen can appear only while the reviewed avatar is visible and the robot is
+otherwise idle. LCD or head touch hides it immediately and restarts its timer
+without consuming the interaction. Display dimming and sleep remain separate
+`PowerSaveTimer` behavior.
 
 The USB channel reports status, updates the saved gateway URL and token, queues
 verified firmware metadata, streams logs, and requests an application reboot.
@@ -166,6 +183,26 @@ docker logs xc-body-pending 2>&1 |
 The authenticated gateway maintenance tool can start the same verified update
 without USB when an immediate update is needed. USB remains a recovery fallback.
 
+### Idle screen
+
+1. On the first Wi-Fi connection after boot, firmware resolves its approximate
+   coordinates through a keyless HTTPS public-IP lookup on a low-priority
+   worker. It caches the result, repeats the lookup only when the connected
+   SSID changes, and serves cache reads immediately. The gateway refreshes
+   QWeather for each device session and every hour, then pushes changed data.
+2. After 60 seconds without interaction, firmware may replace the avatar and
+   appliance status row with the local clock, date, weather icon, provider
+   summary, and temperature.
+3. The idle-view fonts and RGB565A8 weather icons are mapped from the assets
+   partition rather than linked into either application slot.
+4. A pending offer suppresses the overlay. The pending-thought runtime
+   synchronizes this gate when an offer starts, completes, expires, or the
+   device reconnects.
+5. Settings, transient behavior, listening, and speaking suppress the idle
+   screen. Any LCD or head touch restores the avatar before the existing
+   interaction continues. The independent power policy may still dim or sleep
+   the display.
+
 ## Avatar and Readiness Boundary
 
 Semantic readiness is bound to the connected device session and the exact
@@ -182,6 +219,7 @@ new session. A still-valid in-process offer is retained during this recovery.
 - An offer expires 30 minutes after its knock completes.
 - Duplicate suppression is bounded to retained IDs in the running process.
 - Robot reconnect recovery retains an unexpired offer in that process.
+- Pending-offer display state is resynchronized after robot reconnect.
 - Gateway transport loss replaces the upstream MCP session while preserving
   the in-process pending runtime.
 - Process restart intentionally forgets offers and duplicate memory.

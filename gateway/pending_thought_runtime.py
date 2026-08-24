@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -16,6 +17,7 @@ from gateway.stackchan_event_session import create_stackchan_client_session
 
 ToolCaller = Callable[[str, Mapping[str, object]], object]
 _MISSING = object()
+logger = logging.getLogger(__name__)
 
 
 class PendingThoughtRuntimeError(RuntimeError):
@@ -38,6 +40,7 @@ class StackChanThoughtBody:
         self._verified_session_id: str | None = None
         self._base_view: str | None = None
         self._operation_lock = RLock()
+        self._synced_offer_pending: bool | None = None
 
     def mark_avatar_ready(self, session_id: str) -> None:
         """Bind reviewed-avatar verification to one device session."""
@@ -48,6 +51,7 @@ class StackChanThoughtBody:
             )
         if session_id != self._verified_session_id:
             self._base_view = None
+            self._synced_offer_pending = None
         self._verified_session_id = session_id
 
     def is_ready(self) -> bool:
@@ -76,6 +80,13 @@ class StackChanThoughtBody:
         with self._operation_lock:
             self._base_view = None
             self.set_base_view()
+
+    def reconcile_base_view(self, offer_pending: bool) -> None:
+        """Align the avatar and pending-offer gate as one body operation."""
+
+        with self._operation_lock:
+            self.set_base_view()
+            self.set_offer_pending(offer_pending)
 
     def knock(self, thought_id: str) -> None:
         """Run the firmware-owned silent knock through physical completion."""
@@ -131,6 +142,20 @@ class StackChanThoughtBody:
                 if isinstance(value, int) and value >= 0:
                     metrics[name] = value
             return metrics
+
+    def set_offer_pending(self, pending: bool) -> None:
+        """Best-effort synchronization of the firmware screensaver gate."""
+
+        with self._operation_lock:
+            if self._synced_offer_pending == pending:
+                return
+            try:
+                self._require_ready()
+                self._call("set_offer_pending", {"pending": pending})
+            except PendingThoughtRuntimeError as exc:
+                logger.warning("offer-state synchronization failed: %s", exc)
+                return
+            self._synced_offer_pending = pending
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
@@ -254,7 +279,10 @@ class PendingThoughtRuntime:
 
         pending_id = await self.pending_thought_id()
         if self.body is not None:
-            await asyncio.to_thread(self.body.set_base_view)
+            await asyncio.to_thread(
+                self.body.reconcile_base_view,
+                pending_id is not None,
+            )
         return pending_id
 
     async def tell_direct(
@@ -299,7 +327,11 @@ class PendingThoughtRuntime:
                 playback_url=self._playback_url,
                 playback_token=self._playback_token,
             )
-            self.machine = KnockWaitTell(self.body, self.body)
+            self.machine = KnockWaitTell(
+                self.body,
+                self.body,
+                offer_state_port=self.body,
+            )
         session = create_stackchan_client_session(
             read_stream,
             write_stream,

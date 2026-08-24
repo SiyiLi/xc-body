@@ -35,9 +35,9 @@ control path remained usable after the extended idle period.
 The accepted no-USB OTA path installed consecutive updates into inactive
 slots, restored the reviewed avatar, and survived validation reboots.
 
-## Remaining Acceptance
+Rollback safety also has physical acceptance. An unhealthy OTA image panicked
+before the MCP health gate completed. The bootloader restored the prior image
+and disabled automatic OTA, preventing an update loop.
 
-OTA acceptance still must prove automatic rollback after an unhealthy boot.
-Compatible-image checks and USB recovery are implemented. The intermittent
-Si12T I2C crash seen during an early download did not recur in the accepted
-runs but has not been root-caused.
+The intermittent Si12T I2C crash seen during an early download did not recur in
+the accepted runs but has not been root-caused.

@@ -43,6 +43,10 @@ the app and metadata-bound assets over OTA. Assets use one in-place partition:
 the verified update is non-atomic under power loss, while the app remains
 bootable with static fallback and retries on a later boot.
 
+StackChan's reviewed avatar, idle-screen fonts, and RGB565A8 weather icons are
+packaged in that assets partition. They are not linked into the application
+slots.
+
 For local recovery, flash the StackChan application and generated assets
 together:
 
@@ -67,6 +71,6 @@ acceptance.
 
 After a bootloader rollback, firmware disables automatic boot OTA until it is
 re-enabled through USB or the configuration screen. Configuration mode uses
-SSID `XCBODY-3341`. Forced unhealthy-boot rollback remains untested, and the
+SSID `XCBODY-3341`. Unhealthy-boot rollback is physically verified; the
 intermittent Si12T head-touch I2C crash remains open. The merged USB recovery
 path remains available.

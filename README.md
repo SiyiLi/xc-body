@@ -23,8 +23,7 @@ turning it off should make the room feel a little emptier.
 ## Current Status
 
 - Milestones 1 and 2 have physical acceptance. The Milestone 3 recovery
-  matrix also has one exact physical acceptance run; forced unhealthy-boot
-  OTA rollback remains untested.
+  matrix and unhealthy-boot OTA rollback have physical acceptance.
 - Native OpenClaw integration observes successful agent, subagent, and cron
   completions, chooses `offer` or `skip`, and submits accepted summaries to the
   authenticated VM service.
@@ -37,7 +36,8 @@ turning it off should make the room feel a little emptier.
   service ports remain private.
 - Milestone 4 direct conversation and appliance UX remain under physical
   acceptance. Exact candidate identifiers live in source metadata and release
-  manifests. Forced unhealthy-boot rollback remains untested.
+  manifests. The six-element idle clock and weather view has physical display
+  acceptance; the remaining Milestone 4 criteria stay open.
 - Deliberate tap-to-talk microphone input is part of Milestone 4. Camera input,
   always-on capture, durable queues, quiet hours, free-form motion, Home
   Assistant, and Stick S3 integration are not part of the current scope.
@@ -98,6 +98,23 @@ Each command requires fresh permission for its own deployment surface. None of
 them flashes the robot. The OpenClaw plugin controller requires the exact
 existing conversation session and fixed Telegram target so it cannot silently
 install a completion-only configuration with direct conversation disabled.
+
+The optional Milestone 4 weather display uses QWeather current conditions.
+Keep these values in the VM's private `gateway.env`:
+
+```text
+XC_BODY_QWEATHER_API_HOST=<dedicated QWeather API hostname>
+XC_BODY_QWEATHER_API_KEY=<private API key>
+```
+
+On the first Wi-Fi connection after boot, firmware resolves the robot's
+approximate coordinates through a keyless HTTPS public-IP lookup on a
+low-priority worker and caches the result. Only a connected SSID change starts
+another lookup; same-SSID reconnects and weather refreshes read the cache.
+VPNs and shared network exits can therefore select the wrong city. An empty or
+failed lookup falls back to central Shanghai. When either QWeather value is
+absent, weather synchronization is disabled; the idle clock and date remain
+available.
 
 ## Start Here
 

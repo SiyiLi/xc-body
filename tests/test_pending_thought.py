@@ -21,6 +21,7 @@ class RecordingBody:
     def __init__(self, *, fail_knock=False, fail_tell=False):
         self.knocks = []
         self.tells = []
+        self.offer_states = []
         self.fail_knock = fail_knock
         self.fail_tell = fail_tell
 
@@ -33,6 +34,9 @@ class RecordingBody:
         self.tells.append((thought_id, audio_base64))
         if self.fail_tell:
             raise RuntimeError("synthetic tell failure")
+
+    def set_offer_pending(self, pending):
+        self.offer_states.append(pending)
 
 
 def offer(machine, thought_id="run:42"):
@@ -123,11 +127,12 @@ class PendingThoughtTests(unittest.TestCase):
 
     def test_offer_waits_for_one_acknowledgment(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = KnockWaitTell(body, body, offer_state_port=body)
         payload_outcome = offer(machine)
         self.assertEqual(payload_outcome.state, "waiting")
         self.assertEqual(body.knocks, ["run:42"])
         self.assertEqual(body.tells, [])
+        self.assertEqual(body.offer_states, [True])
 
         told = machine.acknowledge_head_gesture()
         self.assertEqual(told.state, "told")
@@ -135,6 +140,7 @@ class PendingThoughtTests(unittest.TestCase):
         self.assertEqual(offer(machine).state, "told")
         self.assertEqual(body.knocks, ["run:42"])
         self.assertEqual(body.tells, [("run:42", _AUDIO)])
+        self.assertEqual(body.offer_states, [True, False])
 
     def test_head_pat_and_stroke_events_acknowledge_offer(self):
         for subtype, action in (("tap", "head_pat"), ("stroke", "head_stroke")):
