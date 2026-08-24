@@ -9,6 +9,7 @@ SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
 VOICE_URL=https://43.143.37.91/xc-body/voice/v1/
 SESSION_KEY="${XC_BODY_OPENCLAW_SESSION_KEY:-}"
 TELEGRAM_TARGET="${XC_BODY_TELEGRAM_TARGET:-}"
+SPEECH_MODEL="${XC_BODY_SPEECH_MODEL:-inference-tc-nvda/cn/tc/qwen3.8-27b-fp8-dflash-sglang}"
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
   -i "$IDENTITY"
@@ -82,11 +83,11 @@ openclaw plugins install --link "$plugin_path" >/dev/null
 unset configured_paths plugin_path
 config=$(python3 - \
   "$token" "$SUMMARY_URL" "$VOICE_URL" "$SESSION_KEY" \
-  "$TELEGRAM_TARGET" <<'PY'
+  "$TELEGRAM_TARGET" "$SPEECH_MODEL" <<'PY'
 import json
 import sys
 
-token, summary_url, voice_url, session_key, telegram_target = (
+token, summary_url, voice_url, session_key, telegram_target, speech_model = (
     sys.argv[1:]
 )
 print(json.dumps(
@@ -96,6 +97,7 @@ print(json.dumps(
         "token": token,
         "sessionKey": session_key,
         "telegramTarget": telegram_target,
+        "speechModel": speech_model,
         "timeoutMs": 120000,
     },
     separators=(",", ":"),
@@ -107,10 +109,21 @@ openclaw config set plugins.entries.xc-body-native.config \
 openclaw config set \
   plugins.entries.xc-body-native.hooks.allowConversationAccess \
   true --strict-json >/dev/null
+openclaw config set plugins.entries.xc-body-native.llm.allowModelOverride \
+  true --strict-json >/dev/null
+allowed_models=$(python3 - "$SPEECH_MODEL" <<'PY'
+import json
+import sys
+
+print(json.dumps([sys.argv[1]], separators=(",", ":")))
+PY
+)
+openclaw config set plugins.entries.xc-body-native.llm.allowedModels \
+  "$allowed_models" --strict-json >/dev/null
 openclaw plugins enable xc-body-native >/dev/null
 openclaw mcp unset xc-body >/dev/null 2>&1 || true
 openclaw mcp unset xc-body-embodiment >/dev/null 2>&1 || true
-unset token config
+unset token config allowed_models
 
 mkdir -p "$STATE_DIR"
 gateway_probe=$STATE_DIR/openclaw-gateway.json
@@ -146,7 +159,12 @@ hooks = {
     for hook in result.get("typedHooks", [])
     if isinstance(hook, dict)
 }
-required_hooks = {"agent_end", "cron_changed", "subagent_ended"}
+required_hooks = {
+    "agent_end",
+    "cron_changed",
+    "subagent_ended",
+    "subagent_spawned",
+}
 if not required_hooks.issubset(hooks):
     raise SystemExit("XC Body plugin hooks are incomplete")
 PY

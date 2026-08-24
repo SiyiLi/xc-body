@@ -5,12 +5,19 @@ import { join } from "node:path";
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
+import {
+  prepareDirectSpeech,
+  type LlmCompleter,
+} from "./spoken-text.ts";
+
 export type DirectConversationConfig = {
   voiceUrl: string;
   token: string;
   sessionKey: string;
   telegramTarget: string;
   agentId: string;
+  complete: LlmCompleter;
+  speechModel?: string;
   pollMs: number;
   timeoutMs: number;
 };
@@ -26,6 +33,18 @@ type DirectAnswer = {
 };
 
 const MAX_DIRECT_RUN_IDS = 64;
+const PROJECTION_FAILURE_SPEECH = "抱歉，在回答总结的时候出了点问题。";
+
+export async function prepareDirectAnswerSpeech(
+  complete: LlmCompleter,
+  answer: string,
+  model?: string,
+): Promise<string> {
+  return (
+    (await prepareDirectSpeech(complete, answer, model)) ??
+    PROJECTION_FAILURE_SPEECH
+  );
+}
 
 function endpoint(base: string, suffix: string): string {
   return new URL(suffix, base).toString();
@@ -61,6 +80,7 @@ export class DirectConversationService {
   private loopPromise: Promise<void> | undefined;
   private activeTurnId: string | undefined;
   private readonly directRunIds = new Set<string>();
+  private readonly directSessionKeys = new Set<string>();
 
   constructor(api: OpenClawPluginApi, config: DirectConversationConfig) {
     this.api = api;
@@ -79,6 +99,32 @@ export class DirectConversationService {
 
   isDirectRun(runId: string): boolean {
     return this.activeTurnId === runId || this.directRunIds.has(runId);
+  }
+
+  observeSubagent(
+    requesterSessionKey: string | undefined,
+    childSessionKey: string,
+    runId: string,
+  ): void {
+    const directRoot =
+      this.activeTurnId !== undefined &&
+      requesterSessionKey === this.config.sessionKey;
+    if (
+      !directRoot &&
+      (!requesterSessionKey ||
+        !this.directSessionKeys.has(requesterSessionKey))
+    ) {
+      return;
+    }
+    this.remember(this.directSessionKeys, childSessionKey);
+    this.remember(this.directRunIds, runId);
+  }
+
+  isDirectSubagent(runId: string, sessionKey: string): boolean {
+    return (
+      this.directRunIds.has(runId) ||
+      this.directSessionKeys.has(sessionKey)
+    );
   }
 
   private async loop(): Promise<void> {
@@ -144,6 +190,11 @@ export class DirectConversationService {
       if (!answer.delivered) {
         await this.sendTelegram(answer.text);
       }
+      const speech = await prepareDirectAnswerSpeech(
+        this.config.complete,
+        answer.text,
+        this.config.speechModel,
+      );
       await requestJson(
         endpoint(this.config.voiceUrl, "answer"),
         this.config.token,
@@ -152,7 +203,7 @@ export class DirectConversationService {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             turn_id: capture.turn_id,
-            answer: answer.text,
+            answer: speech,
           }),
           signal: AbortSignal.timeout(this.config.timeoutMs),
         },
@@ -217,13 +268,7 @@ export class DirectConversationService {
           throw new Error("configured OpenClaw session is unavailable");
         }
         this.activeTurnId = turnId;
-        this.directRunIds.add(turnId);
-        while (this.directRunIds.size > MAX_DIRECT_RUN_IDS) {
-          const oldest = this.directRunIds.values().next().value;
-          if (typeof oldest === "string") {
-            this.directRunIds.delete(oldest);
-          }
-        }
+        this.remember(this.directRunIds, turnId);
         try {
           const result = await this.api.runtime.agent.runEmbeddedAgent({
             sessionId: entry.sessionId,
@@ -272,5 +317,16 @@ export class DirectConversationService {
         }
       },
     );
+  }
+
+  private remember(target: Set<string>, value: string): void {
+    target.add(value);
+    while (target.size > MAX_DIRECT_RUN_IDS) {
+      const oldest = target.values().next().value;
+      if (typeof oldest !== "string") {
+        return;
+      }
+      target.delete(oldest);
+    }
   }
 }

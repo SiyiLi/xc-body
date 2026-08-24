@@ -5,55 +5,36 @@ import {
   CompletionIntegration,
   createThoughtId,
   extractCompletedResult,
-  parseModelDecision,
   submitSummary,
 } from "../core.ts";
 
-test("extracts only bounded final assistant messages", () => {
+test("extracts only assistant messages from the current turn", () => {
   const result = extractCompletedResult([
-    { role: "user", content: "ignore this" },
+    { role: "user", content: "older question" },
     { role: "assistant", content: "older result" },
+    { role: "user", content: "current question" },
+    { role: "assistant", content: "current progress" },
     {
       role: "assistant",
-      content: [{ type: "text", text: "final result" }],
+      content: [{ type: "text", text: "current final result" }],
     },
   ]);
 
-  assert.equal(result, "older result\n\nfinal result");
-});
-
-test("strictly validates offer and skip model JSON", () => {
-  assert.deepEqual(
-    parseModelDecision('{"decision":"offer","summary":"任务已经完成。"}'),
-    { decision: "offer", summary: "任务已经完成。" },
-  );
-  assert.deepEqual(
-    parseModelDecision('{"decision":"skip","summary":""}'),
-    { decision: "skip", summary: "" },
-  );
-  for (const invalid of [
-    "```json\n{}\n```",
-    '{"decision":"remember","summary":"记住"}',
-    '{"decision":"offer","summary":"English only"}',
-    '{"decision":"offer","summary":"完成","extra":true}',
-    JSON.stringify({ decision: "offer", summary: "完".repeat(151) }),
-  ]) {
-    assert.equal(parseModelDecision(invalid), null);
-  }
+  assert.equal(result, "current progress\n\ncurrent final result");
 });
 
 test("submits one private Chinese offer and deduplicates its run", async () => {
   const submitted: unknown[] = [];
   let completions = 0;
   const integration = new CompletionIntegration({
+    model: "fast/summarizer",
     async complete(params) {
       completions += 1;
-      assert.equal(params.temperature, undefined);
-      assert.equal(params.maxTokens, 320);
+      assert.equal(params.model, "fast/summarizer");
       return {
         text: JSON.stringify({
           decision: "offer",
-          summary: "你的私人医疗报告已经整理完成。",
+          speech: "你的私人医疗报告已经整理完成。",
         }),
       };
     },
@@ -64,7 +45,11 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
   });
 
   assert.equal(
-    await integration.handle("subagent", "run-42", "completed"),
+    await integration.handle(
+      "subagent",
+      "run-42",
+      "| 项目 | 状态 |\n| --- | --- |\n| 私人医疗报告 | 完成 |",
+    ),
     "submitted",
   );
   assert.equal(
@@ -81,41 +66,34 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
   ]);
 });
 
-test("deduplicates one run observed by different completion hooks", async () => {
-  let completions = 0;
+test("speech-friendly offer preserves its original language", async () => {
+  let submittedSummary = "";
   const integration = new CompletionIntegration({
     async complete() {
-      completions += 1;
-      return { text: '{"decision":"skip","summary":""}' };
+      return {
+        text: '{"decision":"offer","speech":"构建已经完成。"}',
+      };
     },
-    async submit() {
+    async submit(payload) {
+      submittedSummary = payload.summary;
       return true;
     },
   });
 
-  assert.equal(await integration.handle("agent", "run-7", "done"), "skipped");
   assert.equal(
-    await integration.handle("subagent", "run-7", "done"),
-    "duplicate",
+    await integration.handle("agent", "run-english", "Build completed."),
+    "submitted",
   );
-  assert.equal(await integration.handle("cron", "run-7", "done"), "duplicate");
-  assert.equal(completions, 1);
+  assert.equal(submittedSummary, "Build completed.");
 });
 
-test("model failures and malformed output fail closed without submission", async () => {
+test("model failure retries once and fails closed", async () => {
   let submitted = 0;
+  let throwingCalls = 0;
   const throwing = new CompletionIntegration({
     async complete() {
+      throwingCalls += 1;
       throw new Error("model unavailable");
-    },
-    async submit() {
-      submitted += 1;
-      return true;
-    },
-  });
-  const malformed = new CompletionIntegration({
-    async complete() {
-      return { text: '{"decision":"offer","summary":"English"}' };
     },
     async submit() {
       submitted += 1;
@@ -124,7 +102,7 @@ test("model failures and malformed output fail closed without submission", async
   });
 
   assert.equal(await throwing.handle("cron", "run-1", "done"), "skipped");
-  assert.equal(await malformed.handle("cron", "run-2", "done"), "skipped");
+  assert.equal(throwingCalls, 2);
   assert.equal(submitted, 0);
 });
 
@@ -133,7 +111,7 @@ test("remote rejection stores only an operational outcome", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: JSON.stringify({ decision: "offer", summary: privateSummary }),
+        text: JSON.stringify({ decision: "offer", speech: privateSummary }),
       };
     },
     async submit() {

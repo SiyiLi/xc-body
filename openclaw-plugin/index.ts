@@ -25,6 +25,7 @@ export default definePluginEntry({
     const integration = new CompletionIntegration({
       complete: (params) => api.runtime.llm.complete(params),
       submit: (payload) => submitSummary(config, payload),
+      model: config.speechModel,
     });
     let directService: DirectConversationService | undefined;
     if (
@@ -38,6 +39,8 @@ export default definePluginEntry({
         sessionKey: config.sessionKey,
         telegramTarget: config.telegramTarget,
         agentId: config.agentId,
+        complete: (params) => api.runtime.llm.complete(params),
+        speechModel: config.speechModel,
         pollMs: config.pollMs,
         timeoutMs: config.timeoutMs,
       });
@@ -54,7 +57,16 @@ export default definePluginEntry({
     registerCompletionHooks(
       api,
       integration,
-      (runId) => directService?.isDirectRun(runId) ?? false,
+      directService
+        ? {
+            isDirectRun: (runId) => directService.isDirectRun(runId),
+            observeSubagent: (requester, child, runId) => {
+              directService.observeSubagent(requester, child, runId);
+            },
+            isDirectSubagent: (runId, sessionKey) =>
+              directService.isDirectSubagent(runId, sessionKey),
+          }
+        : undefined,
     );
   },
 });

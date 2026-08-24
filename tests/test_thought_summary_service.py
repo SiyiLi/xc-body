@@ -29,7 +29,7 @@ def ready_runtime(**values):
 
 
 class ThoughtSummaryServiceTests(unittest.TestCase):
-    def test_summary_contract_accepts_bounded_private_chinese_text(self):
+    def test_summary_contract_accepts_bounded_spoken_text(self):
         request = parse_thought_summary(
             {
                 "version": "v1",
@@ -44,6 +44,15 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
             "你的私人项目已经完成，可以查看结果。",
         )
 
+        english_request = parse_thought_summary(
+            {
+                "version": "v1",
+                "thought_id": "agent:english",
+                "summary": "Build completed.",
+            }
+        )
+        self.assertEqual(english_request.summary, "Build completed.")
+
     def test_invalid_summary_fails_before_synthesis_or_runtime(self):
         runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(return_value=_PREPARED_AUDIO_BASE64)
@@ -54,7 +63,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                 {
                     "version": "v1",
                     "thought_id": "subagent:abc123",
-                    "summary": "English only",
+                    "summary": "a" * 1_001,
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,

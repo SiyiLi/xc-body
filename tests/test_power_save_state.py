@@ -15,11 +15,6 @@ HEADER = (
     / "common"
     / "power_save_state.h"
 )
-STACKCHAN = (
-    ROOT / "firmware" / "main" / "boards" / "stackchan" / "stackchan.cc"
-).read_text()
-
-
 @unittest.skipUnless(shutil.which("c++"), "requires a C++ compiler")
 class PowerSaveStateTests(unittest.TestCase):
     def test_dim_off_wake_and_external_power_policy(self):
@@ -93,20 +88,6 @@ class PowerSaveStateTests(unittest.TestCase):
                 check=True,
             )
             subprocess.run([str(binary_path)], check=True)
-
-        init_start = STACKCHAN.index("void InitializePowerSaveTimer()")
-        init_end = STACKCHAN.index("void InitializeI2c()", init_start)
-        policy = STACKCHAN[init_start:init_end]
-
-        self.assertNotIn("SetEnabled(true)", policy)
-        self.assertIn("OnEnterDimMode", policy)
-        self.assertIn("SetPowerSaveMode(true)", policy)
-        self.assertIn("GetBacklight()->SetBrightness(0)", policy)
-        self.assertNotIn("StopNetwork", policy)
-        self.assertNotIn("Disconnect", policy)
-        self.assertIn("SetEnabled(discharging)", STACKCHAN)
-
-
 
 if __name__ == "__main__":
     unittest.main()

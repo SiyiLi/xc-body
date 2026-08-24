@@ -34,7 +34,7 @@ lifecycle, health checks, and resource limits.
 - Selects semantic intentions instead of raw servo or animation commands.
 - Observes successful agent, subagent, and cron completions.
 - Classifies a completion as `offer` or `skip` through its native LLM runtime.
-- Sends an accepted self-contained Chinese summary over authenticated HTTPS.
+- Sends accepted bounded speech over authenticated HTTPS.
 
 ### Completion plugin
 
@@ -95,8 +95,9 @@ It has no network listener and never returns the saved token.
 ### Completion offer
 
 1. The OpenClaw plugin observes a successful eligible completion.
-2. OpenClaw classifies it as `offer` or `skip`.
-3. An offer summary crosses authenticated HTTPS to the VM.
+2. The shared fast-model projection classifies it as `offer` or `skip`.
+3. An accepted short plain result crosses authenticated HTTPS unchanged;
+   long or formatted results use the bounded Chinese projection.
 4. The VM prepares and validates Opus before creating pending state.
 5. Firmware performs one silent knock and returns to idle.
 6. A deliberate head pat or head stroke acknowledges the current offer.

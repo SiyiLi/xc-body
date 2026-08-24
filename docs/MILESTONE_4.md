@@ -50,16 +50,20 @@ A direct question uses `ask -> attention move -> tell`:
 7. When the answer is ready, XC Body performs a short deterministic attention
    movement.
 8. Speech begins only after the movement has physically settled.
-9. The same final answer is delivered normally to Telegram and spoken once by
-   XC Body.
+9. The full final answer is delivered normally to Telegram. Short plain
+   English or Chinese answers are spoken directly. Long or formatted
+   answers use the shared fast-model projection and are spoken once in Chinese
+   with limits of 200 words and 1000 Unicode characters.
+10. Projection receives the complete answer and retries once. If both attempts
+    fail, the direct path speaks a short error message rather than the answer.
 
 A direct question never knocks, creates a pending offer, waits for head touch,
 or requests a second confirmation. Its attention movement means "the answer is
 ready; listen now," not "permission is required."
 
-Robot-originated agent runs are explicitly marked and excluded from the
-completion-offer classifier. An answer already spoken must not become a new
-pending offer.
+Robot-originated agent runs and their descendant subagent runs are explicitly
+marked and excluded from the completion-offer classifier. An answer already
+spoken must not become a new pending offer.
 
 A direct conversation does not consume or replace an unrelated pending offer.
 After the answer, the pending avatar is restored if that offer remains valid;
@@ -94,7 +98,8 @@ XC Body microphone
   -> native OpenClaw transcription
   -> normal turn in the existing Louis/XC session
   -> normal Telegram answer delivery
-  -> authenticated final-text response to the VM
+  -> shared fast-model projection when the answer is not TTS-friendly
+  -> authenticated spoken-text response to the VM
   -> accepted Edge TTS and prepared-Opus robot playback
 ```
 
@@ -109,8 +114,9 @@ The local plugin:
 - transcribes through OpenClaw's native media-understanding runtime;
 - mirrors the recognized question to Telegram;
 - admits one normal agent turn against the existing session;
-- delivers the final answer through the ordinary Telegram path; and
-- returns that exact visible answer to the VM for robot speech.
+- delivers the full final answer through the ordinary Telegram path; and
+- returns either a short plain answer or its concise Chinese projection to the
+  VM for robot speech.
 
 The VM reuses the physically accepted Edge TTS and prepared-Opus playback path.
 Direct answers and pending-offer speech share the existing serialized
@@ -175,8 +181,11 @@ Milestone 4 extends existing capabilities rather than replacing them:
    one-turn VM mailbox, and poll it from the local native plugin.
 4. **Conversation:** transcribe, mirror the labelled question to Telegram, and
    run exactly one normal turn in the existing OpenClaw session.
-5. **Voice egress:** perform the reviewed short attention movement, wait for
-   physical settle, then reuse accepted TTS and prepared-Opus playback.
+5. **Voice egress:** use one shared prompt and configured fast model to classify
+   offers and project long or formatted results into Chinese speech of at most
+   200 words and 1000 Unicode characters. Short plain English or Chinese is
+   spoken unchanged. Retry once, then apply the caller-specific failure policy
+   before reusing accepted TTS and prepared-Opus playback.
 6. **Power:** physically validate the candidate dim, display-off, and
    five-minute battery power-off policy as the acceptance gate.
 
@@ -193,8 +202,8 @@ acceptance on the real robot.
 - The question is a real user turn in the existing OpenClaw session and may use
   its normal context and tools.
 - XC Body performs one short attention movement after the answer is ready,
-  waits until motion settles, and speaks the answer once without head-touch
-  confirmation.
+  waits until motion settles, and speaks one voice-friendly rendering without
+  head-touch confirmation.
 - A direct answer never creates a pending offer.
 - An unrelated pending offer survives a direct conversation and regains its
   avatar afterward.

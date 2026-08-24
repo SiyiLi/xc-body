@@ -7,29 +7,50 @@ import {
 
 const CHILD_MESSAGE_LIMIT = 8;
 
+export type DirectRunGuard = {
+  isDirectRun(runId: string): boolean;
+  observeSubagent(
+    requesterSessionKey: string | undefined,
+    childSessionKey: string,
+    runId: string,
+  ): void;
+  isDirectSubagent(runId: string, sessionKey: string): boolean;
+};
+
 export function registerCompletionHooks(
   api: OpenClawPluginApi,
   integration: CompletionIntegration,
-  ignoreRun: (runId: string) => boolean = () => false,
+  directRuns?: DirectRunGuard,
 ): void {
   api.on(
     "agent_end",
-    async (event) => {
+    async (event, context) => {
+      const runId = event.runId || context.runId;
       if (
         !event.success ||
-        !event.runId ||
-        ignoreRun(event.runId)
+        !runId ||
+        directRuns?.isDirectRun(runId)
       ) {
         return;
       }
       await integration.handle(
         "agent",
-        event.runId,
+        runId,
         extractCompletedResult(event.messages),
       );
     },
     { timeoutMs: 300_000 },
   );
+
+  if (directRuns) {
+    api.on("subagent_spawned", async (event, context) => {
+      directRuns.observeSubagent(
+        context.requesterSessionKey,
+        event.childSessionKey,
+        event.runId,
+      );
+    });
+  }
 
   api.on(
     "subagent_ended",
@@ -38,7 +59,11 @@ export function registerCompletionHooks(
         event.targetKind !== "subagent" ||
         event.outcome !== "ok" ||
         !event.runId ||
-        !event.targetSessionKey
+        !event.targetSessionKey ||
+        directRuns?.isDirectSubagent(
+          event.runId,
+          event.targetSessionKey,
+        )
       ) {
         return;
       }
