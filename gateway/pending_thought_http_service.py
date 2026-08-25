@@ -11,10 +11,19 @@ import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
+from gateway.direct_conversation import (
+    DirectConversationError,
+    VoiceMailbox,
+    build_direct_turn_report,
+    emit_direct_turn_metrics,
+    parse_plugin_metrics,
+    speak_direct_answer,
+)
 from gateway.pending_thought_runtime import PendingThoughtRuntime
 from gateway.pending_thought_service import (
     PlaybackConfig,
@@ -35,9 +44,26 @@ AUTH_FAILURE_MESSAGE = "Unauthorized: missing or invalid bearer token"
 TOKEN_REQUIRED_MESSAGE = (
     f"refusing pending-thought HTTP service without {DOWNSTREAM_TOKEN_ENV}"
 )
-_AUTHENTICATED_PATHS = frozenset(("/mcp", "/readyz", "/summary/v1"))
+_AUTHENTICATED_PATHS = frozenset(
+    (
+        "/mcp",
+        "/readyz",
+        "/summary/v1",
+        "/voice/v1/capture",
+        "/voice/v1/abandon",
+        "/voice/v1/answer",
+    )
+)
 _MAX_SUMMARY_REQUEST_BYTES = 4096
+_MAX_ANSWER_REQUEST_BYTES = 64 * 1024
 _RECOVERY_DELAY_SECONDS = 5
+_CAPTURE_METRIC_HEADERS = {
+    "capture_started_uptime_us": "X-XC-Device-Capture-Start-Us",
+    "capture_stopped_uptime_us": "X-XC-Device-Capture-Stop-Us",
+    "gateway_capture_started_ms": "X-XC-Gateway-Capture-Start-Ms",
+    "gateway_capture_stopped_ms": "X-XC-Gateway-Capture-Stop-Ms",
+    "gateway_upload_started_ms": "X-XC-Gateway-Upload-Started-Ms",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -180,6 +206,7 @@ async def _maintain_pending_runtime(
                                 )
                                 if not restored:
                                     break
+                                await runtime.reconcile_base_view()
                                 await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
                         finally:
                             await wait_for_stackchan_event_tasks(session)
@@ -220,6 +247,7 @@ def build_app(
         playback_url=playback_config.url,
         playback_token=playback_config.token,
     )
+    voice_mailbox = VoiceMailbox()
     server = create_service_server(runtime)
     manager = StreamableHTTPSessionManager(
         app=server,
@@ -233,6 +261,150 @@ def build_app(
     async def readyz(_request: Any) -> Any:
         payload = await _readiness_payload(runtime)
         return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
+
+    async def voice_capture(request: Any) -> Any:
+        request_started_ms = time.time_ns() // 1_000_000
+        try:
+            audio = await request.body()
+            capture_metrics = {
+                name: int(value)
+                for name, header in _CAPTURE_METRIC_HEADERS.items()
+                if (value := request.headers.get(header)) is not None
+                and value.isascii()
+                and value.isdigit()
+                and len(value) <= 16
+            }
+            capture_metrics["server_capture_request_started_ms"] = (
+                request_started_ms
+            )
+            capture_metrics["server_capture_received_ms"] = (
+                time.time_ns() // 1_000_000
+            )
+            turn_id = await voice_mailbox.submit(audio, capture_metrics)
+        except DirectConversationError:
+            return JSONResponse(
+                {"ok": False, "error": "capture_rejected"},
+                status_code=409,
+            )
+        return JSONResponse({"ok": True, "turn_id": turn_id}, status_code=202)
+
+    async def voice_claim(_request: Any) -> Any:
+        capture = await voice_mailbox.claim()
+        if capture is None:
+            return JSONResponse({"ok": True, "capture": None})
+        import base64
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "capture": {
+                    "turn_id": capture.turn_id,
+                    "audio_base64": base64.b64encode(capture.audio).decode(
+                        "ascii"
+                    ),
+                    "metrics": capture.metrics,
+                },
+            }
+        )
+
+    async def voice_abandon(request: Any) -> Any:
+        try:
+            raw_body = await request.body()
+            if len(raw_body) > _MAX_ANSWER_REQUEST_BYTES:
+                raise ValueError
+            payload = json.loads(raw_body.decode("utf-8"))
+            turn_id = payload["turn_id"]
+            if not isinstance(turn_id, str):
+                raise ValueError
+            turn_metrics, failed_stage = parse_plugin_metrics(
+                payload.get("metrics")
+            )
+        except (
+            DirectConversationError,
+            KeyError,
+            UnicodeDecodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "invalid_request"},
+                status_code=400,
+            )
+        abandoned = await voice_mailbox.abandon(turn_id)
+        if abandoned:
+            emit_direct_turn_metrics(
+                build_direct_turn_report(
+                    turn_id,
+                    "abandoned",
+                    turn_metrics,
+                    failed_stage,
+                )
+            )
+        return JSONResponse({"ok": True, "abandoned": abandoned})
+
+    async def voice_answer(request: Any) -> Any:
+        try:
+            raw_body = await request.body()
+            if len(raw_body) > _MAX_ANSWER_REQUEST_BYTES:
+                raise ValueError
+            payload = json.loads(raw_body.decode("utf-8"))
+            turn_id = payload["turn_id"]
+            answer = payload["answer"]
+            if not isinstance(turn_id, str) or not isinstance(answer, str):
+                raise ValueError
+            turn_metrics, failed_stage = parse_plugin_metrics(
+                payload.get("metrics")
+            )
+        except (
+            DirectConversationError,
+            KeyError,
+            UnicodeDecodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "invalid_request"},
+                status_code=400,
+            )
+        if not await voice_mailbox.begin_answer(turn_id):
+            return JSONResponse(
+                {"ok": False, "error": "turn_not_claimed"},
+                status_code=409,
+            )
+        body_metrics = None
+        status = "incomplete"
+        turn_metrics["server_answer_received_ms"] = (
+            time.time_ns() // 1_000_000
+        )
+        try:
+            body_metrics = await speak_direct_answer(
+                runtime,
+                turn_id,
+                answer,
+                voice,
+            )
+        except Exception as exc:
+            status = "body_unavailable"
+            logger.warning("direct answer failed (%s)", type(exc).__name__)
+            response = JSONResponse(
+                {"ok": False, "error": "body_unavailable"},
+                status_code=503,
+            )
+        else:
+            status = "ok"
+            response = JSONResponse({"ok": True, "turn_id": turn_id})
+        finally:
+            await voice_mailbox.finish_answer(turn_id)
+            turn_metrics.update(body_metrics or {})
+            emit_direct_turn_metrics(
+                build_direct_turn_report(
+                    turn_id,
+                    status,
+                    turn_metrics,
+                    failed_stage,
+                )
+            )
+        return response
 
     async def summary_v1(request: Any) -> Any:
         try:
@@ -281,6 +453,26 @@ def build_app(
         Route("/healthz", endpoint=healthz, methods=["GET"]),
         Route("/readyz", endpoint=readyz, methods=["GET"]),
         Route("/summary/v1", endpoint=summary_v1, methods=["POST"]),
+        Route(
+            "/voice/v1/capture",
+            endpoint=voice_capture,
+            methods=["POST"],
+        ),
+        Route(
+            "/voice/v1/capture",
+            endpoint=voice_claim,
+            methods=["GET"],
+        ),
+        Route(
+            "/voice/v1/abandon",
+            endpoint=voice_abandon,
+            methods=["POST"],
+        ),
+        Route(
+            "/voice/v1/answer",
+            endpoint=voice_answer,
+            methods=["POST"],
+        ),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     return _BearerAuthApp(app, downstream_token)

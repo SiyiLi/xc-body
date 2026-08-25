@@ -105,6 +105,7 @@ class Gateway:
         """
         return (
             os.getenv("STACKCHAN_AUDIO_HOOK_TOKEN")
+            or os.getenv("XC_BODY_PENDING_HTTP_TOKEN")
             or os.getenv("STACKCHAN_TOKEN")
             or os.getenv("BEARER_TOKEN")
             or ""

@@ -24,7 +24,7 @@ from gateway.speech_preparation import (
 
 _ALLOWED_FIELDS = frozenset(("version", "thought_id", "summary"))
 _REQUIRED_FIELDS = _ALLOWED_FIELDS
-_MAX_SUMMARY_CHARS = 150
+_MAX_SUMMARY_CHARS = 1_000
 SpeechPreparer = Callable[[str, str], Awaitable[str]]
 logger = logging.getLogger(__name__)
 
@@ -38,15 +38,6 @@ class ThoughtSummary:
     version: str
     thought_id: str
     summary: str
-
-
-def _contains_chinese(text: str) -> bool:
-    return any(
-        "\u3400" <= character <= "\u4dbf"
-        or "\u4e00" <= character <= "\u9fff"
-        or "\uf900" <= character <= "\ufaff"
-        for character in text
-    )
 
 
 def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
@@ -67,12 +58,8 @@ def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
     if not isinstance(summary, str):
         raise ThoughtSummaryError("summary must be a string")
     summary = summary.strip()
-    if (
-        not summary
-        or len(summary) > _MAX_SUMMARY_CHARS
-        or not _contains_chinese(summary)
-    ):
-        raise ThoughtSummaryError("summary must be bounded Chinese text")
+    if not summary or len(summary) > _MAX_SUMMARY_CHARS:
+        raise ThoughtSummaryError("summary must be bounded spoken text")
     return ThoughtSummary(
         version="v1",
         thought_id=thought_id,

@@ -34,7 +34,7 @@ lifecycle, health checks, and resource limits.
 - Selects semantic intentions instead of raw servo or animation commands.
 - Observes successful agent, subagent, and cron completions.
 - Classifies a completion as `offer` or `skip` through its native LLM runtime.
-- Sends an accepted self-contained Chinese summary over authenticated HTTPS.
+- Sends accepted bounded speech over authenticated HTTPS.
 
 ### Completion plugin
 
@@ -95,8 +95,9 @@ It has no network listener and never returns the saved token.
 ### Completion offer
 
 1. The OpenClaw plugin observes a successful eligible completion.
-2. OpenClaw classifies it as `offer` or `skip`.
-3. An offer summary crosses authenticated HTTPS to the VM.
+2. The shared fast-model projection classifies it as `offer` or `skip`.
+3. An accepted short plain result crosses authenticated HTTPS unchanged;
+   long or formatted results use the bounded Chinese projection.
 4. The VM prepares and validates Opus before creating pending state.
 5. Firmware performs one silent knock and returns to idle.
 6. A deliberate head pat or head stroke acknowledges the current offer.
@@ -104,6 +105,40 @@ It has no network listener and never returns the saved token.
    after success.
 
 The knock never receives prepared audio. No text-to-`say` fallback exists.
+
+A root robot-originated completion is ineligible because its answer follows
+the direct path. A descendant subagent completion remains eligible, allowing a
+long-running direct request to offer optional progress without delaying its
+eventual direct answer.
+
+### Direct conversation
+
+1. Existing firmware touch and device-driven capture submit one bounded Opus
+   recording to the pending service mailbox.
+2. The native OpenClaw plugin claims it, uses native media transcription, and
+   admits one user turn into the configured existing session.
+3. The final visible answer returns to the pending service exactly once.
+4. The pending runtime requests a deterministic firmware-owned `attention`
+   behavior through the shared StackChan gateway behavior boundary.
+5. The gateway reuses its servo lane, correlated completion waiter, timeout,
+   and recovery path. Prepared Opus playback starts only after the firmware
+   reports physical settle and neutral return.
+6. The pending offer, if any, is untouched and its base view is restored after
+   either success or failure.
+7. Each owner contributes content-free phase timings under the existing turn
+   ID. The pending service emits one JSON timeline when a turn is answered or
+   explicitly abandoned.
+
+The root direct flow does not call raw movement tools, create a pending offer,
+or add another device transport. Its descendant subagent completions may enter
+the normal background-offer path independently.
+
+Extract completed timelines from production logs with:
+
+```sh
+docker logs xc-body-pending 2>&1 |
+  jq -R 'fromjson? | select(.event == "xc_body.direct_turn")'
+```
 
 ### Firmware OTA
 
@@ -161,7 +196,9 @@ engine, or cross-process pending state.
 - Internet traffic uses TLS. Control routes also require bearer authentication.
 - Credentials, Wi-Fi settings, personal assets, and tokens stay out of Git.
 - Raw gateway ports and `/capture` remain private.
-- Camera and microphone input are not enabled for the current product path.
+- Camera and always-on microphone input are not enabled. Milestone 4 permits
+  only deliberate, bounded tap-to-talk capture through the direct-conversation
+  path above.
 - OpenClaw chooses meaning; deterministic code chooses physical execution.
 - Servo commands remain within reviewed yaw and pitch limits.
 - Generated hashes and previews are build evidence, not physical acceptance.

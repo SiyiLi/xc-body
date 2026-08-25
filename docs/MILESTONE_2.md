@@ -27,7 +27,5 @@ Milestone 2 is complete. OpenClaw selected an offer and supplied the spoken
 Chinese message. The robot knocked once, a physical head stroke acknowledged
 the offer, playback completed, and the speech was judged clear.
 
-The accepted run used firmware `2.2.6` and OpenClaw `2026.7.1-2`.
-
 This acceptance covers the running-process behavior above. It does not claim
 restart persistence or cross-session recovery.

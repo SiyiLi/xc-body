@@ -2,8 +2,8 @@
 
 This directory contains the XC Body firmware for the M5Stack StackChan
 K151/CoreS3. The ESP-IDF project is `xc_body`; its StackChan app identity is
-`xc_body_stackchan`. The current firmware version is `0.1.11`, and the app image
-is `build/xc_body.bin`.
+`xc_body_stackchan`. The source version is `PROJECT_VER` in `CMakeLists.txt`,
+and the app image is `build/xc_body.bin`.
 
 ## Source Provenance
 
@@ -33,7 +33,7 @@ The build produces:
 
 - `build/xc_body.bin` for the app partition;
 - `build/merged-binary.bin` for full USB recovery; and
-- `releases/v0.1.11_stackchan.zip`.
+- `releases/v<PROJECT_VER>_stackchan.zip`.
 
 ## Flash Layout
 
@@ -61,12 +61,9 @@ image starts at `0x0` and is recovery-only, not routine iteration.
 Firmware flashing always requires separate explicit permission. Detailed
 project rules are in [`../AGENTS.md`](../AGENTS.md).
 
-The no-USB dual-slot OTA path is physically accepted through consecutive
-updates from `0.1.4` to `0.1.5` and from `0.1.5` to `0.1.6`. Both images
-authenticated with the gateway, restored the reviewed avatar, and survived a
-validation reboot. The robot now runs `0.1.11`; the last fully recorded image
-was `0.1.6` on `ota_0`, with app SHA-256
-`3265a8e84bd306c7f705792ed1370e352fd6cca0f3da140f8765588fa9a5e2b9`.
+The no-USB dual-slot OTA path has historical physical acceptance across
+consecutive updates. The active Milestone 4 candidate still requires physical
+acceptance.
 
 After a bootloader rollback, firmware disables automatic boot OTA until it is
 re-enabled through USB or the configuration screen. Configuration mode uses

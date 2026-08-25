@@ -22,6 +22,11 @@ protected:
     lv_draw_buf_t draw_buf_;
     lv_obj_t* top_bar_ = nullptr;
     lv_obj_t* status_bar_ = nullptr;
+    lv_obj_t* right_icons_ = nullptr;
+    lv_obj_t* appliance_bar_ = nullptr;
+    lv_obj_t* appliance_left_bar_ = nullptr;
+    lv_obj_t* appliance_right_bar_ = nullptr;
+    lv_obj_t* recording_label_ = nullptr;
     lv_obj_t* content_ = nullptr;
     lv_obj_t* container_ = nullptr;
     lv_obj_t* side_bar_ = nullptr;
@@ -37,6 +42,13 @@ protected:
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
 
     void InitializeLcdThemes();
+    void CreateApplianceStatusWidgetsLocked(
+        lv_obj_t* screen,
+        const lv_font_t* icon_font,
+        lv_color_t background_color);
+    void ApplyApplianceStatusStyleLocked(bool enabled);
+    static void SetRecordingIconOpacity(void* object, int32_t opacity);
+    void StopRecordingIconPulseLocked();
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
@@ -53,6 +65,10 @@ public:
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
+    // Caller must already hold the display lock.
+    void PlaceBehindStatusBarLocked(lv_obj_t* object);
+    void SetApplianceStatusStyleLocked(bool enabled);
+    void SetRecordingIndicatorLocked(bool visible);
     
     // Set whether to hide chat messages/subtitles
     void SetHideSubtitle(bool hide);

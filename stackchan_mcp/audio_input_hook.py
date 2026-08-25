@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import Sequence
+import time
+from collections.abc import Mapping, Sequence
 
 import aiohttp
 
@@ -64,6 +65,13 @@ SAMPLES_PER_FRAME = DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000  # 960
 #: the underlying stream is 16 kHz mono (RFC 7845 §4.1.7). So one 60 ms frame
 #: advances the granule by 48000 * 60/1000 = 2880.
 GRANULE_PER_FRAME = 48000 * DEVICE_FRAME_DURATION_MS // 1000  # 2880
+
+_CAPTURE_METRIC_HEADERS = {
+    "capture_started_uptime_us": "X-XC-Device-Capture-Start-Us",
+    "capture_stopped_uptime_us": "X-XC-Device-Capture-Stop-Us",
+    "gateway_capture_started_ms": "X-XC-Gateway-Capture-Start-Ms",
+    "gateway_capture_stopped_ms": "X-XC-Gateway-Capture-Stop-Ms",
+}
 
 
 # --- Ogg/Opus container ------------------------------------------------------
@@ -354,6 +362,7 @@ async def push_audio_capture(
     frames: Sequence[bytes],
     *,
     session_id: str = "",
+    capture_metrics: Mapping[str, int] | None = None,
     timeout_s: float = 10.0,
 ) -> bool:
     """POST a device-driven listen capture to the configured hook URL.
@@ -369,6 +378,7 @@ async def push_audio_capture(
         session_id: ESP32 connection session ID, forwarded to the
             receiver via the ``X-StackChan-Session`` header so the
             receiver can correlate captures with vessel pairing.
+        capture_metrics: Content-free device and gateway capture timings.
         timeout_s: Total HTTP timeout (default 10s; an Ogg blob for a
             5-minute capture is well under 1 MB so this is generous).
 
@@ -395,7 +405,14 @@ async def push_audio_capture(
     headers = {
         "Content-Type": "audio/ogg",
         "X-StackChan-Session": session_id,
+        "X-XC-Gateway-Upload-Started-Ms": str(
+            time.time_ns() // 1_000_000
+        ),
     }
+    for name, header in _CAPTURE_METRIC_HEADERS.items():
+        value = (capture_metrics or {}).get(name)
+        if isinstance(value, int) and value >= 0:
+            headers[header] = str(value)
     if token:
         headers["Authorization"] = f"Bearer {token}"
 

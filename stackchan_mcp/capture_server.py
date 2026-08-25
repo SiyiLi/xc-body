@@ -597,7 +597,10 @@ async def _read_prepared_opus_body(request: web.Request) -> bytes:
     return bytes(payload)
 
 
-async def _play_prepared_opus(gateway: "Gateway", packets: list[bytes]) -> None:
+async def _play_prepared_opus(
+    gateway: "Gateway",
+    packets: list[bytes],
+) -> dict[str, int]:
     """Play one validated packet sequence on the shared device audio path."""
 
     esp32 = gateway.esp32
@@ -610,6 +613,7 @@ async def _play_prepared_opus(gateway: "Gateway", packets: list[bytes]) -> None:
         if connection is None or not connection.connected:
             raise ConnectionError("No ESP32 device connected")
         started = False
+        playback_started_ms = 0
         try:
             await connection.send_tts_state(
                 "prepare",
@@ -620,6 +624,7 @@ async def _play_prepared_opus(gateway: "Gateway", packets: list[bytes]) -> None:
             for packet in packets:
                 await connection.send_audio_frame(packet)
             await connection.send_tts_state("play")
+            playback_started_ms = time.time_ns() // 1_000_000
             await asyncio.sleep(
                 len(packets) * PREPARED_OPUS_FRAME_DURATION_MS / 1000
             )
@@ -630,6 +635,10 @@ async def _play_prepared_opus(gateway: "Gateway", packets: list[bytes]) -> None:
         finally:
             if started and connection.connected:
                 await connection.send_tts_state("stop")
+        return {
+            "gateway_playback_started_ms": playback_started_ms,
+            "gateway_playback_completed_ms": time.time_ns() // 1_000_000,
+        }
 
 
 async def handle_prepared_opus(request: web.Request) -> web.Response:
@@ -675,7 +684,7 @@ async def handle_prepared_opus(request: web.Request) -> web.Response:
             )
             return web.json_response(cached)
         try:
-            await _play_prepared_opus(gateway, packets)
+            playback_metrics = await _play_prepared_opus(gateway, packets)
         except ConnectionError as exc:
             return web.json_response(
                 {"error": f"Device unavailable: {exc}"},
@@ -688,6 +697,7 @@ async def handle_prepared_opus(request: web.Request) -> web.Response:
             "ok": True,
             "packet_count": len(packets),
             "duration_ms": len(packets) * PREPARED_OPUS_FRAME_DURATION_MS,
+            **playback_metrics,
         }
         results[message_id] = result
         while len(results) > PREPARED_OPUS_MAX_RECORDED_IDS:

@@ -39,7 +39,7 @@ test("registers only completion hooks and retrieves bounded child messages", asy
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: '{"decision":"offer","summary":"子任务已经完成。"}',
+        text: "子任务已经完成。",
       };
     },
     async submit(payload) {
@@ -77,7 +77,7 @@ test("successful agent turn uses its final assistant result", async () => {
     async complete(params) {
       completedResults.push(params.messages[0]?.content ?? "");
       return {
-        text: '{"decision":"offer","summary":"当前工作已经完成。"}',
+        text: "当前工作已经完成。",
       };
     },
     async submit(payload) {
@@ -88,14 +88,16 @@ test("successful agent turn uses its final assistant result", async () => {
   const fixture = fakeApi([]);
   registerCompletionHooks(fixture.api, integration);
 
-  await fixture.hooks.get("agent_end")?.({
-    success: true,
-    runId: "agent-run",
-    messages: [
-      { role: "user", content: "ignore user text" },
-      { role: "assistant", content: "meaningful completed result" },
-    ],
-  });
+  await fixture.hooks.get("agent_end")?.(
+    {
+      success: true,
+      messages: [
+        { role: "user", content: "ignore user text" },
+        { role: "assistant", content: "meaningful completed result" },
+      ],
+    },
+    { runId: "agent-run" },
+  );
 
   assert.deepEqual(completedResults, ["meaningful completed result"]);
   assert.equal(submitted.length, 1);
@@ -106,7 +108,9 @@ test("same run is deduplicated across completion hooks", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       completions += 1;
-      return { text: '{"decision":"skip","summary":""}' };
+      return {
+        text: "SKIP",
+      };
     },
     async submit() {
       return true;
@@ -117,11 +121,13 @@ test("same run is deduplicated across completion hooks", async () => {
   ]);
   registerCompletionHooks(fixture.api, integration);
 
-  await fixture.hooks.get("agent_end")?.({
-    success: true,
-    runId: "shared-run",
-    messages: [{ role: "assistant", content: "completed result" }],
-  });
+  await fixture.hooks.get("agent_end")?.(
+    {
+      success: true,
+      messages: [{ role: "assistant", content: "completed result" }],
+    },
+    { runId: "shared-run" },
+  );
   await fixture.hooks.get("subagent_ended")?.({
     targetKind: "subagent",
     outcome: "ok",
@@ -144,7 +150,7 @@ test("successful cron completion uses its typed summary and run ID", async () =>
     async complete(params) {
       assert.equal(params.messages[0]?.content, "cron completed result");
       return {
-        text: '{"decision":"offer","summary":"定时任务已经完成。"}',
+        text: "定时任务已经完成。",
       };
     },
     async submit(payload) {
@@ -170,7 +176,7 @@ test("scheduled cron completion uses its job and start time", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: '{"decision":"offer","summary":"定时任务已经完成。"}',
+        text: "定时任务已经完成。",
       };
     },
     async submit(payload) {
@@ -199,7 +205,9 @@ test("unsuccessful and incomplete events fail closed", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       completions += 1;
-      return { text: '{"decision":"skip","summary":""}' };
+      return {
+        text: "SKIP",
+      };
     },
     async submit() {
       return true;
@@ -214,15 +222,20 @@ test("unsuccessful and incomplete events fail closed", async () => {
     runId: "failed-child",
     targetSessionKey: "agent:main:subagent:failed",
   });
-  await fixture.hooks.get("agent_end")?.({
-    success: false,
-    runId: "failed-agent",
-    messages: [{ role: "assistant", content: "failed" }],
-  });
-  await fixture.hooks.get("agent_end")?.({
-    success: true,
-    messages: [{ role: "assistant", content: "missing run id" }],
-  });
+  await fixture.hooks.get("agent_end")?.(
+    {
+      success: false,
+      messages: [{ role: "assistant", content: "failed" }],
+    },
+    { runId: "failed-agent" },
+  );
+  await fixture.hooks.get("agent_end")?.(
+    {
+      success: true,
+      messages: [{ role: "assistant", content: "missing run id" }],
+    },
+    {},
+  );
   await fixture.hooks.get("cron_changed")?.({
     action: "finished",
     status: "error",

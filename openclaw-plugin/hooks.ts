@@ -13,13 +13,20 @@ export function registerCompletionHooks(
 ): void {
   api.on(
     "agent_end",
-    async (event) => {
-      if (!event.success || !event.runId) {
+    async (event, context) => {
+      const runId = event.runId || context.runId;
+      if (!event.success || !runId) {
+        return;
+      }
+      if (runId.startsWith("robot:")) {
+        api.logger.info(
+          `XC Body suppressed direct-turn offer: ${runId}`,
+        );
         return;
       }
       await integration.handle(
         "agent",
-        event.runId,
+        runId,
         extractCompletedResult(event.messages),
       );
     },

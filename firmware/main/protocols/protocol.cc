@@ -1,6 +1,7 @@
 #include "protocol.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #define TAG "Protocol"
 
@@ -57,6 +58,8 @@ void Protocol::SendWakeWordDetected(const std::string& wake_word) {
 void Protocol::SendStartListening(ListeningMode mode) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\"";
     message += ",\"type\":\"listen\",\"state\":\"start\"";
+    message += ",\"device_uptime_us\":" +
+        std::to_string(esp_timer_get_time());
     if (mode == kListeningModeRealtime) {
         message += ",\"mode\":\"realtime\"";
     } else if (mode == kListeningModeAutoStop) {
@@ -69,7 +72,16 @@ void Protocol::SendStartListening(ListeningMode mode) {
 }
 
 void Protocol::SendStopListening() {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+    std::string message = "{\"session_id\":\"" + session_id_ +
+        "\",\"type\":\"listen\",\"state\":\"stop\"";
+    message += ",\"device_uptime_us\":" +
+        std::to_string(esp_timer_get_time());
+    message += "}";
+    SendText(message);
+}
+
+void Protocol::SendCancelListening() {
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"cancel\"}";
     SendText(message);
 }
 

@@ -353,6 +353,39 @@ std::string WifiBoard::GetDeviceStatusJson() {
     cJSON_AddStringToObject(network, "signal", signal);
     cJSON_AddItemToObject(root, "network", network);
 
+    auto ota_status = Ota::GetDownloadDiagnostics();
+    auto ota_download = cJSON_CreateObject();
+    cJSON_AddStringToObject(
+        ota_download, "state", ota_status.state.c_str());
+    cJSON_AddStringToObject(
+        ota_download, "stage", ota_status.stage.c_str());
+    cJSON_AddNumberToObject(
+        ota_download, "progress", ota_status.progress);
+    cJSON_AddNumberToObject(
+        ota_download, "bytes_received", ota_status.bytes_received);
+    cJSON_AddNumberToObject(
+        ota_download, "expected_size", ota_status.expected_size);
+    if (ota_status.has_previous_interruption) {
+        auto previous = cJSON_CreateObject();
+        cJSON_AddStringToObject(
+            previous, "stage", ota_status.previous_stage.c_str());
+        cJSON_AddNumberToObject(
+            previous,
+            "bytes_received",
+            ota_status.previous_bytes_received);
+        cJSON_AddNumberToObject(
+            previous,
+            "expected_size",
+            ota_status.previous_expected_size);
+        cJSON_AddNumberToObject(
+            previous,
+            "reset_reason",
+            ota_status.previous_reset_reason);
+        cJSON_AddItemToObject(
+            ota_download, "previous_interruption", previous);
+    }
+    cJSON_AddItemToObject(root, "ota_download", ota_download);
+
     // Chip temperature
     float temp = 0.0f;
     if (board.GetTemperature(temp)) {

@@ -21,11 +21,43 @@
         "minLength": 1,
         "description": "XC Body downstream bearer token."
       },
+      "voiceUrl": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "description": "Authenticated XC Body direct-conversation endpoint."
+      },
+      "sessionKey": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Existing OpenClaw session used for robot-originated turns."
+      },
+      "telegramTarget": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Fixed Telegram target for transcript and answer delivery."
+      },
+      "speechModel": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Fast model used for shared spoken projection."
+      },
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "default": "main"
+      },
+      "pollMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 30000,
+        "default": 1000
+      },
       "timeoutMs": {
         "type": "integer",
         "minimum": 1000,
         "maximum": 180000,
-        "default": 120000
+        "default": 180000
       }
     }
   },
@@ -36,6 +68,24 @@
     "token": {
       "label": "Bearer token",
       "sensitive": true
+    },
+    "voiceUrl": {
+      "label": "Voice endpoint"
+    },
+    "sessionKey": {
+      "label": "OpenClaw session"
+    },
+    "telegramTarget": {
+      "label": "Telegram target"
+    },
+    "speechModel": {
+      "label": "Spoken-summary model"
+    },
+    "agentId": {
+      "label": "Agent ID"
+    },
+    "pollMs": {
+      "label": "Voice poll interval (ms)"
     },
     "timeoutMs": {
       "label": "Request timeout (ms)"
