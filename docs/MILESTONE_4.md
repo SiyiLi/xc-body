@@ -215,6 +215,8 @@ acceptance on the real robot.
   breaking authenticated control or wake behavior.
 - Network ambiguity causes neither duplicate agent turns nor duplicate robot
   playback.
+- A completed direct turn emits one content-free JSON timing record covering
+  capture, OpenClaw processing, speech preparation, attention, and playback.
 
 ## Explicitly Deferred
 

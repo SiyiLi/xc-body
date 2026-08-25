@@ -538,6 +538,7 @@ class ESP32Manager:
         # session (e.g., a fresh reconnection or an MCP-driven listen()
         # that already took the slot).
         self._device_driven_session_id: str | None = None
+        self._device_driven_capture_metrics: dict[str, int] = {}
         self._behavior_waiters: dict[
             tuple[str, str], asyncio.Future[dict[str, Any]]
         ] = {}
@@ -797,6 +798,20 @@ class ESP32Manager:
                         else:
                             start_recording(session_id)
                             self._device_driven_session_id = session_id
+                            self._device_driven_capture_metrics = {
+                                "gateway_capture_started_ms": (
+                                    time.time_ns() // 1_000_000
+                                )
+                            }
+                            device_uptime_us = data.get("device_uptime_us")
+                            if (
+                                isinstance(device_uptime_us, int)
+                                and not isinstance(device_uptime_us, bool)
+                                and device_uptime_us >= 0
+                            ):
+                                self._device_driven_capture_metrics[
+                                    "capture_started_uptime_us"
+                                ] = device_uptime_us
                             logger.info(
                                 "device-driven listen started: "
                                 "session=%s mode=%s",
@@ -806,6 +821,22 @@ class ESP32Manager:
                         if self._device_driven_session_id == session_id:
                             self._device_driven_session_id = None
                             frames = stop_recording()
+                            capture_metrics = dict(
+                                self._device_driven_capture_metrics
+                            )
+                            self._device_driven_capture_metrics = {}
+                            capture_metrics[
+                                "gateway_capture_stopped_ms"
+                            ] = time.time_ns() // 1_000_000
+                            device_uptime_us = data.get("device_uptime_us")
+                            if (
+                                isinstance(device_uptime_us, int)
+                                and not isinstance(device_uptime_us, bool)
+                                and device_uptime_us >= 0
+                            ):
+                                capture_metrics[
+                                    "capture_stopped_uptime_us"
+                                ] = device_uptime_us
                             logger.info(
                                 "device-driven listen stopped: "
                                 "session=%s frames=%d",
@@ -822,11 +853,13 @@ class ESP32Manager:
                                     self._audio_hook_token,
                                     frames,
                                     session_id=session_id,
+                                    capture_metrics=capture_metrics,
                                 )
                             )
                     elif state == "cancel":
                         if self._device_driven_session_id == session_id:
                             self._device_driven_session_id = None
+                            self._device_driven_capture_metrics = {}
                             frames = stop_recording()
                             logger.info(
                                 "device-driven listen cancelled: "
@@ -888,6 +921,7 @@ class ESP32Manager:
                 is_recording_session(session_id)
             ):
                 self._device_driven_session_id = None
+                self._device_driven_capture_metrics = {}
                 discarded = stop_recording()
                 if discarded:
                     logger.warning(
@@ -900,6 +934,7 @@ class ESP32Manager:
                 # disagrees — clear our local flag without tearing down
                 # the slot, then keep going.
                 self._device_driven_session_id = None
+                self._device_driven_capture_metrics = {}
             connection.disconnect()
             self._fail_behavior_waiters(session_id)
             async with self._lock:

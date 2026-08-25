@@ -184,7 +184,11 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_direct_tell_reuses_firmware_attention_behavior(self, urlopen):
         response = Mock()
-        response.read.return_value = b'{"ok": true}'
+        response.read.return_value = (
+            b'{"ok":true,"duration_ms":420,'
+            b'"gateway_playback_started_ms":1000,'
+            b'"gateway_playback_completed_ms":1420}'
+        )
         urlopen.return_value.__enter__.return_value = response
         caller = RecordingCaller()
         body = ready_body(
@@ -192,7 +196,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             playback_url="http://127.0.0.1:8080/play",
         )
 
-        body.tell_direct("robot:1", b"audio")
+        metrics = body.tell_direct("robot:1", b"audio")
 
         self.assertEqual(
             caller.calls,
@@ -205,6 +209,9 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(urlopen.call_args.args[0].data, b"audio")
+        self.assertEqual(metrics["playback_audio_ms"], 420)
+        self.assertEqual(metrics["gateway_playback_started_ms"], 1000)
+        self.assertEqual(metrics["gateway_playback_completed_ms"], 1420)
 
     def test_base_view_cache_is_invalidated_for_replacement_session(self):
         caller = RecordingCaller()

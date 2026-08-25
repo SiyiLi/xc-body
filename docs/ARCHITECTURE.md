@@ -120,9 +120,19 @@ The knock never receives prepared audio. No text-to-`say` fallback exists.
    reports physical settle and neutral return.
 6. The pending offer, if any, is untouched and its base view is restored after
    either success or failure.
+7. Each owner contributes content-free phase timings under the existing turn
+   ID. The pending service emits one JSON timeline when a turn is answered or
+   explicitly abandoned.
 
 The direct flow does not call raw movement tools, create a pending offer, or
 add another device transport.
+
+Extract completed timelines from production logs with:
+
+```sh
+docker logs xc-body-pending 2>&1 |
+  jq -R 'fromjson? | select(.event == "xc_body.direct_turn")'
+```
 
 ### Firmware OTA
 

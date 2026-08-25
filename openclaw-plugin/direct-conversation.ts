@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
@@ -25,11 +26,18 @@ export type DirectConversationConfig = {
 type Capture = {
   turn_id: string;
   audio_base64: string;
+  metrics?: Record<string, number>;
 };
 
 type DirectAnswer = {
   text: string;
   delivered: boolean;
+};
+
+type DirectTurnMetrics = {
+  version: 1;
+  values: Record<string, number>;
+  failed_stage?: string;
 };
 
 const MAX_DIRECT_RUN_IDS = 64;
@@ -48,6 +56,21 @@ export async function prepareDirectAnswerSpeech(
 
 function endpoint(base: string, suffix: string): string {
   return new URL(suffix, base).toString();
+}
+
+async function measure<T>(
+  metrics: DirectTurnMetrics,
+  name: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await operation();
+  } finally {
+    metrics.values[`plugin_${name}_ms`] = Math.round(
+      performance.now() - started,
+    );
+  }
 }
 
 async function requestJson(
@@ -163,7 +186,11 @@ export class DirectConversationService {
       capture === null ||
       Array.isArray(capture) ||
       typeof (capture as Record<string, unknown>).turn_id !== "string" ||
-      typeof (capture as Record<string, unknown>).audio_base64 !== "string"
+      typeof (capture as Record<string, unknown>).audio_base64 !== "string" ||
+      ("metrics" in capture &&
+        (typeof (capture as Record<string, unknown>).metrics !== "object" ||
+          (capture as Record<string, unknown>).metrics === null ||
+          Array.isArray((capture as Record<string, unknown>).metrics)))
     ) {
       throw new Error("XC Body voice capture is invalid");
     }
@@ -173,28 +200,52 @@ export class DirectConversationService {
   private async handle(capture: Capture): Promise<void> {
     const directory = await mkdtemp(join(tmpdir(), "xc-body-voice-"));
     const audioPath = join(directory, "capture.ogg");
+    const metrics: DirectTurnMetrics = {
+      version: 1,
+      values: { ...(capture.metrics ?? {}) },
+    };
+    const started = performance.now();
+    let stage = "audio_decode";
     try {
-      await writeFile(audioPath, Buffer.from(capture.audio_base64, "base64"));
-      const transcription = await this.api.runtime.mediaUnderstanding
-        .transcribeAudioFile({
+      await measure(metrics, stage, () =>
+        writeFile(audioPath, Buffer.from(capture.audio_base64, "base64")),
+      );
+      stage = "transcription";
+      const transcription = await measure(metrics, stage, () =>
+        this.api.runtime.mediaUnderstanding.transcribeAudioFile({
           filePath: audioPath,
           cfg: this.api.config,
           mime: "audio/ogg",
-        });
+        }),
+      );
       const transcript = transcription.text?.trim();
       if (!transcript) {
         throw new Error("XC Body voice transcription was empty");
       }
-      await this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`);
-      const answer = await this.runAgent(capture.turn_id, transcript);
-      if (!answer.delivered) {
-        await this.sendTelegram(answer.text);
-      }
-      const speech = await prepareDirectAnswerSpeech(
-        this.config.complete,
-        answer.text,
-        this.config.speechModel,
+      stage = "question_delivery";
+      await measure(metrics, stage, () =>
+        this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
       );
+      stage = "agent";
+      const answer = await measure(metrics, stage, () =>
+        this.runAgent(capture.turn_id, transcript),
+      );
+      if (!answer.delivered) {
+        stage = "answer_delivery";
+        await measure(metrics, stage, () => this.sendTelegram(answer.text));
+      }
+      stage = "projection";
+      const speech = await measure(metrics, stage, () =>
+        prepareDirectAnswerSpeech(
+          this.config.complete,
+          answer.text,
+          this.config.speechModel,
+        ),
+      );
+      metrics.values.plugin_total_before_answer_ms = Math.round(
+        performance.now() - started,
+      );
+      stage = "answer_post";
       await requestJson(
         endpoint(this.config.voiceUrl, "answer"),
         this.config.token,
@@ -204,19 +255,27 @@ export class DirectConversationService {
           body: JSON.stringify({
             turn_id: capture.turn_id,
             answer: speech,
+            metrics,
           }),
           signal: AbortSignal.timeout(this.config.timeoutMs),
         },
       );
     } catch (error) {
-      await this.abandon(capture.turn_id);
+      metrics.values.plugin_total_before_answer_ms = Math.round(
+        performance.now() - started,
+      );
+      metrics.failed_stage = stage;
+      await this.abandon(capture.turn_id, metrics);
       throw error;
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
   }
 
-  private async abandon(turnId: string): Promise<void> {
+  private async abandon(
+    turnId: string,
+    metrics: DirectTurnMetrics,
+  ): Promise<void> {
     try {
       await requestJson(
         endpoint(this.config.voiceUrl, "abandon"),
@@ -224,7 +283,7 @@ export class DirectConversationService {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ turn_id: turnId }),
+          body: JSON.stringify({ turn_id: turnId, metrics }),
           signal: AbortSignal.timeout(this.config.timeoutMs),
         },
       );

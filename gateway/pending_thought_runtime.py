@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import urllib.request
 from collections.abc import Callable, Mapping
 from threading import RLock
@@ -93,23 +94,52 @@ class StackChanThoughtBody:
             self._base_view = None
             self.set_base_view()
 
-    def tell_direct(self, turn_id: str, audio: bytes) -> None:
+    def tell_direct(
+        self,
+        turn_id: str,
+        audio: bytes,
+    ) -> dict[str, int]:
         """Run the firmware-owned attention behavior, then speak."""
 
         with self._operation_lock:
             self._require_ready()
             self._base_view = "avatar"
+            started = time.monotonic()
             self._call(
                 "perform_behavior",
                 {"behavior_id": turn_id, "kind": "attention"},
             )
-            self._play_audio_bytes(audio, turn_id)
+            attention_ms = round((time.monotonic() - started) * 1000)
+            started = time.monotonic()
+            playback = self._play_audio_bytes(audio, turn_id)
+            playback_request_ms = round(
+                (time.monotonic() - started) * 1000
+            )
             self._base_view = None
+            metrics = {
+                "attention_ms": attention_ms,
+                "playback_request_ms": playback_request_ms,
+            }
+            audio_duration = playback.get("duration_ms")
+            if isinstance(audio_duration, int) and audio_duration >= 0:
+                metrics["playback_audio_ms"] = audio_duration
+            for name in (
+                "gateway_playback_started_ms",
+                "gateway_playback_completed_ms",
+            ):
+                value = playback.get(name)
+                if isinstance(value, int) and value >= 0:
+                    metrics[name] = value
+            return metrics
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
 
-    def _play_audio_bytes(self, payload: bytes, thought_id: str) -> None:
+    def _play_audio_bytes(
+        self,
+        payload: bytes,
+        thought_id: str,
+    ) -> Mapping[str, object]:
         if not self._playback_url:
             raise PendingThoughtRuntimeError("audio playback URL is not configured")
         request = urllib.request.Request(
@@ -131,6 +161,7 @@ class StackChanThoughtBody:
             raise PendingThoughtRuntimeError(
                 f"play audio: {result.get('error', 'playback failed')}"
             )
+        return result
 
     def _require_ready(self) -> None:
         if not self.is_ready():
@@ -226,13 +257,21 @@ class PendingThoughtRuntime:
             await asyncio.to_thread(self.body.set_base_view)
         return pending_id
 
-    async def tell_direct(self, turn_id: str, audio: bytes) -> None:
+    async def tell_direct(
+        self,
+        turn_id: str,
+        audio: bytes,
+    ) -> dict[str, int]:
         """Serialize a direct answer against pending-offer body operations."""
 
         if self.machine is None or self.body is None:
             raise PendingThoughtRuntimeError("runtime session is not initialized")
         try:
-            await asyncio.to_thread(self.body.tell_direct, turn_id, audio)
+            return await asyncio.to_thread(
+                self.body.tell_direct,
+                turn_id,
+                audio,
+            )
         finally:
             await asyncio.to_thread(self.body.restore_base_view)
 
