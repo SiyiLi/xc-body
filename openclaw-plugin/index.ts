@@ -27,13 +27,12 @@ export default definePluginEntry({
       submit: (payload) => submitSummary(config, payload),
       model: config.speechModel,
     });
-    let directService: DirectConversationService | undefined;
     if (
       config.voiceUrl &&
       config.sessionKey &&
       config.telegramTarget
     ) {
-      directService = new DirectConversationService(api, {
+      const directService = new DirectConversationService(api, {
         voiceUrl: config.voiceUrl,
         token: config.token,
         sessionKey: config.sessionKey,
@@ -47,26 +46,13 @@ export default definePluginEntry({
       api.registerService({
         id: "xc-body-direct-conversation",
         start() {
-          directService?.start();
+          directService.start();
         },
         async stop() {
-          await directService?.stop();
+          await directService.stop();
         },
       });
     }
-    registerCompletionHooks(
-      api,
-      integration,
-      directService
-        ? {
-            isDirectRun: (runId) => directService.isDirectRun(runId),
-            observeSubagent: (requester, child, runId) => {
-              directService.observeSubagent(requester, child, runId);
-            },
-            isDirectSubagent: (runId, sessionKey) =>
-              directService.isDirectSubagent(runId, sessionKey),
-          }
-        : undefined,
-    );
+    registerCompletionHooks(api, integration);
   },
 });

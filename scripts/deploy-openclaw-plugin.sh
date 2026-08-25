@@ -9,7 +9,7 @@ SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
 VOICE_URL=https://43.143.37.91/xc-body/voice/v1/
 SESSION_KEY="${XC_BODY_OPENCLAW_SESSION_KEY:-}"
 TELEGRAM_TARGET="${XC_BODY_TELEGRAM_TARGET:-}"
-SPEECH_MODEL="${XC_BODY_SPEECH_MODEL:-inference-tc-nvda/cn/tc/qwen3.8-27b-fp8-dflash-sglang}"
+SPEECH_MODEL="${XC_BODY_SPEECH_MODEL:-inference-nvidia/gcp/google/gemini-3.7-flash}"
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
   -i "$IDENTITY"
@@ -98,7 +98,7 @@ print(json.dumps(
         "sessionKey": session_key,
         "telegramTarget": telegram_target,
         "speechModel": speech_model,
-        "timeoutMs": 120000,
+        "timeoutMs": 180000,
     },
     separators=(",", ":"),
 ))
@@ -163,7 +163,6 @@ required_hooks = {
     "agent_end",
     "cron_changed",
     "subagent_ended",
-    "subagent_spawned",
 }
 if not required_hooks.issubset(hooks):
     raise SystemExit("XC Body plugin hooks are incomplete")

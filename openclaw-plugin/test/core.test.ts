@@ -31,12 +31,7 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
     async complete(params) {
       completions += 1;
       assert.equal(params.model, "fast/summarizer");
-      return {
-        text: JSON.stringify({
-          decision: "offer",
-          speech: "你的私人医疗报告已经整理完成。",
-        }),
-      };
+      return { text: "你的私人医疗报告已经整理完成。" };
     },
     async submit(payload) {
       submitted.push(payload);
@@ -71,7 +66,7 @@ test("speech-friendly offer preserves its original language", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: '{"decision":"offer","speech":"构建已经完成。"}',
+        text: "构建已经完成。",
       };
     },
     async submit(payload) {
@@ -111,7 +106,7 @@ test("remote rejection stores only an operational outcome", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: JSON.stringify({ decision: "offer", speech: privateSummary }),
+        text: privateSummary,
       };
     },
     async submit() {

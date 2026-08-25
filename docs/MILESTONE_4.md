@@ -61,9 +61,12 @@ A direct question never knocks, creates a pending offer, waits for head touch,
 or requests a second confirmation. Its attention movement means "the answer is
 ready; listen now," not "permission is required."
 
-Robot-originated agent runs and their descendant subagent runs are explicitly
-marked and excluded from the completion-offer classifier. An answer already
-spoken must not become a new pending offer.
+The root robot-originated agent completion is excluded from the
+completion-offer classifier so its direct answer cannot become a duplicate
+pending offer. A descendant subagent completion remains eligible for the
+normal background-offer classifier. For a long-running request, this may offer
+meaningful progress while the root agent continues, and Louis chooses whether
+to hear it by touching the robot's head.
 
 A direct conversation does not consume or replace an unrelated pending offer.
 After the answer, the pending avatar is restored if that offer remains valid;
@@ -204,7 +207,8 @@ acceptance on the real robot.
 - XC Body performs one short attention movement after the answer is ready,
   waits until motion settles, and speaks one voice-friendly rendering without
   head-touch confirmation.
-- A direct answer never creates a pending offer.
+- A root direct answer never creates a pending offer; meaningful descendant
+  subagent completions may offer optional progress.
 - An unrelated pending offer survives a direct conversation and regains its
   avatar afterward.
 - OpenClaw offers retain `knock -> wait -> tell` behavior.

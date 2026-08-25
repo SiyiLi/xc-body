@@ -106,6 +106,11 @@ It has no network listener and never returns the saved token.
 
 The knock never receives prepared audio. No text-to-`say` fallback exists.
 
+A root robot-originated completion is ineligible because its answer follows
+the direct path. A descendant subagent completion remains eligible, allowing a
+long-running direct request to offer optional progress without delaying its
+eventual direct answer.
+
 ### Direct conversation
 
 1. Existing firmware touch and device-driven capture submit one bounded Opus
@@ -124,8 +129,9 @@ The knock never receives prepared audio. No text-to-`say` fallback exists.
    ID. The pending service emits one JSON timeline when a turn is answered or
    explicitly abandoned.
 
-The direct flow does not call raw movement tools, create a pending offer, or
-add another device transport.
+The root direct flow does not call raw movement tools, create a pending offer,
+or add another device transport. Its descendant subagent completions may enter
+the normal background-offer path independently.
 
 Extract completed timelines from production logs with:
 

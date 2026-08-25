@@ -107,7 +107,7 @@ export function parsePluginConfig(
   const speechModel = value.speechModel;
   const agentId = value.agentId ?? "main";
   const pollMs = value.pollMs ?? 1_000;
-  const timeoutMs = value.timeoutMs ?? 120_000;
+  const timeoutMs = value.timeoutMs ?? 180_000;
   if (
     typeof summaryUrl !== "string" ||
     typeof token !== "string" ||

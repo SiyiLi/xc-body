@@ -40,9 +40,7 @@ test("formatted answers use one shared projection with complete input", async ()
     async (params) => {
       assert.equal(params.model, "fast/summarizer");
       assert.equal(params.messages[0]?.content, answer);
-      return {
-        text: '{"decision":"offer","speech":"上海今天有雨。"}',
-      };
+      return { text: "上海今天有雨。" };
     },
     answer,
     "fast/summarizer",
@@ -51,14 +49,14 @@ test("formatted answers use one shared projection with complete input", async ()
   assert.equal(speech, "上海今天有雨。");
 });
 
-test("direct caller speaks an error after both projection attempts fail", async () => {
+test("direct caller speaks an error after invalid projection output", async () => {
   let calls = 0;
   const speech = await prepareDirectAnswerSpeech(async () => {
     calls += 1;
-    return { text: "not JSON" };
+    return { text: "not suitable for speech" };
   }, "```text\nnot suitable for speech\n```");
 
-  assert.equal(speech, "抱歉，在回答总结的时候出了点问题。");
+  assert.equal(speech, "抱歉，在生成最终答案时出了点问题。");
   assert.equal(calls, 2);
 });
 
@@ -67,37 +65,31 @@ test("projection retry can recover from invalid output", async () => {
   const projection = await projectSpokenText(async () => {
     calls += 1;
     return calls === 1
-      ? { text: "not JSON" }
-      : {
-          text: '{"decision":"skip","speech":"这项完成结果不值得主动打扰用户。"}',
-        };
+      ? { text: "not suitable for speech" }
+      : { text: "SKIP" };
   }, "completed result");
 
   assert.deepEqual(projection, {
     decision: "skip",
-    speech: "这项完成结果不值得主动打扰用户。",
+    speech: "",
   });
   assert.equal(calls, 2);
 });
 
-test("projection output requires exact fields and bounded Chinese speech", () => {
+test("background projection accepts SKIP or bounded Chinese speech", () => {
   assert.deepEqual(
-    parseSpokenProjection(
-      '{"decision":"offer","speech":"任务已经完成。"}',
-    ),
+    parseSpokenProjection("任务已经完成。"),
     { decision: "offer", speech: "任务已经完成。" },
   );
+  assert.deepEqual(
+    parseSpokenProjection("SKIP"),
+    { decision: "skip", speech: "" },
+  );
   for (const invalid of [
-    '{"decision":"remember","speech":"记住"}',
-    '{"decision":"offer","speech":"English only"}',
-    JSON.stringify({
-      decision: "offer",
-      speech: Array.from({ length: 201 }, () => "完成").join(" "),
-    }),
-    JSON.stringify({
-      decision: "offer",
-      speech: `中${"a".repeat(1_000)}`,
-    }),
+    "skip",
+    "English only",
+    Array.from({ length: 201 }, () => "完成").join(" "),
+    `中${"a".repeat(1_000)}`,
   ]) {
     assert.equal(parseSpokenProjection(invalid), null);
   }

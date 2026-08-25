@@ -40,8 +40,7 @@ type DirectTurnMetrics = {
   failed_stage?: string;
 };
 
-const MAX_DIRECT_RUN_IDS = 64;
-const PROJECTION_FAILURE_SPEECH = "抱歉，在回答总结的时候出了点问题。";
+const PROJECTION_FAILURE_SPEECH = "抱歉，在生成最终答案时出了点问题。";
 
 export async function prepareDirectAnswerSpeech(
   complete: LlmCompleter,
@@ -101,9 +100,6 @@ export class DirectConversationService {
   private readonly config: DirectConversationConfig;
   private stopped = false;
   private loopPromise: Promise<void> | undefined;
-  private activeTurnId: string | undefined;
-  private readonly directRunIds = new Set<string>();
-  private readonly directSessionKeys = new Set<string>();
 
   constructor(api: OpenClawPluginApi, config: DirectConversationConfig) {
     this.api = api;
@@ -118,36 +114,6 @@ export class DirectConversationService {
   async stop(): Promise<void> {
     this.stopped = true;
     await this.loopPromise;
-  }
-
-  isDirectRun(runId: string): boolean {
-    return this.activeTurnId === runId || this.directRunIds.has(runId);
-  }
-
-  observeSubagent(
-    requesterSessionKey: string | undefined,
-    childSessionKey: string,
-    runId: string,
-  ): void {
-    const directRoot =
-      this.activeTurnId !== undefined &&
-      requesterSessionKey === this.config.sessionKey;
-    if (
-      !directRoot &&
-      (!requesterSessionKey ||
-        !this.directSessionKeys.has(requesterSessionKey))
-    ) {
-      return;
-    }
-    this.remember(this.directSessionKeys, childSessionKey);
-    this.remember(this.directRunIds, runId);
-  }
-
-  isDirectSubagent(runId: string, sessionKey: string): boolean {
-    return (
-      this.directRunIds.has(runId) ||
-      this.directSessionKeys.has(sessionKey)
-    );
   }
 
   private async loop(): Promise<void> {
@@ -326,66 +292,49 @@ export class DirectConversationService {
         if (!entry?.sessionId) {
           throw new Error("configured OpenClaw session is unavailable");
         }
-        this.activeTurnId = turnId;
-        this.remember(this.directRunIds, turnId);
-        try {
-          const result = await this.api.runtime.agent.runEmbeddedAgent({
+        const result = await this.api.runtime.agent.runEmbeddedAgent({
+          sessionId: entry.sessionId,
+          sessionKey: this.config.sessionKey,
+          sessionTarget: {
+            agentId: this.config.agentId,
             sessionId: entry.sessionId,
             sessionKey: this.config.sessionKey,
-            sessionTarget: {
-              agentId: this.config.agentId,
-              sessionId: entry.sessionId,
-              sessionKey: this.config.sessionKey,
-              storePath,
-            },
-            agentId: this.config.agentId,
-            runId: turnId,
-            workspaceDir: this.api.runtime.agent.resolveAgentWorkspaceDir(
-              this.api.config,
-              this.config.agentId,
-            ),
-            config: this.api.config,
-            prompt: transcript,
-            trigger: "user",
-            messageChannel: "telegram",
-            messageProvider: "telegram",
-            messageTo: this.config.telegramTarget,
-            currentMessagingTarget: this.config.telegramTarget,
-            senderIsOwner: true,
-            extraSystemPrompt: [
-              "This user turn was transcribed from XC Body.",
-              "Reply normally to Louis in the existing session.",
-              "Do not mention this transport unless it matters to the answer.",
-            ].join(" "),
-            timeoutMs: this.api.runtime.agent.resolveAgentTimeoutMs(
-              this.api.config,
-            ),
-            abortSignal,
-          });
-          const answer = result.meta.finalAssistantVisibleText;
-          if (!answer?.trim()) {
-            throw new Error("OpenClaw produced no visible direct answer");
-          }
-          return {
-            text: answer,
-            delivered:
-              result.didDeliverSourceReplyViaMessageTool === true,
-          };
-        } finally {
-          this.activeTurnId = undefined;
+            storePath,
+          },
+          agentId: this.config.agentId,
+          runId: turnId,
+          workspaceDir: this.api.runtime.agent.resolveAgentWorkspaceDir(
+            this.api.config,
+            this.config.agentId,
+          ),
+          config: this.api.config,
+          prompt: transcript,
+          trigger: "user",
+          messageChannel: "telegram",
+          messageProvider: "telegram",
+          messageTo: this.config.telegramTarget,
+          currentMessagingTarget: this.config.telegramTarget,
+          senderIsOwner: true,
+          extraSystemPrompt: [
+            "This user turn was transcribed from XC Body.",
+            "Reply normally to Louis in the existing session.",
+            "Do not mention this transport unless it matters to the answer.",
+          ].join(" "),
+          timeoutMs: this.api.runtime.agent.resolveAgentTimeoutMs(
+            this.api.config,
+          ),
+          abortSignal,
+        });
+        const answer = result.meta.finalAssistantVisibleText;
+        if (!answer?.trim()) {
+          throw new Error("OpenClaw produced no visible direct answer");
         }
+        return {
+          text: answer,
+          delivered:
+            result.didDeliverSourceReplyViaMessageTool === true,
+        };
       },
     );
-  }
-
-  private remember(target: Set<string>, value: string): void {
-    target.add(value);
-    while (target.size > MAX_DIRECT_RUN_IDS) {
-      const oldest = target.values().next().value;
-      if (typeof oldest !== "string") {
-        return;
-      }
-      target.delete(oldest);
-    }
   }
 }

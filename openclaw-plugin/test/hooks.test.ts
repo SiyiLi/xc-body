@@ -39,7 +39,7 @@ test("registers only completion hooks and retrieves bounded child messages", asy
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: '{"decision":"offer","speech":"子任务已经完成。"}',
+        text: "子任务已经完成。",
       };
     },
     async submit(payload) {
@@ -77,7 +77,7 @@ test("successful agent turn uses its final assistant result", async () => {
     async complete(params) {
       completedResults.push(params.messages[0]?.content ?? "");
       return {
-        text: '{"decision":"offer","speech":"当前工作已经完成。"}',
+        text: "当前工作已经完成。",
       };
     },
     async submit(payload) {
@@ -109,7 +109,7 @@ test("same run is deduplicated across completion hooks", async () => {
     async complete() {
       completions += 1;
       return {
-        text: '{"decision":"skip","speech":"这项结果不值得主动打扰。"}',
+        text: "SKIP",
       };
     },
     async submit() {
@@ -144,75 +144,13 @@ test("same run is deduplicated across completion hooks", async () => {
   assert.equal(completions, 1);
 });
 
-test("robot run and observed child completions bypass offer handling", async () => {
-  let completions = 0;
-  const integration = new CompletionIntegration({
-    async complete() {
-      completions += 1;
-      return { text: '{"decision":"offer","speech":"不应提交。"}' };
-    },
-    async submit() {
-      return true;
-    },
-  });
-  const fixture = fakeApi([
-    { role: "assistant", content: "direct child result" },
-  ]);
-  const directRuns = new Set(["robot:turn"]);
-  const directSessions = new Set<string>();
-  registerCompletionHooks(fixture.api, integration, {
-    isDirectRun: (runId) => directRuns.has(runId),
-    observeSubagent(requester, child, runId) {
-      if (requester === "agent:main:telegram:direct:1") {
-        directSessions.add(child);
-        directRuns.add(runId);
-      }
-    },
-    isDirectSubagent: (runId, sessionKey) =>
-      directRuns.has(runId) || directSessions.has(sessionKey),
-  });
-
-  assert.equal(fixture.hooks.has("subagent_spawned"), true);
-  await fixture.hooks.get("agent_end")?.(
-    {
-      success: true,
-      runId: "robot:turn",
-      messages: [{ role: "assistant", content: "direct answer" }],
-    },
-    { runId: "different-context-run" },
-  );
-  await fixture.hooks.get("subagent_spawned")?.(
-    {
-      childSessionKey: "agent:main:subagent:direct-child",
-      runId: "direct-child-run",
-    },
-    { requesterSessionKey: "agent:main:telegram:direct:1" },
-  );
-  await fixture.hooks.get("agent_end")?.(
-    {
-      success: true,
-      messages: [{ role: "assistant", content: "direct child result" }],
-    },
-    { runId: "direct-child-run" },
-  );
-  await fixture.hooks.get("subagent_ended")?.({
-    targetKind: "subagent",
-    outcome: "ok",
-    runId: "direct-child-run",
-    targetSessionKey: "agent:main:subagent:direct-child",
-  });
-
-  assert.equal(completions, 0);
-  assert.deepEqual(fixture.sessionCalls, []);
-});
-
 test("successful cron completion uses its typed summary and run ID", async () => {
   const submitted: unknown[] = [];
   const integration = new CompletionIntegration({
     async complete(params) {
       assert.equal(params.messages[0]?.content, "cron completed result");
       return {
-        text: '{"decision":"offer","speech":"定时任务已经完成。"}',
+        text: "定时任务已经完成。",
       };
     },
     async submit(payload) {
@@ -238,7 +176,7 @@ test("scheduled cron completion uses its job and start time", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: '{"decision":"offer","speech":"定时任务已经完成。"}',
+        text: "定时任务已经完成。",
       };
     },
     async submit(payload) {
@@ -268,7 +206,7 @@ test("unsuccessful and incomplete events fail closed", async () => {
     async complete() {
       completions += 1;
       return {
-        text: '{"decision":"skip","speech":"这项结果不值得主动打扰。"}',
+        text: "SKIP",
       };
     },
     async submit() {
