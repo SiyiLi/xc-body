@@ -15,7 +15,7 @@ from gateway.speech_preparation import prepare_speech
 
 _MAX_AUDIO_BYTES = 768 * 1024
 _CAPTURE_TTL_SECONDS = 120
-_ACTIVE_TURN_TTL_SECONDS = 10 * 60
+_ACTIVE_TURN_TTL_SECONDS = 48 * 60 * 60
 _MAX_METRIC_VALUE = 10**16
 _TURN_METRIC_NAMES = frozenset(
     (
@@ -162,13 +162,12 @@ class VoiceCapture:
 
 
 class VoiceMailbox:
-    """Keep at most one unclaimed capture and never redeliver a claim."""
+    """Keep at most one unclaimed capture; track claimed turns independently."""
 
     def __init__(self) -> None:
         self._capture: VoiceCapture | None = None
-        self._active_turn_id: str | None = None
-        self._active_expires_at: float | None = None
-        self._answer_started = False
+        self._active_turns: dict[str, float] = {}
+        self._answer_started_turn_id: str | None = None
         self._condition = asyncio.Condition()
 
     async def submit(
@@ -180,7 +179,7 @@ class VoiceMailbox:
             raise DirectConversationError("audio capture size is invalid")
         async with self._condition:
             self._expire_locked()
-            if self._capture is not None or self._active_turn_id is not None:
+            if self._capture is not None:
                 raise DirectConversationError("another robot turn is pending")
             turn_id = f"robot:{uuid.uuid4()}"
             self._capture = VoiceCapture(
@@ -204,20 +203,21 @@ class VoiceMailbox:
             capture = self._capture
             self._capture = None
             if capture is not None:
-                self._active_turn_id = capture.turn_id
                 capture.metrics["server_capture_claimed_ms"] = _unix_ms()
-                self._active_expires_at = (
+                self._active_turns[capture.turn_id] = (
                     time.monotonic() + _ACTIVE_TURN_TTL_SECONDS
                 )
-                self._answer_started = False
             return capture
 
     async def begin_answer(self, turn_id: str) -> bool:
         async with self._condition:
             self._expire_locked()
-            if self._active_turn_id != turn_id or self._answer_started:
+            if (
+                turn_id not in self._active_turns
+                or self._answer_started_turn_id is not None
+            ):
                 return False
-            self._answer_started = True
+            self._answer_started_turn_id = turn_id
             return True
 
     async def abandon(self, turn_id: str) -> bool:
@@ -225,18 +225,19 @@ class VoiceMailbox:
 
         async with self._condition:
             self._expire_locked()
-            if self._active_turn_id != turn_id or self._answer_started:
+            if (
+                turn_id not in self._active_turns
+                or self._answer_started_turn_id == turn_id
+            ):
                 return False
-            self._active_turn_id = None
-            self._active_expires_at = None
+            del self._active_turns[turn_id]
             return True
 
     async def finish_answer(self, turn_id: str) -> None:
         async with self._condition:
-            if self._active_turn_id == turn_id:
-                self._active_turn_id = None
-                self._active_expires_at = None
-                self._answer_started = False
+            self._active_turns.pop(turn_id, None)
+            if self._answer_started_turn_id == turn_id:
+                self._answer_started_turn_id = None
 
     def _expire_locked(self) -> None:
         now = time.monotonic()
@@ -245,13 +246,13 @@ class VoiceMailbox:
             and now - self._capture.created_at >= _CAPTURE_TTL_SECONDS
         ):
             self._capture = None
-        if (
-            self._active_expires_at is not None
-            and now >= self._active_expires_at
-        ):
-            self._active_turn_id = None
-            self._active_expires_at = None
-            self._answer_started = False
+        expired = [
+            tid for tid, exp in self._active_turns.items() if now >= exp
+        ]
+        for tid in expired:
+            del self._active_turns[tid]
+            if self._answer_started_turn_id == tid:
+                self._answer_started_turn_id = None
 
 
 def emit_direct_turn_metrics(report: Mapping[str, object]) -> None:

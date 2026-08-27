@@ -61,6 +61,11 @@ configuration that has not been inspected.
 - Think before coding and state assumptions.
 - Prefer the smallest implementation that passes the milestone acceptance
   tests.
+- Give each invariant one owner. Trust guarantees already enforced by upstream
+  or downstream modules; do not duplicate their validation, ordering, queues,
+  retries, or state.
+- Add a local guard only at an untrusted boundary or for a proven safety or
+  recovery failure. Do not guard every step speculatively.
 - Extend the existing `stackchan_mcp` hardware layer before inventing device
   protocols.
 - The agent chooses semantic intentions; deterministic code owns expressions,
