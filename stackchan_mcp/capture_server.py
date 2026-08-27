@@ -600,6 +600,7 @@ async def _read_prepared_opus_body(request: web.Request) -> bytes:
 async def _play_prepared_opus(
     gateway: "Gateway",
     packets: list[bytes],
+    transfer_id: str,
 ) -> dict[str, int]:
     """Play one validated packet sequence on the shared device audio path."""
 
@@ -618,12 +619,16 @@ async def _play_prepared_opus(
             await connection.send_tts_state(
                 "prepare",
                 packet_count=len(packets),
+                transfer_id=transfer_id,
             )
             started = True
             await asyncio.sleep(PREPARED_OPUS_START_DELAY_S)
             for packet in packets:
                 await connection.send_audio_frame(packet)
-            await connection.send_tts_state("play")
+            await connection.send_tts_state(
+                "play",
+                transfer_id=transfer_id,
+            )
             playback_started_ms = time.time_ns() // 1_000_000
             await asyncio.sleep(
                 len(packets) * PREPARED_OPUS_FRAME_DURATION_MS / 1000
@@ -634,7 +639,10 @@ async def _play_prepared_opus(
                 )
         finally:
             if started and connection.connected:
-                await connection.send_tts_state("stop")
+                await connection.send_tts_state(
+                    "stop",
+                    transfer_id=transfer_id,
+                )
         return {
             "gateway_playback_started_ms": playback_started_ms,
             "gateway_playback_completed_ms": time.time_ns() // 1_000_000,
@@ -684,7 +692,11 @@ async def handle_prepared_opus(request: web.Request) -> web.Response:
             )
             return web.json_response(cached)
         try:
-            playback_metrics = await _play_prepared_opus(gateway, packets)
+            playback_metrics = await _play_prepared_opus(
+                gateway,
+                packets,
+                message_id,
+            )
         except ConnectionError as exc:
             return web.json_response(
                 {"error": f"Device unavailable: {exc}"},

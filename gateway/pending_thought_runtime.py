@@ -131,9 +131,13 @@ class StackChanThoughtBody:
                 "attention_ms": attention_ms,
                 "playback_request_ms": playback_request_ms,
             }
-            audio_duration = playback.get("duration_ms")
-            if isinstance(audio_duration, int) and audio_duration >= 0:
-                metrics["playback_audio_ms"] = audio_duration
+            for source, target in (
+                ("duration_ms", "playback_audio_ms"),
+                ("packet_count", "prepared_audio_packets"),
+            ):
+                value = playback.get(source)
+                if isinstance(value, int) and value >= 0:
+                    metrics[target] = value
             for name in (
                 "gateway_playback_started_ms",
                 "gateway_playback_completed_ms",

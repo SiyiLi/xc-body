@@ -71,6 +71,13 @@ configuration that has not been inspected.
 - The agent chooses semantic intentions; deterministic code owns expressions,
   timing, LEDs, and servo motion.
 - Treat servo safety and reconnect recovery as correctness requirements.
+- Before committing a change set under `gateway/` or `stackchan_mcp/`, inspect
+  the currently deployed runtime with `scripts/deploy.sh --status` and bump the
+  gateway version in `pyproject.toml` from that deployed version. Never derive
+  the next version from checked-in source. Firmware versioning remains separate.
+- Before committing firmware runtime changes, inspect the published OTA
+  manifest and bump `PROJECT_VER` from its firmware version. Never derive the
+  next firmware version from checked-in source.
 - Keep secrets and personal assets out of Git.
 - Preserve unrelated user changes.
 - Do not modify `xc-buddy` from this repository.

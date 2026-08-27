@@ -185,7 +185,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
     def test_direct_tell_reuses_firmware_attention_behavior(self, urlopen):
         response = Mock()
         response.read.return_value = (
-            b'{"ok":true,"duration_ms":420,'
+            b'{"ok":true,"duration_ms":420,"packet_count":7,'
             b'"gateway_playback_started_ms":1000,'
             b'"gateway_playback_completed_ms":1420}'
         )
@@ -210,6 +210,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(urlopen.call_args.args[0].data, b"audio")
         self.assertEqual(metrics["playback_audio_ms"], 420)
+        self.assertEqual(metrics["prepared_audio_packets"], 7)
         self.assertEqual(metrics["gateway_playback_started_ms"], 1000)
         self.assertEqual(metrics["gateway_playback_completed_ms"], 1420)
 

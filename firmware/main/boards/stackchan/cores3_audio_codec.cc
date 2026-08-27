@@ -239,8 +239,15 @@ int CoreS3AudioCodec::Read(int16_t* dest, int samples) {
 }
 
 int CoreS3AudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    if (!output_enabled_) {
+        return 0;
+    }
+    esp_err_t result = esp_codec_dev_write(
+        output_dev_, (void*)data, samples * sizeof(int16_t));
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write speaker audio: %s",
+                 esp_err_to_name(result));
+        return 0;
     }
     return samples;
 }
