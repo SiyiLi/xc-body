@@ -98,6 +98,9 @@ Each command requires fresh permission for its own deployment surface. None of
 them flashes the robot. The OpenClaw plugin controller requires the exact
 existing conversation session and fixed Telegram target so it cannot silently
 install a completion-only configuration with direct conversation disabled.
+It builds and installs a fresh compiled runtime, then restarts OpenClaw and
+probes the loaded plugin. Source changes do not reach the installed plugin
+until the controller runs again.
 
 The optional Milestone 4 weather display uses QWeather current conditions.
 Keep these values in the VM's private `gateway.env`:

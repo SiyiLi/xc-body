@@ -23,7 +23,7 @@ die() {
   exit "${2:-1}"
 }
 
-for command in openclaw python3 ssh; do
+for command in npm openclaw python3 ssh; do
   command -v "$command" >/dev/null 2>&1 \
     || die "required command not found: $command" 64
 done
@@ -55,15 +55,13 @@ configured_paths=$(
   openclaw config get plugins.load.paths --json 2>/dev/null \
     || printf '[]'
 )
-configured_paths=$(python3 - "$plugin_path" "$configured_paths" <<'PY'
+configured_paths=$(python3 - "$configured_paths" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-selected = Path(sys.argv[1]).resolve()
-paths = json.loads(sys.argv[2])
 retained = []
-for raw_path in paths:
+for raw_path in json.loads(sys.argv[1]):
     candidate = Path(raw_path).expanduser().resolve()
     try:
         manifest = json.loads(
@@ -73,13 +71,13 @@ for raw_path in paths:
         manifest = {}
     if manifest.get("id") != "xc-body-native":
         retained.append(raw_path)
-retained.append(str(selected))
 print(json.dumps(retained, separators=(",", ":")))
 PY
 )
 openclaw config set plugins.load.paths \
   "$configured_paths" --strict-json >/dev/null
-openclaw plugins install --link "$plugin_path" >/dev/null
+npm run build --prefix "$plugin_path" >/dev/null
+openclaw plugins install --force "$plugin_path" >/dev/null
 unset configured_paths plugin_path
 config=$(python3 - \
   "$token" "$SUMMARY_URL" "$VOICE_URL" "$SESSION_KEY" \

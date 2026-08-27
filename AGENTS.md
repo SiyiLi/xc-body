@@ -78,6 +78,10 @@ configuration that has not been inspected.
 - Before committing firmware runtime changes, inspect the published OTA
   manifest and bump `PROJECT_VER` from its firmware version. Never derive the
   next firmware version from checked-in source.
+- Keep every first-party release on the same major/minor version line across
+  firmware, gateway, and the OpenClaw plugin. Their patch versions advance
+  independently from their deployed versions. External dependency and protocol
+  schema versions are not part of this rule.
 - Keep secrets and personal assets out of Git.
 - Preserve unrelated user changes.
 - Do not modify `xc-buddy` from this repository.
