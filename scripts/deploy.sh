@@ -32,6 +32,8 @@ candidate=0
 status_only=0
 cleanup_images_only=0
 restart_service=""
+configure_weather=0
+trigger_ota_version=""
 build_root=""
 
 die() {
@@ -42,7 +44,8 @@ die() {
 usage() {
   cat <<'EOF'
 Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images |
-       --restart-gateway | --restart-pending
+       --restart-gateway | --restart-pending | --configure-weather |
+       --trigger-ota VERSION
 
 Build linux/amd64 production images, push them to TC Artifactory, and deploy
 their exact digests to the XC Body rendezvous VM. Use --candidate only for an
@@ -53,6 +56,12 @@ rendezvous VM. Images referenced by any container are preserved.
 
 --restart-gateway and --restart-pending restart only the named production
 service. They do not rebuild images or restart the proxy.
+
+--configure-weather updates the private QWeather host and key from
+XC_BODY_QWEATHER_API_HOST and XC_BODY_QWEATHER_API_KEY, then recreates gateway.
+
+--trigger-ota invokes the authenticated gateway maintenance tool with the
+active firmware manifest. VERSION must match that manifest.
 EOF
 }
 
@@ -137,6 +146,122 @@ restart_vm_service() {
   require_command ssh
   [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
   ssh_vm docker restart "xc-body-$service"
+}
+
+configure_vm_weather() {
+  local host=${XC_BODY_QWEATHER_API_HOST:-}
+  local key=${XC_BODY_QWEATHER_API_KEY:-}
+  local remote_python quoted_python
+  [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$host" == *.* ]] \
+    || die "invalid XC_BODY_QWEATHER_API_HOST" 65
+  [ -n "$key" ] && [[ "$key" != *$'\n'* ]] \
+    || die "invalid XC_BODY_QWEATHER_API_KEY" 65
+  remote_python='
+import os
+import sys
+
+path = "/data/xc-body/deploy/gateway.env"
+host, key = sys.stdin.read().splitlines()
+names = {"XC_BODY_QWEATHER_API_HOST", "XC_BODY_QWEATHER_API_KEY"}
+with open(path, encoding="utf-8") as source:
+    lines = [line for line in source if line.split("=", 1)[0] not in names]
+lines.extend([
+    f"XC_BODY_QWEATHER_API_HOST={host}\n",
+    f"XC_BODY_QWEATHER_API_KEY={key}\n",
+])
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as destination:
+    destination.writelines(lines)
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+'
+  printf -v quoted_python '%q' "$remote_python"
+  {
+    printf '%s\n' "$host"
+    printf '%s\n' "$key"
+  } | ssh "${SSH_OPTIONS[@]}" -T "$TARGET" \
+    "python3 -c $quoted_python"
+  ssh_vm docker compose \
+    --env-file /data/xc-body/deploy/images.env \
+    -f /data/xc-body/deploy/compose.yaml \
+    up -d --force-recreate gateway >/dev/null
+  echo "weather_configuration=updated"
+}
+
+trigger_vm_ota() {
+  local version=$1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "invalid firmware version: $version" 65
+  require_command ssh
+  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+  ssh_vm bash -s -- "$version" <<'REMOTE'
+set -eu
+expected_version=$1
+manifest=$(cat /data/xc-body/firmware/manifest.json)
+docker exec -i \
+  -e "XC_BODY_OTA_MANIFEST=$manifest" \
+  xc-body-gateway python3 - "$expected_version" <<'PY'
+import asyncio
+import json
+import os
+import sys
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+expected_version = sys.argv[1]
+manifest = json.loads(os.environ["XC_BODY_OTA_MANIFEST"])
+firmware = manifest.get("firmware")
+if not isinstance(firmware, dict):
+    raise SystemExit("active manifest has no firmware object")
+if firmware.get("version") != expected_version:
+    raise SystemExit("active manifest version does not match request")
+arguments = {
+    name: firmware[name]
+    for name in ("url", "version", "sha256", "size")
+}
+token = os.getenv("STACKCHAN_TOKEN") or os.getenv("BEARER_TOKEN")
+headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+
+async def trigger() -> None:
+    timeout = httpx.Timeout(120.0, connect=10.0)
+    async with httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout,
+    ) as client:
+        streams_context = streamable_http_client(
+            "http://127.0.0.1:8767/mcp",
+            http_client=client,
+        )
+        async with streams_context as streams:
+            async with ClientSession(*streams[:2]) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "upgrade_firmware",
+                    arguments,
+                )
+    if result.isError:
+        raise SystemExit("gateway rejected the OTA request")
+    for content in result.content:
+        text = getattr(content, "text", None)
+        if not isinstance(text, str):
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "error" in payload:
+            raise SystemExit(
+                f"gateway rejected the OTA request: {payload['error']}"
+            )
+    print(f"ota_request={expected_version}")
+
+
+asyncio.run(trigger())
+PY
+REMOTE
 }
 
 copy_runtime_inputs() {
@@ -260,6 +385,12 @@ while [ "$#" -gt 0 ]; do
     --cleanup-images) cleanup_images_only=1 ;;
     --restart-gateway) restart_service=gateway ;;
     --restart-pending) restart_service=pending ;;
+    --configure-weather) configure_weather=1 ;;
+    --trigger-ota)
+      [ "$#" -ge 2 ] || die "--trigger-ota requires VERSION" 64
+      trigger_ota_version=$2
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -271,6 +402,23 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ -n "$trigger_ota_version" ]; then
+  [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
+    && [ "$cleanup_images_only" = "0" ] && [ -z "$restart_service" ] \
+    && [ "$configure_weather" = "0" ] \
+    || die "deployment modes conflict" 64
+  trigger_vm_ota "$trigger_ota_version"
+  exit 0
+fi
+
+if [ "$configure_weather" = "1" ]; then
+  [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
+    && [ "$cleanup_images_only" = "0" ] && [ -z "$restart_service" ] \
+    || die "deployment modes conflict" 64
+  configure_vm_weather
+  exit 0
+fi
 
 if [ -n "$restart_service" ]; then
   [ "$candidate" = "0" ] \

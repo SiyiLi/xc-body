@@ -189,6 +189,7 @@ async def prepare_pending_runtime(
             "StackChan device session changed during avatar restore"
         )
     runtime.mark_avatar_ready(verified_session_id)
+    await runtime.reconcile_base_view()
 
 
 async def _ready_session_id(session: Any) -> str:

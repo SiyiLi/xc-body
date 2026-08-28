@@ -181,6 +181,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
         ]
         runtime = Mock()
         runtime.is_ready = AsyncMock(return_value=False)
+        runtime.reconcile_base_view = AsyncMock()
         machine = types.SimpleNamespace(pending_thought_id="cron:waiting")
         runtime.machine = machine
 

@@ -58,6 +58,11 @@ class TellPort(Protocol):
         """Play prepared audio using the ID as the endpoint idempotency key."""
 
 
+class OfferStatePort(Protocol):
+    def set_offer_pending(self, pending: bool) -> None:
+        """Synchronize whether the robot is waiting on one offer."""
+
+
 def decode_prepared_audio(audio_base64: str) -> bytes:
     """Decode framing and byte-verifiable Opus profile facts."""
 
@@ -234,10 +239,12 @@ class KnockWaitTell:
         knock_port: KnockPort,
         tell_port: TellPort,
         *,
+        offer_state_port: OfferStatePort | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._knock_port = knock_port
         self._tell_port = tell_port
+        self._offer_state_port = offer_state_port
         self._clock = clock
         self._outcomes: OrderedDict[str, ThoughtOutcome] = OrderedDict()
         self._pending: PendingThought | None = None
@@ -265,10 +272,12 @@ class KnockWaitTell:
                 return self._record(thought, "ignored")
             self._pending = thought
             try:
+                self._set_offer_pending(True)
                 self._knock_port.knock(thought.thought_id)
             except Exception:
                 self._pending = None
                 self._pending_expires_at = None
+                self._set_offer_pending(False)
                 self._record(thought, "ignored")
                 raise
             self._pending_expires_at = self._clock() + _OFFER_TTL_SECONDS
@@ -285,6 +294,7 @@ class KnockWaitTell:
             self._tell_port.tell(thought.thought_id, thought.audio_base64)
             self._pending = None
             self._pending_expires_at = None
+            self._set_offer_pending(False)
             return self._record(thought, "told")
 
     def _expire_pending(self) -> None:
@@ -298,7 +308,12 @@ class KnockWaitTell:
             return
         self._pending = None
         self._pending_expires_at = None
+        self._set_offer_pending(False)
         self._record(thought, "expired")
+
+    def _set_offer_pending(self, pending: bool) -> None:
+        if self._offer_state_port is not None:
+            self._offer_state_port.set_offer_pending(pending)
 
     def handle_stackchan_event(
         self, event: Mapping[str, object]

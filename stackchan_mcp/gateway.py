@@ -7,6 +7,7 @@ This module orchestrates both sides.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -15,6 +16,7 @@ from aiohttp import web
 from .capture_server import create_capture_app, stage_avatar_set
 from .esp32_client import ESP32Manager
 from .mdns_advertiser import MdnsAdvertiser
+from .weather import ClockUpdater, WeatherUpdater, load_weather_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ class Gateway:
         # against the same web.Application that serves /avatar_set/{id}.
         self._capture_app: web.Application | None = None
         self._mdns_advertiser: MdnsAdvertiser | None = None
+        self._clock_task: asyncio.Task[None] | None = None
+        self._weather_task: asyncio.Task[None] | None = None
 
     @property
     def vision_url(self) -> str:
@@ -144,6 +148,24 @@ class Gateway:
             audio_hook_url=self.audio_hook_url,
             audio_hook_token=self.audio_hook_token,
         )
+        self._clock_task = asyncio.create_task(
+            ClockUpdater(self.esp32).run()
+        )
+
+        try:
+            weather_config = load_weather_config(os.environ)
+        except ValueError as exc:
+            logger.warning("Weather screensaver disabled: %s", exc)
+        else:
+            if weather_config is None:
+                logger.warning(
+                    "Weather screensaver disabled: QWeather configuration "
+                    "is absent"
+                )
+            else:
+                self._weather_task = asyncio.create_task(
+                    WeatherUpdater(self.esp32, weather_config).run()
+                )
 
         # Start HTTP capture server. Hosts /capture, /pcm, and the
         # Phase 4.5 avatar /avatar_set/{short_id} endpoint on the same
@@ -207,6 +229,20 @@ class Gateway:
             logger.warning("beat mode shutdown failed: %s", exc)
 
         self._running = False
+        if self._clock_task is not None:
+            self._clock_task.cancel()
+            await asyncio.gather(
+                self._clock_task,
+                return_exceptions=True,
+            )
+            self._clock_task = None
+        if self._weather_task is not None:
+            self._weather_task.cancel()
+            await asyncio.gather(
+                self._weather_task,
+                return_exceptions=True,
+            )
+            self._weather_task = None
         if self._mdns_advertiser:
             try:
                 await self._mdns_advertiser.stop()

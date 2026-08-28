@@ -40,13 +40,19 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <cJSON.h>
 #include <lvgl.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <ctime>
+#include <cstdlib>
+#include <sys/time.h>
+#include <utility>
 #include <vector>
 
 #define TAG "StackChanBoard"
@@ -55,6 +61,46 @@ namespace {
 
 constexpr char kReviewedAvatarChecksum[] =
     "sha256:daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7";
+constexpr char kPublicIpLocationUrl[] =
+    "https://ipwho.is/?fields=success,latitude,longitude";
+constexpr char kScreenSaverDigitsFontAsset[] =
+    "screensaver-digits.cbin";
+constexpr char kScreenSaverWeatherFontAsset[] =
+    "screensaver-weather.cbin";
+constexpr char kScreenSaverDateFontAsset[] = "screensaver-date.cbin";
+constexpr size_t kScreenSaverWeatherIconCount = 20;
+constexpr size_t kScreenSaverWeatherIconBytes = 80 * 64 * 3;
+constexpr std::array<const char*, kScreenSaverWeatherIconCount>
+    kScreenSaverWeatherIconAssets = {
+        "w-clear-day.rgb565a8",
+        "w-clear-night.rgb565a8",
+        "w-wind.rgb565a8",
+        "w-partly-day.rgb565a8",
+        "w-partly-night.rgb565a8",
+        "w-overcast.rgb565a8",
+        "w-shower-day.rgb565a8",
+        "w-shower-night.rgb565a8",
+        "w-thunder-rain.rgb565a8",
+        "w-hail.rgb565a8",
+        "w-light-rain.rgb565a8",
+        "w-heavy-rain.rgb565a8",
+        "w-snow.rgb565a8",
+        "w-sleet.rgb565a8",
+        "w-fog.rgb565a8",
+        "w-haze.rgb565a8",
+        "w-dust.rgb565a8",
+        "w-hot.rgb565a8",
+        "w-cold.rgb565a8",
+        "w-unknown.rgb565a8",
+    };
+
+struct LvglBinFontDeleter {
+    void operator()(lv_font_t* font) const {
+        lv_binfont_destroy(font);
+    }
+};
+
+using LvglBinFontPtr = std::unique_ptr<lv_font_t, LvglBinFontDeleter>;
 
 std::string AvatarSha256Checksum(const uint8_t* data, size_t size) {
     uint8_t digest[32];
@@ -562,6 +608,43 @@ private:
     lv_obj_t* settings_panel_ = nullptr;
     lv_obj_t* settings_volume_label_ = nullptr;
     std::atomic<bool> settings_open_{false};
+
+    // Milestone 4 idle clock/weather overlay. It is an ordinary LVGL layer;
+    // display dimming and sleep remain owned by PowerSaveTimer.
+    lv_obj_t* screensaver_ = nullptr;
+    lv_obj_t* screensaver_hour_ = nullptr;
+    lv_obj_t* screensaver_minute_ = nullptr;
+    lv_obj_t* screensaver_weather_icon_ = nullptr;
+    lv_obj_t* screensaver_weather_caption_ = nullptr;
+    lv_obj_t* screensaver_date_ = nullptr;
+    lv_obj_t* screensaver_temperature_ = nullptr;
+    LvglBinFontPtr screensaver_digits_font_;
+    LvglBinFontPtr screensaver_weather_font_;
+    LvglBinFontPtr screensaver_date_font_;
+    std::array<lv_image_dsc_t, kScreenSaverWeatherIconCount>
+        screensaver_weather_icons_ = {};
+    bool screensaver_resources_ready_ = false;
+    std::atomic<bool> screensaver_visible_{false};
+    std::atomic<int64_t> screensaver_last_activity_us_{0};
+    std::atomic<bool> offer_pending_{false};
+    // Guarded by the display lock.
+    bool weather_available_ = false;
+    int weather_icon_code_ = 999;
+    int weather_temperature_c_ = 0;
+    std::string weather_summary_;
+
+    struct PublicIpLocation {
+        bool available = false;
+        double latitude = 0;
+        double longitude = 0;
+    };
+    std::mutex public_ip_location_mutex_;
+    std::string public_ip_location_ssid_;
+    PublicIpLocation public_ip_location_;
+    bool public_ip_location_task_running_ = false;
+
+    static constexpr int64_t SCREEN_SAVER_IDLE_TIMEOUT_US =
+        60LL * 1000 * 1000;
 
     // Reviewed avatar loaded from the flashed assets partition. A later
     // load_avatar_set call may still replace it as a development override.
@@ -2175,6 +2258,411 @@ private:
         AxisServo pitch_axis_;
     };
 
+    static size_t ScreenSaverWeatherIconIndex(int code) {
+        if (code == 100) return 0;
+        if (code == 150) return 1;
+        if (code >= 200 && code <= 213) return 2;
+        if (code >= 101 && code <= 103) return 3;
+        if (code >= 151 && code <= 153) return 4;
+        if (code == 104 || code == 154) return 5;
+        if (code == 300 || code == 301) return 6;
+        if (code == 350 || code == 351) return 7;
+        if (code == 302 || code == 303) return 8;
+        if (code == 304) return 9;
+        if (code == 305 || code == 306 || code == 309 || code == 314) {
+            return 10;
+        }
+        if (code == 307 || code == 308 ||
+            (code >= 310 && code <= 312) ||
+            (code >= 315 && code <= 318) || code == 399) {
+            return 11;
+        }
+        if (code == 313 || (code >= 404 && code <= 406) || code == 456) {
+            return 13;
+        }
+        if ((code >= 400 && code <= 410) ||
+            code == 457 || code == 499) {
+            return 12;
+        }
+        if (code == 500 || code == 501 || code == 509 || code == 510 ||
+            code == 514 || code == 515) {
+            return 14;
+        }
+        if (code == 502 || (code >= 511 && code <= 513)) return 15;
+        if (code == 503 || code == 504 || code == 507 || code == 508) {
+            return 16;
+        }
+        if (code == 900) return 17;
+        if (code == 901) return 18;
+        return 19;
+    }
+
+    const lv_image_dsc_t* ScreenSaverWeatherIcon(int code) const {
+        return &screensaver_weather_icons_[ScreenSaverWeatherIconIndex(code)];
+    }
+
+    bool LoadScreenSaverResourcesLocked() {
+        if (screensaver_resources_ready_) return true;
+
+        auto& assets = Assets::GetInstance();
+        auto load_font = [&assets](
+                             const char* name,
+                             LvglBinFontPtr& font) {
+            void* data = nullptr;
+            size_t size = 0;
+            if (!assets.GetAssetData(name, data, size) || size == 0 ||
+                size > std::numeric_limits<uint32_t>::max()) {
+                ESP_LOGE(TAG, "Missing screensaver font asset: %s", name);
+                return false;
+            }
+            LvglBinFontPtr loaded(lv_binfont_create_from_buffer(
+                data, static_cast<uint32_t>(size)));
+            if (loaded == nullptr) {
+                ESP_LOGE(TAG, "Invalid screensaver font asset: %s", name);
+                return false;
+            }
+            font = std::move(loaded);
+            return true;
+        };
+
+        LvglBinFontPtr digits_font;
+        LvglBinFontPtr weather_font;
+        LvglBinFontPtr date_font;
+        if (!load_font(kScreenSaverDigitsFontAsset, digits_font) ||
+            !load_font(kScreenSaverWeatherFontAsset, weather_font) ||
+            !load_font(kScreenSaverDateFontAsset, date_font)) {
+            return false;
+        }
+
+        std::array<lv_image_dsc_t, kScreenSaverWeatherIconCount> icons = {};
+        for (size_t index = 0; index < icons.size(); ++index) {
+            void* data = nullptr;
+            size_t size = 0;
+            const char* name = kScreenSaverWeatherIconAssets[index];
+            if (!assets.GetAssetData(name, data, size) ||
+                size != kScreenSaverWeatherIconBytes) {
+                ESP_LOGE(
+                    TAG, "Invalid screensaver icon asset: %s (%u bytes)",
+                    name, static_cast<unsigned>(size));
+                return false;
+            }
+            auto& icon = icons[index];
+            icon.header.magic = LV_IMAGE_HEADER_MAGIC;
+            icon.header.cf = LV_COLOR_FORMAT_RGB565A8;
+            icon.header.flags = 0;
+            icon.header.w = 80;
+            icon.header.h = 64;
+            icon.header.stride = 160;
+            icon.data_size = size;
+            icon.data = static_cast<const uint8_t*>(data);
+        }
+
+        screensaver_digits_font_ = std::move(digits_font);
+        screensaver_weather_font_ = std::move(weather_font);
+        screensaver_date_font_ = std::move(date_font);
+        screensaver_weather_icons_ = icons;
+        screensaver_resources_ready_ = true;
+        return true;
+    }
+
+    void ResetScreenSaverResourcesLocked() {
+        screensaver_visible_.store(false, std::memory_order_release);
+        if (screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
+            lv_obj_del(screensaver_);
+        }
+        screensaver_ = nullptr;
+        screensaver_hour_ = nullptr;
+        screensaver_minute_ = nullptr;
+        screensaver_weather_icon_ = nullptr;
+        screensaver_weather_caption_ = nullptr;
+        screensaver_date_ = nullptr;
+        screensaver_temperature_ = nullptr;
+        screensaver_digits_font_.reset();
+        screensaver_weather_font_.reset();
+        screensaver_date_font_.reset();
+        screensaver_weather_icons_ = {};
+        screensaver_resources_ready_ = false;
+    }
+
+    lv_obj_t* CreateScreenSaverLabelLocked(
+        lv_obj_t* parent, const lv_font_t* font, int x, int y,
+        int width, int height,
+        lv_label_long_mode_t long_mode = LV_LABEL_LONG_CLIP) {
+        lv_obj_t* label = lv_label_create(parent);
+        const int line_height = font->line_height;
+        lv_obj_set_pos(label, x, y + (height - line_height) / 2);
+        lv_obj_set_size(label, width, line_height);
+        lv_obj_set_style_text_font(label, font, 0);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_bg_opa(label, LV_OPA_TRANSP, 0);
+        lv_label_set_long_mode(label, long_mode);
+        return label;
+    }
+
+    bool EnsureScreenSaverLocked() {
+        if (screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
+            return true;
+        }
+        if (!LoadScreenSaverResourcesLocked()) return false;
+
+        screensaver_ = nullptr;
+        lv_obj_t* screen = lv_screen_active();
+        if (screen == nullptr) return false;
+
+        screensaver_ = lv_obj_create(screen);
+        lv_obj_set_size(screensaver_, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        lv_obj_set_pos(screensaver_, 0, 0);
+        lv_obj_clear_flag(screensaver_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(screensaver_, 0, 0);
+        lv_obj_set_style_border_width(screensaver_, 0, 0);
+        lv_obj_set_style_pad_all(screensaver_, 0, 0);
+        lv_obj_set_style_bg_color(screensaver_, lv_color_hex(0x030406), 0);
+        lv_obj_set_style_bg_opa(screensaver_, LV_OPA_COVER, 0);
+
+        // Approved v6 grid: one centered 296x216 group with 12 px margins.
+        screensaver_hour_ = CreateScreenSaverLabelLocked(
+            screensaver_, screensaver_digits_font_.get(),
+            12, 12, 152, 104);
+        screensaver_minute_ = CreateScreenSaverLabelLocked(
+            screensaver_, screensaver_digits_font_.get(),
+            12, 124, 152, 104);
+
+        screensaver_weather_icon_ = lv_image_create(screensaver_);
+        lv_obj_set_size(screensaver_weather_icon_, 80, 64);
+        lv_obj_set_pos(screensaver_weather_icon_, 202, 14);
+        lv_obj_clear_flag(
+            screensaver_weather_icon_, LV_OBJ_FLAG_SCROLLABLE);
+
+        screensaver_weather_caption_ = CreateScreenSaverLabelLocked(
+            screensaver_, screensaver_weather_font_.get(),
+            176, 84, 132, 32, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        screensaver_temperature_ = CreateScreenSaverLabelLocked(
+            screensaver_, screensaver_weather_font_.get(),
+            176, 124, 132, 32);
+        screensaver_date_ = CreateScreenSaverLabelLocked(
+            screensaver_, screensaver_date_font_.get(),
+            176, 160, 132, 68);
+
+        lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+        return true;
+    }
+
+    void PrepareScreenSaver() {
+        if (display_ == nullptr) return;
+        DisplayLockGuard lock(display_);
+        if (EnsureScreenSaverLocked()) {
+            HideScreenSaverLocked();
+        }
+    }
+
+    void UpdateScreenSaverLocked() {
+        if (screensaver_ == nullptr || !lv_obj_is_valid(screensaver_)) {
+            return;
+        }
+
+        time_t now = time(nullptr);
+        struct tm local_time = {};
+        if (now > 100000 && localtime_r(&now, &local_time) != nullptr) {
+            char hour[3];
+            char minute[3];
+            char date[6];
+            std::strftime(hour, sizeof(hour), "%H", &local_time);
+            std::strftime(minute, sizeof(minute), "%M", &local_time);
+            std::strftime(date, sizeof(date), "%m/%d", &local_time);
+            lv_label_set_text(screensaver_hour_, hour);
+            lv_label_set_text(screensaver_minute_, minute);
+            lv_label_set_text(screensaver_date_, date);
+        } else {
+            lv_label_set_text(screensaver_hour_, "");
+            lv_label_set_text(screensaver_minute_, "");
+            lv_label_set_text(screensaver_date_, "");
+        }
+
+        char temperature[16];
+        if (weather_available_) {
+            lv_image_set_src(
+                screensaver_weather_icon_,
+                ScreenSaverWeatherIcon(weather_icon_code_));
+            lv_obj_clear_flag(
+                screensaver_weather_icon_, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(
+                screensaver_weather_caption_, weather_summary_.c_str());
+            std::snprintf(
+                temperature, sizeof(temperature), "%d°C",
+                weather_temperature_c_);
+        } else {
+            lv_obj_add_flag(
+                screensaver_weather_icon_, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(screensaver_weather_caption_, "");
+            std::snprintf(temperature, sizeof(temperature), "--°C");
+        }
+        lv_label_set_text(screensaver_temperature_, temperature);
+    }
+
+    void HideScreenSaverLocked() {
+        screensaver_visible_.store(false, std::memory_order_release);
+        if (screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
+            lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void HideScreenSaver() {
+        if (display_ == nullptr) return;
+        DisplayLockGuard lock(display_);
+        HideScreenSaverLocked();
+    }
+
+    void HandleScreenSaverUserInteraction() {
+        screensaver_last_activity_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
+        if (screensaver_visible_.load(std::memory_order_acquire)) {
+            UpdateDisplayMode(
+                Application::GetInstance().GetDeviceState(), false);
+        }
+    }
+
+    void SetOfferPending(bool pending) {
+        offer_pending_.store(pending, std::memory_order_release);
+        UpdateDisplayMode(
+            Application::GetInstance().GetDeviceState(), false);
+    }
+
+    void SetScreenSaverWeather(
+        int icon_code, int temperature_c, const std::string& summary) {
+        if (display_ == nullptr) return;
+        DisplayLockGuard lock(display_);
+        weather_icon_code_ = icon_code;
+        weather_temperature_c_ = temperature_c;
+        weather_summary_ = summary;
+        weather_available_ = true;
+        UpdateScreenSaverLocked();
+    }
+
+    void SetScreenSaverClock(int epoch_seconds) {
+        setenv("TZ", "CST-8", 1);
+        tzset();
+        struct timeval now = {
+            .tv_sec = static_cast<time_t>(epoch_seconds),
+            .tv_usec = 0,
+        };
+        settimeofday(&now, nullptr);
+        if (display_ == nullptr) return;
+        DisplayLockGuard lock(display_);
+        UpdateScreenSaverLocked();
+    }
+
+    PublicIpLocation ResolvePublicIpLocation() {
+        PublicIpLocation location;
+        auto http = GetNetwork()->CreateHttp(0);
+        http->SetTimeout(8000);
+        http->SetHeader("Accept", "application/json");
+        if (!http->Open("GET", kPublicIpLocationUrl)) {
+            ESP_LOGW(TAG, "Public IP location lookup failed to connect");
+            return location;
+        }
+        if (http->GetStatusCode() != 200) {
+            http->Close();
+            return location;
+        }
+
+        std::string body = http->ReadAll();
+        http->Close();
+        cJSON* payload = cJSON_Parse(body.c_str());
+        if (payload == nullptr) return location;
+
+        cJSON* success = cJSON_GetObjectItem(payload, "success");
+        cJSON* latitude = cJSON_GetObjectItem(payload, "latitude");
+        cJSON* longitude = cJSON_GetObjectItem(payload, "longitude");
+        if (cJSON_IsTrue(success) && cJSON_IsNumber(latitude) &&
+            cJSON_IsNumber(longitude) &&
+            std::isfinite(latitude->valuedouble) &&
+            std::isfinite(longitude->valuedouble) &&
+            latitude->valuedouble >= -90 &&
+            latitude->valuedouble <= 90 &&
+            longitude->valuedouble >= -180 &&
+            longitude->valuedouble <= 180) {
+            location.available = true;
+            location.latitude = latitude->valuedouble;
+            location.longitude = longitude->valuedouble;
+        }
+        cJSON_Delete(payload);
+        return location;
+    }
+
+    void RunPublicIpLocationTask() {
+        while (true) {
+            std::string ssid;
+            {
+                std::lock_guard<std::mutex> lock(
+                    public_ip_location_mutex_);
+                ssid = public_ip_location_ssid_;
+            }
+
+            PublicIpLocation location = ResolvePublicIpLocation();
+            {
+                std::lock_guard<std::mutex> lock(
+                    public_ip_location_mutex_);
+                if (ssid != public_ip_location_ssid_) {
+                    continue;
+                }
+                public_ip_location_ = location;
+                public_ip_location_task_running_ = false;
+                if (!location.available) {
+                    public_ip_location_ssid_.clear();
+                }
+            }
+            if (location.available) {
+                ESP_LOGI(TAG, "Public IP location cached");
+            } else {
+                ESP_LOGW(TAG, "Public IP location unavailable");
+            }
+            return;
+        }
+    }
+
+    static void PublicIpLocationTaskTrampoline(void* arg) {
+        auto* board = static_cast<StackChanBoard*>(arg);
+        board->RunPublicIpLocationTask();
+        vTaskDelete(nullptr);
+    }
+
+    void RefreshPublicIpLocationForWifi(const std::string& ssid) {
+        if (ssid.empty()) return;
+
+        {
+            std::lock_guard<std::mutex> lock(public_ip_location_mutex_);
+            if (ssid == public_ip_location_ssid_) return;
+            public_ip_location_ssid_ = ssid;
+            public_ip_location_ = PublicIpLocation{};
+            if (public_ip_location_task_running_) return;
+            public_ip_location_task_running_ = true;
+        }
+
+        BaseType_t ok = xTaskCreate(
+            &StackChanBoard::PublicIpLocationTaskTrampoline,
+            "public_ip_loc", 6144, this, tskIDLE_PRIORITY + 1, nullptr);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create public IP location task");
+            std::lock_guard<std::mutex> lock(public_ip_location_mutex_);
+            public_ip_location_task_running_ = false;
+            public_ip_location_ssid_.clear();
+            public_ip_location_ = PublicIpLocation{};
+        }
+    }
+
+    cJSON* GetPublicIpLocation() {
+        cJSON* root = cJSON_CreateObject();
+        std::lock_guard<std::mutex> lock(public_ip_location_mutex_);
+        if (public_ip_location_.available) {
+            cJSON_AddNumberToObject(
+                root, "latitude", public_ip_location_.latitude);
+            cJSON_AddNumberToObject(
+                root, "longitude", public_ip_location_.longitude);
+        }
+        return root;
+    }
+
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterDimMode([this]() {
@@ -2375,6 +2863,71 @@ private:
         }
     }
 
+    void UpdateDisplayMode(DeviceState state, bool state_changed) {
+        if (display_ == nullptr) {
+            return;
+        }
+        bool settings_open = settings_open_.load(std::memory_order_acquire);
+        bool behavior_active =
+            xc_body_behavior_active_.load(std::memory_order_acquire) ||
+            physical_behavior_owner_.load(std::memory_order_acquire) !=
+                PhysicalBehaviorOwner::IDLE;
+        int64_t now_us = esp_timer_get_time();
+        if (state != kDeviceStateIdle || settings_open || behavior_active) {
+            screensaver_last_activity_us_.store(
+                now_us, std::memory_order_release);
+        }
+        int64_t last_activity_us = screensaver_last_activity_us_.load(
+            std::memory_order_acquire);
+        bool show_screensaver =
+            state == kDeviceStateIdle && !settings_open && !behavior_active &&
+            !offer_pending_.load(std::memory_order_acquire) &&
+            last_activity_us > 0 &&
+            now_us - last_activity_us >= SCREEN_SAVER_IDLE_TIMEOUT_US;
+        bool appliance_mode = !show_screensaver &&
+            (state == kDeviceStateIdle ||
+             state == kDeviceStateListening ||
+             state == kDeviceStateSpeaking);
+
+        DisplayLockGuard lock(display_);
+        appliance_status_visible_ = appliance_mode;
+        display_->SetApplianceStatusStyleLocked(appliance_mode);
+        if (state_changed) {
+            display_->SetRecordingIndicatorLocked(
+                state == kDeviceStateListening);
+        }
+        if (avatar_status_overlay_ != nullptr) {
+            bool avatar_visible = avatar_img_ != nullptr &&
+                lv_obj_is_valid(avatar_img_) &&
+                !lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
+            if (appliance_mode && avatar_visible) {
+                lv_obj_clear_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(avatar_status_overlay_);
+            } else {
+                lv_obj_add_flag(
+                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (show_screensaver && avatar_img_ != nullptr &&
+            lv_obj_is_valid(avatar_img_) &&
+            !lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN) &&
+            screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
+            UpdateScreenSaverLocked();
+            if (!screensaver_visible_.load(std::memory_order_acquire)) {
+                lv_obj_clear_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(screensaver_);
+            }
+            screensaver_visible_.store(true, std::memory_order_release);
+        } else {
+            HideScreenSaverLocked();
+        }
+        if (settings_open && settings_panel_ != nullptr &&
+            lv_obj_is_valid(settings_panel_)) {
+            lv_obj_move_foreground(settings_panel_);
+        }
+    }
+
     void OpenVolumeSettings() {
         if (display_ == nullptr) {
             return;
@@ -2435,6 +2988,11 @@ private:
 
         auto& app = Application::GetInstance();
         int64_t now_ms = esp_timer_get_time() / 1000;
+        static int64_t last_screensaver_update_ms = 0;
+        if (now_ms - last_screensaver_update_ms >= 1000) {
+            last_screensaver_update_ms = now_ms;
+            UpdateDisplayMode(app.GetDeviceState(), false);
+        }
 
         // --- listening 状態の上界 (タイムアウト) 管理 ---
         // 状態遷移のエッジ検出で突入時刻を記録、 滞在時間が LISTEN_TIMEOUT_MS を
@@ -2461,6 +3019,7 @@ private:
         auto& touch_point = ft6336_->GetTouchPoint();
         if (touch_point.num > 0) {
             power_save_timer_->WakeUp();
+            HandleScreenSaverUserInteraction();
         }
 
         // 检测触摸开始
@@ -4425,6 +4984,7 @@ private:
 
         if (now) {
             power_save_timer_->WakeUp();
+            HandleScreenSaverUserInteraction();
             // Rising edge. Capture the sensor state for the falling-edge
             // log either way — without this, a press that begins during
             // the post-reaction cooldown and is held until the cooldown
@@ -4893,6 +5453,9 @@ private:
         if (entering_avatar_view) {
             display_->UpdateStatusBar(true);
         }
+        if (current_avatar_face_ != "idle") {
+            HandleScreenSaverUserInteraction();
+        }
         return ok;
     }
 
@@ -4929,6 +5492,7 @@ private:
                     avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
             }
         }
+        HideScreenSaver();
         current_avatar_face_ = "off";
         ESP_LOGI(TAG, "Avatar OFF: hidden + blink disabled (was %s)",
                  blink_enabled_before_off_ ? "ON" : "OFF");
@@ -6384,6 +6948,75 @@ private:
                 return root;
             });
 
+        mcp_server.AddTool(
+            "self.display.set_offer_pending",
+            "Set whether one prepared offer is waiting for head-touch "
+            "acknowledgment. The idle screensaver stays hidden while true.",
+            PropertyList({Property("pending", kPropertyTypeBoolean)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                bool pending = properties["pending"].value<bool>();
+                SetOfferPending(pending);
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddBoolToObject(root, "ok", true);
+                cJSON_AddBoolToObject(root, "pending", pending);
+                return root;
+            });
+
+        mcp_server.AddTool(
+            "self.display.set_weather",
+            "Update the idle screensaver with a QWeather icon code, "
+            "whole-degree Celsius temperature, and the provider's Chinese "
+            "condition text.",
+            PropertyList({
+                Property("icon_code", kPropertyTypeInteger, 100, 100, 999),
+                Property("temperature_c", kPropertyTypeInteger, 0, -99, 99),
+                Property("summary", kPropertyTypeString),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int icon_code = properties["icon_code"].value<int>();
+                int temperature_c =
+                    properties["temperature_c"].value<int>();
+                std::string summary =
+                    properties["summary"].value<std::string>();
+                if (summary.empty() || summary.size() > 48) {
+                    throw std::invalid_argument(
+                        "summary must contain 1 to 48 UTF-8 bytes");
+                }
+                SetScreenSaverWeather(
+                    icon_code, temperature_c, summary);
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddBoolToObject(root, "ok", true);
+                cJSON_AddNumberToObject(root, "icon_code", icon_code);
+                cJSON_AddNumberToObject(
+                    root, "temperature_c", temperature_c);
+                cJSON_AddStringToObject(root, "summary", summary.c_str());
+                return root;
+            });
+
+        mcp_server.AddTool(
+            "self.location.get",
+            "Return cached approximate coordinates for the robot's current "
+            "Wi-Fi network. Returns an empty object while unavailable.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                return GetPublicIpLocation();
+            });
+
+        mcp_server.AddTool(
+            "self.display.set_clock",
+            "Set the current Unix time for the China-local idle clock.",
+            PropertyList({Property(
+                "epoch_seconds", kPropertyTypeInteger,
+                1700000000, 2147483647)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int epoch_seconds =
+                    properties["epoch_seconds"].value<int>();
+                SetScreenSaverClock(epoch_seconds);
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddBoolToObject(root, "ok", true);
+                return root;
+            });
+
         // Set the avatar face (one of: idle, happy, thinking, sad, surprised,
         // embarrassed, off).
         // The image is rendered as a 320x240 overlay on top of the chat UI's
@@ -7521,6 +8154,8 @@ public:
         // but moving the scan is safer for any future I2C peripheral too.
         InitializeSpi();
         InitializeIli9342Display();
+        screensaver_last_activity_us_.store(
+            esp_timer_get_time(), std::memory_order_release);
         LoadBuiltInAvatar();
         InitializeCamera();
         InitializeFt6336TouchPad();
@@ -7538,32 +8173,30 @@ public:
         StartStackChanUsbControl();
     }
 
+    void SetNetworkEventCallback(NetworkEventCallback callback) override {
+        WifiBoard::SetNetworkEventCallback(
+            [this, callback = std::move(callback)](
+                NetworkEvent event, const std::string& data) {
+                if (callback) callback(event, data);
+                if (event == NetworkEvent::Connected) {
+                    RefreshPublicIpLocationForWifi(data);
+                }
+            });
+    }
+
     void OnAssetsUpdated() override {
+        if (display_ != nullptr) {
+            DisplayLockGuard lock(display_);
+            ResetScreenSaverResourcesLocked();
+        }
         LoadBuiltInAvatar();
     }
 
     void OnDeviceStateChanged(DeviceState state) override {
-        if (display_ == nullptr) {
-            return;
+        if (state == kDeviceStateIdle) {
+            PrepareScreenSaver();
         }
-        const bool appliance_mode = state == kDeviceStateIdle ||
-            state == kDeviceStateListening ||
-            state == kDeviceStateSpeaking;
-        DisplayLockGuard lock(display_);
-        appliance_status_visible_ = appliance_mode;
-        display_->SetApplianceStatusStyleLocked(appliance_mode);
-        display_->SetRecordingIndicatorLocked(
-            state == kDeviceStateListening);
-        if (avatar_status_overlay_ != nullptr) {
-            if (appliance_mode && current_avatar_face_ != "off") {
-                lv_obj_clear_flag(
-                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_move_foreground(avatar_status_overlay_);
-            } else {
-                lv_obj_add_flag(
-                    avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
+        UpdateDisplayMode(state, true);
     }
 
     virtual AudioCodec* GetAudioCodec() override {
