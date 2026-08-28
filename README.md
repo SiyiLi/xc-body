@@ -109,12 +109,12 @@ XC_BODY_QWEATHER_API_KEY=<private API key>
 
 On the first Wi-Fi connection after boot, firmware resolves the robot's
 approximate coordinates through a keyless HTTPS public-IP lookup on a
-low-priority worker and caches the result. Only a connected SSID change starts
-another lookup; same-SSID reconnects and weather refreshes read the cache.
-VPNs and shared network exits can therefore select the wrong city. An empty or
-failed lookup falls back to central Shanghai. When either QWeather value is
-absent, weather synchronization is disabled; the idle clock and date remain
-available.
+low-priority worker and caches the result. Successful results survive
+same-SSID reconnects; after a failed lookup, the next Wi-Fi connection event
+retries. Weather refreshes read the cache. VPNs and shared network exits can
+therefore select the wrong city. An empty or failed lookup falls back to
+central Shanghai. When either QWeather value is absent, weather
+synchronization is disabled; the idle clock and date remain available.
 
 ## Start Here
 

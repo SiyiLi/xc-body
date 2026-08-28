@@ -22,9 +22,22 @@ class WeatherUpdaterTests(unittest.TestCase):
                 "initialized": True,
                 "session_id": session_id,
             }
-            for session_id in ("session-1", "session-2")
+            for session_id in (
+                "session-1",
+                "session-1",
+                "session-2",
+                "session-2",
+            )
         ] + [_StopUpdater]
-        esp32.call_tool = AsyncMock(return_value=({}, None))
+        sleep_count = 0
+        location_read_after_sleep = []
+
+        async def call_tool(name, _arguments):
+            if name == "self.location.get":
+                location_read_after_sleep.append(sleep_count)
+            return {}, None
+
+        esp32.call_tool = AsyncMock(side_effect=call_tool)
         updater = WeatherUpdater(
             esp32,
             WeatherConfig(api_host="weather.example.com", api_key="key"),
@@ -36,7 +49,8 @@ class WeatherUpdaterTests(unittest.TestCase):
         ]
 
         async def no_sleep(_seconds):
-            return None
+            nonlocal sleep_count
+            sleep_count += 1
 
         with (
             patch.object(updater, "_fetch", new_callable=AsyncMock) as fetch,
@@ -54,6 +68,10 @@ class WeatherUpdaterTests(unittest.TestCase):
         self.assertEqual(
             [call.args[1] for call in fetch.await_args_list],
             locations,
+        )
+        self.assertEqual(
+            location_read_after_sleep,
+            [1, 3],
         )
         weather_calls = [
             call

@@ -73,10 +73,11 @@ When its private QWeather configuration is complete, the gateway reads
 firmware's cached approximate public-IP coordinates, polls current conditions,
 and forwards the provider's icon code, whole-degree temperature, and native
 Chinese summary through the same device MCP session. Firmware resolves the
-location on a low-priority worker after the first Wi-Fi connection and again
-only when the connected SSID changes. It does not translate or invent weather
-text. A VPN or shared network exit may produce the wrong city; an empty or
-failed lookup falls back to central Shanghai.
+location on a low-priority worker after the first Wi-Fi connection. It reuses
+a successful result across same-SSID reconnects and retries a failed lookup on
+the next Wi-Fi connection event. It does not translate or invent weather text.
+A VPN or shared network exit may produce the wrong city; an empty or failed
+lookup falls back to central Shanghai.
 
 Raw movement tools remain behind the semantic boundary.
 
@@ -187,9 +188,10 @@ without USB when an immediate update is needed. USB remains a recovery fallback.
 
 1. On the first Wi-Fi connection after boot, firmware resolves its approximate
    coordinates through a keyless HTTPS public-IP lookup on a low-priority
-   worker. It caches the result, repeats the lookup only when the connected
-   SSID changes, and serves cache reads immediately. The gateway refreshes
-   QWeather for each device session and every hour, then pushes changed data.
+   worker. It caches successful results, retries a failure on the next Wi-Fi
+   connection event, and serves cache reads immediately. The gateway waits one
+   device-check interval for each new session, then refreshes QWeather and
+   continues hourly before pushing changed data.
 2. After 60 seconds without interaction, firmware may replace the avatar and
    appliance status row with the local clock, date, weather icon, provider
    summary, and temperature.

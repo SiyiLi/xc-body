@@ -2608,6 +2608,9 @@ private:
                 }
                 public_ip_location_ = location;
                 public_ip_location_task_running_ = false;
+                if (!location.available) {
+                    public_ip_location_ssid_.clear();
+                }
             }
             if (location.available) {
                 ESP_LOGI(TAG, "Public IP location cached");
@@ -8190,7 +8193,9 @@ public:
     }
 
     void OnDeviceStateChanged(DeviceState state) override {
-        PrepareScreenSaver();
+        if (state == kDeviceStateIdle) {
+            PrepareScreenSaver();
+        }
         UpdateDisplayMode(state, true);
     }
 

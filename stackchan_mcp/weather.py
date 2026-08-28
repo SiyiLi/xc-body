@@ -154,6 +154,8 @@ class WeatherUpdater:
                     fetched_session_id = session_id
                     snapshot = None
                     next_fetch_at = 0.0
+                    await asyncio.sleep(_DEVICE_CHECK_SECONDS)
+                    continue
 
                 if now >= next_fetch_at:
                     result, error = await self._esp32.call_tool(
