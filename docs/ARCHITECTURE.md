@@ -147,6 +147,10 @@ eventual direct answer.
    ID. The pending service emits one JSON timeline when a turn is answered or
    explicitly abandoned.
 
+Direct conversation is permanently bound to one fixed Telegram private chat.
+Telegram groups, supergroups, channels, forum topics, and negative chat IDs are
+not supported and are not future scope for XC Body.
+
 The root direct flow does not call raw movement tools, create a pending offer,
 or add another device transport. Its descendant subagent completions may enter
 the normal background-offer path independently.

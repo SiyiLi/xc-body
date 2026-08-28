@@ -43,6 +43,11 @@ type DirectRunResult = {
   }>;
   meta: { finalAssistantVisibleText?: string };
   didDeliverSourceReplyViaMessageTool?: boolean;
+  messagingToolSentTargets?: Array<{
+    provider?: string;
+    to?: string;
+    text?: string;
+  }>;
   messagingToolSourceReplyPayloads?: Array<{ text?: string }>;
 };
 
@@ -53,6 +58,7 @@ type DirectTurnMetrics = {
 };
 
 const PROJECTION_FAILURE_SPEECH = "抱歉，在生成最终答案时出了点问题。";
+const SILENT_REPLY_TOKEN = "NO_REPLY";
 
 export async function prepareDirectAnswerSpeech(
   complete: LlmCompleter,
@@ -111,37 +117,66 @@ function usableText(value: unknown): string | undefined {
   return typeof value === "string" ? value.trim() || undefined : undefined;
 }
 
-export function resolveDirectAnswer(result: DirectRunResult): DirectAnswer {
-  const deliveredReplies =
+function visibleText(value: unknown): string | undefined {
+  const text = usableText(value);
+  return text === SILENT_REPLY_TOKEN ? undefined : text;
+}
+
+function normalizeTelegramTarget(value: unknown): string | undefined {
+  const target = usableText(value);
+  return target
+    ?.replace(/^(?:telegram|tg):/i, "")
+    .trim()
+    .toLowerCase() || undefined;
+}
+
+export function resolveDirectAnswer(
+  result: DirectRunResult,
+  telegramTarget: string,
+): DirectAnswer {
+  const normalizedTelegramTarget = normalizeTelegramTarget(telegramTarget);
+  const sourceReplyTexts =
     result.didDeliverSourceReplyViaMessageTool === true
       ? (result.messagingToolSourceReplyPayloads ?? [])
-          .map((payload) => usableText(payload.text))
+          .map((payload) => visibleText(payload.text))
           .filter((text): text is string => text !== undefined)
       : [];
-  const finalText = usableText(result.meta.finalAssistantVisibleText);
+  const deliveredReplies = (result.messagingToolSentTargets ?? [])
+    .filter(
+      (target) =>
+        target.provider === "telegram" &&
+        normalizedTelegramTarget !== undefined &&
+        normalizeTelegramTarget(target.to) === normalizedTelegramTarget,
+    )
+    .map((target) => visibleText(target.text))
+    .filter((text): text is string => text !== undefined);
+  const deliveredText = deliveredReplies.at(-1);
+  const joinedDeliveredText = deliveredReplies.join("\n\n");
+  const isDelivered = (text: string): boolean =>
+    deliveredReplies.includes(text) || text === joinedDeliveredText;
+  const finalText = visibleText(result.meta.finalAssistantVisibleText);
   if (finalText) {
-    const delivered =
-      deliveredReplies.includes(finalText) ||
-      finalText === deliveredReplies.join("\n\n");
-    return { text: finalText, delivered };
+    return { text: finalText, delivered: isDelivered(finalText) };
   }
-  const payload = [...(result.payloads ?? [])].reverse().find(
-    (candidate) =>
-      candidate.isError !== true &&
-      candidate.isReasoning !== true &&
-      candidate.isCommentary !== true &&
-      usableText(candidate.text) !== undefined,
-  );
-  const payloadText = usableText(payload?.text);
+  const payloadText = (result.payloads ?? [])
+    .filter(
+      (candidate) =>
+        candidate.isError !== true &&
+        candidate.isReasoning !== true &&
+        candidate.isCommentary !== true,
+    )
+    .map((payload) => visibleText(payload.text))
+    .filter((text): text is string => text !== undefined)
+    .join("\n\n");
   if (payloadText) {
-    const delivered =
-      deliveredReplies.includes(payloadText) ||
-      payloadText === deliveredReplies.join("\n\n");
-    return { text: payloadText, delivered };
+    return { text: payloadText, delivered: isDelivered(payloadText) };
   }
-  const sourceReply = deliveredReplies.at(-1);
-  if (sourceReply) {
-    return { text: sourceReply, delivered: true };
+  if (deliveredText) {
+    return { text: deliveredText, delivered: true };
+  }
+  const sourceReplyText = sourceReplyTexts.join("\n\n");
+  if (sourceReplyText) {
+    return { text: sourceReplyText, delivered: false };
   }
   throw new Error("OpenClaw produced no visible direct answer");
 }
@@ -231,25 +266,25 @@ export class DirectConversationService {
         this.api.config.session?.store,
         { agentId: this.config.agentId },
       );
-      await this.api.runtime.agent.session.runWithWorkAdmission(
+      stage = "transcription";
+      const transcription = await measure(metrics, stage, () =>
+        this.api.runtime.mediaUnderstanding.transcribeAudioFile({
+          filePath: audioPath,
+          cfg: this.api.config,
+          mime: "audio/ogg",
+        }),
+      );
+      const transcript = transcription.text?.trim();
+      if (!transcript) {
+        throw new Error("XC Body voice transcription was empty");
+      }
+      stage = "question_delivery";
+      await measure(metrics, stage, () =>
+        this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
+      );
+      const result = await this.api.runtime.agent.session.runWithWorkAdmission(
         { storePath, sessionKey: this.config.sessionKey },
         async (abortSignal) => {
-          stage = "transcription";
-          const transcription = await measure(metrics, stage, () =>
-            this.api.runtime.mediaUnderstanding.transcribeAudioFile({
-              filePath: audioPath,
-              cfg: this.api.config,
-              mime: "audio/ogg",
-            }),
-          );
-          const transcript = transcription.text?.trim();
-          if (!transcript) {
-            throw new Error("XC Body voice transcription was empty");
-          }
-          stage = "question_delivery";
-          await measure(metrics, stage, () =>
-            this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
-          );
           const entry = this.api.runtime.agent.session.getSessionEntry({
             storePath,
             sessionKey: this.config.sessionKey,
@@ -258,7 +293,7 @@ export class DirectConversationService {
             throw new Error("configured OpenClaw session is unavailable");
           }
           stage = "agent";
-          const result = await measure(metrics, stage, () =>
+          return await measure(metrics, stage, () =>
             this.api.runtime.agent.runEmbeddedAgent({
               sessionId: entry.sessionId,
               sessionKey: this.config.sessionKey,
@@ -294,39 +329,37 @@ export class DirectConversationService {
               abortSignal,
             }),
           );
-          const answer = resolveDirectAnswer(result);
-          if (!answer.delivered) {
-            stage = "answer_delivery";
-            await measure(metrics, stage, () =>
-              this.sendTelegram(answer.text),
-            );
-          }
-          stage = "projection";
-          const speech = await measure(metrics, stage, () =>
-            prepareDirectAnswerSpeech(
-              this.config.complete,
-              answer.text,
-              this.config.speechModel,
-            ),
-          );
-          metrics.values.plugin_total_before_answer_ms = Math.round(
-            performance.now() - started,
-          );
-          stage = "answer_post";
-          await requestJson(
-            endpoint(this.config.voiceUrl, "answer"),
-            this.config.token,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                turn_id: capture.turn_id,
-                answer: speech,
-                metrics,
-              }),
-              signal: AbortSignal.timeout(this.config.timeoutMs),
-            },
-          );
+        },
+      );
+      const answer = resolveDirectAnswer(result, this.config.telegramTarget);
+      if (!answer.delivered) {
+        stage = "answer_delivery";
+        await measure(metrics, stage, () => this.sendTelegram(answer.text));
+      }
+      stage = "projection";
+      const speech = await measure(metrics, stage, () =>
+        prepareDirectAnswerSpeech(
+          this.config.complete,
+          answer.text,
+          this.config.speechModel,
+        ),
+      );
+      metrics.values.plugin_total_before_answer_ms = Math.round(
+        performance.now() - started,
+      );
+      stage = "answer_post";
+      await requestJson(
+        endpoint(this.config.voiceUrl, "answer"),
+        this.config.token,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            turn_id: capture.turn_id,
+            answer: speech,
+            metrics,
+          }),
+          signal: AbortSignal.timeout(this.config.timeoutMs),
         },
       );
     } catch (error) {

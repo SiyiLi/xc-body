@@ -57,6 +57,33 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(fourth_id, second_id)
         self.assertNotEqual(fourth_id, third_id)
 
+    async def test_waiting_capture_ttl_starts_after_active_turn(self):
+        mailbox = VoiceMailbox()
+        now = 0.0
+
+        with patch(
+            "gateway.direct_conversation._monotonic",
+            side_effect=lambda: now,
+        ):
+            first_id = await mailbox.submit(b"first")
+            await mailbox.claim(timeout=0)
+
+            now = 1.0
+            second_id = await mailbox.submit(b"second")
+            now = 122.0
+            await mailbox.finish_answer(first_id)
+
+            second = await mailbox.claim(timeout=0)
+            self.assertIsNotNone(second)
+            self.assertEqual(second.turn_id, second_id)
+
+            now = 123.0
+            await mailbox.submit(b"third")
+            now = 244.0
+            await mailbox.finish_answer(second_id)
+            now = 365.0
+            self.assertIsNone(await mailbox.claim(timeout=0))
+
     def test_turn_report_is_content_free_and_derives_latency(self):
         metrics = {
             "capture_started_uptime_us": 1_000_000,

@@ -819,8 +819,7 @@ PreparedAudioMetrics AudioService::GetPreparedAudioMetrics() {
     return prepared_audio_metrics_;
 }
 
-void AudioService::AbortPreparedAudio() {
-    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+void AudioService::AbortPreparedAudioLocked() {
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();
     prepared_audio_pending_ = false;
@@ -828,6 +827,11 @@ void AudioService::AbortPreparedAudio() {
     prepared_audio_packets_ = 0;
     prepared_audio_generation_++;
     prepared_audio_tracking_ = false;
+}
+
+void AudioService::AbortPreparedAudio() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    AbortPreparedAudioLocked();
     audio_queue_cv_.notify_all();
 }
 
@@ -1036,10 +1040,8 @@ void AudioService::ResetDecoder() {
     }
     decoder_lock.unlock();
     timestamp_queue_.clear();
-    audio_decode_queue_.clear();
-    audio_playback_queue_.clear();
     audio_testing_queue_.clear();
-    prepared_audio_playback_blocked_ = false;
+    AbortPreparedAudioLocked();
     audio_queue_cv_.notify_all();
 }
 

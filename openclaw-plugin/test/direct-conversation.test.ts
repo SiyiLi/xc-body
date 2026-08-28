@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { resolveDirectAnswer } from "../direct-conversation.ts";
 
-test("resolves visible answers without duplicate delivery", () => {
+const TELEGRAM_TARGET = "12345";
+const OPENCLAW_TELEGRAM_TARGET = `telegram:${TELEGRAM_TARGET}`;
+
+test("resolves complete visible answers without duplicate delivery", () => {
   const cases = [
     {
       result: {
@@ -16,9 +19,12 @@ test("resolves visible answers without duplicate delivery", () => {
       result: {
         meta: {},
         didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [{ text: "delivered answer" }],
+        messagingToolSourceReplyPayloads: [
+          { text: "part one" },
+          { text: "part two" },
+        ],
       },
-      expected: { text: "delivered answer", delivered: true },
+      expected: { text: "part one\n\npart two", delivered: false },
     },
     {
       result: {
@@ -31,64 +37,87 @@ test("resolves visible answers without duplicate delivery", () => {
     {
       result: {
         meta: { finalAssistantVisibleText: "final answer" },
-        didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [{ text: "final answer" }],
+        messagingToolSentTargets: [
+          {
+            provider: "telegram",
+            to: OPENCLAW_TELEGRAM_TARGET,
+            text: "final answer",
+          },
+        ],
       },
       expected: { text: "final answer", delivered: true },
     },
     {
       result: {
-        payloads: [{ text: "already delivered" }],
+        payloads: [
+          { text: "part one" },
+          { text: "failure", isError: true },
+          { text: "reasoning", isReasoning: true },
+          { text: "progress", isCommentary: true },
+          { text: "part two" },
+        ],
         meta: {},
-        didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [],
       },
-      expected: { text: "already delivered", delivered: false },
+      expected: { text: "part one\n\npart two", delivered: false },
+    },
+    {
+      result: {
+        payloads: [{ text: "NO_REPLY" }],
+        meta: { finalAssistantVisibleText: "NO_REPLY" },
+        didDeliverSourceReplyViaMessageTool: true,
+        messagingToolSentTexts: ["delivered answer"],
+        messagingToolSentTargets: [
+          {
+            provider: "telegram",
+            to: OPENCLAW_TELEGRAM_TARGET,
+            text: "delivered answer",
+          },
+        ],
+      },
+      expected: { text: "delivered answer", delivered: true },
     },
     {
       result: {
         payloads: [
-          { text: "visible answer" },
-          { text: "failure", isError: true },
-          { text: "reasoning", isReasoning: true },
-          { text: "progress", isCommentary: true },
-        ],
-        meta: {},
-      },
-      expected: { text: "visible answer", delivered: false },
-    },
-    {
-      result: {
-        meta: { finalAssistantVisibleText: "part one\n\npart two" },
-        didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [
           { text: "part one" },
           { text: "part two" },
+        ],
+        meta: {},
+        messagingToolSentTargets: [
+          {
+            provider: "telegram",
+            to: OPENCLAW_TELEGRAM_TARGET,
+            text: "part one",
+          },
+          {
+            provider: "telegram",
+            to: OPENCLAW_TELEGRAM_TARGET,
+            text: "part two",
+          },
         ],
       },
       expected: { text: "part one\n\npart two", delivered: true },
     },
     {
       result: {
-        payloads: [{ text: "final answer from payload" }],
-        meta: {},
-        didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [{ text: "progress update" }],
+        meta: { finalAssistantVisibleText: "other target answer" },
+        messagingToolSentTexts: ["other target answer"],
+        messagingToolSentTargets: [
+          {
+            provider: "telegram",
+            to: "telegram:different-target",
+            text: "other target answer",
+          },
+        ],
       },
-      expected: { text: "final answer from payload", delivered: false },
-    },
-    {
-      result: {
-        payloads: [{ text: "final answer" }],
-        meta: {},
-        didDeliverSourceReplyViaMessageTool: true,
-        messagingToolSourceReplyPayloads: [{ text: "final answer" }],
-      },
-      expected: { text: "final answer", delivered: true },
+      expected: { text: "other target answer", delivered: false },
     },
   ];
 
   for (const { result, expected } of cases) {
-    assert.deepEqual(resolveDirectAnswer(result), expected);
+    assert.deepEqual(
+      resolveDirectAnswer(result, TELEGRAM_TARGET),
+      expected,
+    );
   }
 });

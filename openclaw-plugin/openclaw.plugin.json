@@ -35,7 +35,8 @@
       "telegramTarget": {
         "type": "string",
         "minLength": 1,
-        "description": "Fixed Telegram target for transcript and answer delivery."
+        "pattern": "^[0-9]+$",
+        "description": "Fixed numeric Telegram private-chat ID for transcript and answer delivery."
       },
       "speechModel": {
         "type": "string",

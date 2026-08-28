@@ -92,6 +92,8 @@ _DERIVED_METRICS = (
     ),
 )
 
+_monotonic = time.monotonic
+
 
 class DirectConversationError(RuntimeError):
     """A direct robot turn could not complete safely."""
@@ -157,7 +159,6 @@ def build_direct_turn_report(
 class VoiceCapture:
     turn_id: str
     audio: bytes
-    created_at: float
     metrics: dict[str, int]
 
 
@@ -166,6 +167,7 @@ class VoiceMailbox:
 
     def __init__(self) -> None:
         self._capture: VoiceCapture | None = None
+        self._capture_expires_at: float | None = None
         self._active_turns: dict[str, float] = {}
         self._answer_started_turn_id: str | None = None
         self._condition = asyncio.Condition()
@@ -182,11 +184,14 @@ class VoiceMailbox:
             if self._capture is not None:
                 raise DirectConversationError("another robot turn is pending")
             turn_id = f"robot:{uuid.uuid4()}"
+            now = _monotonic()
             self._capture = VoiceCapture(
                 turn_id,
                 audio,
-                time.monotonic(),
                 dict(metrics or {}),
+            )
+            self._capture_expires_at = (
+                None if self._active_turns else now + _CAPTURE_TTL_SECONDS
             )
             self._condition.notify_all()
             return turn_id
@@ -202,10 +207,11 @@ class VoiceMailbox:
                 self._expire_locked()
             capture = self._capture
             self._capture = None
+            self._capture_expires_at = None
             if capture is not None:
                 capture.metrics["server_capture_claimed_ms"] = _unix_ms()
                 self._active_turns[capture.turn_id] = (
-                    time.monotonic() + _ACTIVE_TURN_TTL_SECONDS
+                    _monotonic() + _ACTIVE_TURN_TTL_SECONDS
                 )
             return capture
 
@@ -231,6 +237,7 @@ class VoiceMailbox:
             ):
                 return False
             del self._active_turns[turn_id]
+            self._arm_capture_expiry_locked()
             return True
 
     async def finish_answer(self, turn_id: str) -> None:
@@ -238,14 +245,20 @@ class VoiceMailbox:
             self._active_turns.pop(turn_id, None)
             if self._answer_started_turn_id == turn_id:
                 self._answer_started_turn_id = None
+            self._arm_capture_expiry_locked()
 
-    def _expire_locked(self) -> None:
-        now = time.monotonic()
+    def _arm_capture_expiry_locked(self, now: float | None = None) -> None:
         if (
             self._capture is not None
-            and now - self._capture.created_at >= _CAPTURE_TTL_SECONDS
+            and self._capture_expires_at is None
+            and not self._active_turns
         ):
-            self._capture = None
+            self._capture_expires_at = (
+                _monotonic() if now is None else now
+            ) + _CAPTURE_TTL_SECONDS
+
+    def _expire_locked(self) -> None:
+        now = _monotonic()
         expired = [
             tid for tid, exp in self._active_turns.items() if now >= exp
         ]
@@ -253,6 +266,14 @@ class VoiceMailbox:
             del self._active_turns[tid]
             if self._answer_started_turn_id == tid:
                 self._answer_started_turn_id = None
+        self._arm_capture_expiry_locked(now)
+        if (
+            self._capture is not None
+            and self._capture_expires_at is not None
+            and now >= self._capture_expires_at
+        ):
+            self._capture = None
+            self._capture_expires_at = None
 
 
 def emit_direct_turn_metrics(report: Mapping[str, object]) -> None:

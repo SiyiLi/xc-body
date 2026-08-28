@@ -602,6 +602,7 @@ void Application::InitializeProtocol() {
                 {
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
+                    audio_service_.ResetDecoder();
                     if (!audio_service_.BeginPreparedAudio(packet_count)) {
                         ESP_LOGE(TAG, "Invalid prepared audio transfer");
                         return;
@@ -631,6 +632,7 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, &board]() {
                     aborted_ = false;
+                    audio_service_.ResetDecoder();
                     SetDeviceState(kDeviceStateSpeaking);
                     // Phase 4 audio (Issue #76): drive avatar mouth animation
                     // for the lifetime of this TTS utterance. Default no-op
@@ -649,17 +651,25 @@ void Application::InitializeProtocol() {
                 Schedule([this, &board,
                           requested_transfer_id =
                               std::move(requested_transfer_id)]() {
+                    {
+                        std::lock_guard<std::mutex> transfer_lock(
+                            prepared_audio_transfer_mutex_);
+                        if (requested_transfer_id !=
+                                prepared_audio_transfer_id_) {
+                            return;
+                        }
+                        if (audio_service_.IsPreparedAudioPending()) {
+                            audio_service_.AbortPreparedAudio();
+                        }
+                    }
+                    bool drained = audio_service_.WaitForPlaybackQueueEmpty(
+                        kPlaybackDrainTimeout);
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
                     if (requested_transfer_id !=
                             prepared_audio_transfer_id_) {
                         return;
                     }
-                    if (audio_service_.IsPreparedAudioPending()) {
-                        audio_service_.AbortPreparedAudio();
-                    }
-                    bool drained = audio_service_.WaitForPlaybackQueueEmpty(
-                        kPlaybackDrainTimeout);
                     if (!drained) {
                         ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
                     }
@@ -1279,7 +1289,6 @@ void Application::HandleStateChangedEvent() {
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
             listening_profile_ = ListeningProfileAfterStop(listening_profile_);
-            audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableRawCapture(false);

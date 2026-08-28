@@ -81,8 +81,10 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 self.assertEqual(states, expected_states)
                 for state, metadata in esp32.connection.events:
-                    if state != "packet":
+                    if state in ("prepare", "stop"):
                         self.assertEqual(metadata["transfer_id"], "robot:1")
+                    elif state == "play":
+                        self.assertNotIn("transfer_id", metadata)
 
     async def test_session_change_fails_playback(self) -> None:
         esp32 = FakeEsp32()

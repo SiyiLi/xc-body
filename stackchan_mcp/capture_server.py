@@ -625,10 +625,7 @@ async def _play_prepared_opus(
             await asyncio.sleep(PREPARED_OPUS_START_DELAY_S)
             for packet in packets:
                 await connection.send_audio_frame(packet)
-            await connection.send_tts_state(
-                "play",
-                transfer_id=transfer_id,
-            )
+            await connection.send_tts_state("play")
             playback_started_ms = time.time_ns() // 1_000_000
             await asyncio.sleep(
                 len(packets) * PREPARED_OPUS_FRAME_DURATION_MS / 1000

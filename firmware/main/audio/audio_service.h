@@ -232,6 +232,7 @@ private:
     bool PushRawCaptureFrameToEncodeQueue(uint32_t generation, const int16_t* pcm);
     void ReturnRawCaptureFrame(std::unique_ptr<RawCaptureFrame> frame, uint32_t generation);
     bool IsRawCaptureGenerationCurrent(uint32_t generation) const;
+    void AbortPreparedAudioLocked();
     void AllocateRawCaptureStorage();
     void ReleaseRawCaptureStorage();
     void DropRawCaptureQueuedDataLocked();
