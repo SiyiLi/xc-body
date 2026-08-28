@@ -565,7 +565,20 @@ void Application::InitializeProtocol() {
     
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        Schedule([this]() {
+        std::string closing_transfer_id;
+        {
+            std::lock_guard<std::mutex> transfer_lock(
+                prepared_audio_transfer_mutex_);
+            closing_transfer_id = prepared_audio_transfer_id_;
+        }
+        Schedule([this,
+                  closing_transfer_id = std::move(closing_transfer_id)]() {
+            std::lock_guard<std::mutex> transfer_lock(
+                prepared_audio_transfer_mutex_);
+            if (closing_transfer_id != prepared_audio_transfer_id_) {
+                return;
+            }
+            prepared_audio_transfer_id_.clear();
             audio_service_.AbortPreparedAudio();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
@@ -580,14 +593,23 @@ void Application::InitializeProtocol() {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "prepare") == 0) {
                 auto count = cJSON_GetObjectItem(root, "packet_count");
+                auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
                 if (!cJSON_IsNumber(count) || count->valuedouble <= 0) {
                     ESP_LOGE(TAG, "Invalid prepared audio transfer");
                     return;
                 }
                 size_t packet_count = static_cast<size_t>(count->valuedouble);
-                if (!audio_service_.BeginPreparedAudio(packet_count)) {
-                    ESP_LOGE(TAG, "Invalid prepared audio transfer");
-                    return;
+                {
+                    std::lock_guard<std::mutex> transfer_lock(
+                        prepared_audio_transfer_mutex_);
+                    audio_service_.ResetDecoder();
+                    if (!audio_service_.BeginPreparedAudio(packet_count)) {
+                        ESP_LOGE(TAG, "Invalid prepared audio transfer");
+                        return;
+                    }
+                    prepared_audio_transfer_id_ =
+                        cJSON_IsString(transfer_id) ?
+                            transfer_id->valuestring : "";
                 }
                 Schedule([this]() {
                     aborted_ = false;
@@ -610,6 +632,7 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, &board]() {
                     aborted_ = false;
+                    audio_service_.ResetDecoder();
                     SetDeviceState(kDeviceStateSpeaking);
                     // Phase 4 audio (Issue #76): drive avatar mouth animation
                     // for the lifetime of this TTS utterance. Default no-op
@@ -617,15 +640,75 @@ void Application::InitializeProtocol() {
                     board.OnTtsStart();
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                if (audio_service_.IsPreparedAudioPending()) {
-                    audio_service_.AbortPreparedAudio();
+                auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
+                std::string requested_transfer_id =
+                    cJSON_IsString(transfer_id) ? transfer_id->valuestring : "";
+                if (requested_transfer_id.empty()) {
+                    std::lock_guard<std::mutex> transfer_lock(
+                        prepared_audio_transfer_mutex_);
+                    requested_transfer_id = prepared_audio_transfer_id_;
                 }
-                Schedule([this, &board]() {
-                    if (!audio_service_.WaitForPlaybackQueueEmpty(
-                            kPlaybackDrainTimeout)) {
+                Schedule([this, &board,
+                          requested_transfer_id =
+                              std::move(requested_transfer_id)]() {
+                    {
+                        std::lock_guard<std::mutex> transfer_lock(
+                            prepared_audio_transfer_mutex_);
+                        if (requested_transfer_id !=
+                                prepared_audio_transfer_id_) {
+                            return;
+                        }
+                        if (audio_service_.IsPreparedAudioPending()) {
+                            audio_service_.AbortPreparedAudio();
+                        }
+                    }
+                    bool drained = audio_service_.WaitForPlaybackQueueEmpty(
+                        kPlaybackDrainTimeout);
+                    std::lock_guard<std::mutex> transfer_lock(
+                        prepared_audio_transfer_mutex_);
+                    if (requested_transfer_id !=
+                            prepared_audio_transfer_id_) {
+                        return;
+                    }
+                    if (!drained) {
                         ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
                     }
+                    auto metrics = audio_service_.GetPreparedAudioMetrics();
+                    if (!prepared_audio_transfer_id_.empty()) {
+                        cJSON* result = cJSON_CreateObject();
+                        cJSON_AddStringToObject(
+                            result, "type", "prepared_audio_metrics");
+                        cJSON_AddStringToObject(
+                            result, "transfer_id",
+                            prepared_audio_transfer_id_.c_str());
+                        cJSON_AddNumberToObject(
+                            result, "received_packets",
+                            static_cast<double>(metrics.received_packets));
+                        cJSON_AddNumberToObject(
+                            result, "decoded_packets",
+                            static_cast<double>(metrics.decoded_packets));
+                        cJSON_AddNumberToObject(
+                            result, "output_frames",
+                            static_cast<double>(metrics.output_frames));
+                        cJSON_AddNumberToObject(
+                            result, "peak_amplitude",
+                            metrics.peak_amplitude);
+                        cJSON_AddBoolToObject(
+                            result, "output_failed",
+                            metrics.output_failed);
+                        cJSON_AddBoolToObject(
+                            result, "deferred", metrics.deferred);
+                        cJSON_AddBoolToObject(
+                            result, "drain_timed_out", !drained);
+                        char* result_str = cJSON_PrintUnformatted(result);
+                        if (result_str != nullptr && protocol_) {
+                            protocol_->SendText(std::string(result_str));
+                            cJSON_free(result_str);
+                        }
+                        cJSON_Delete(result);
+                    }
                     audio_service_.AbortPreparedAudio();
+                    prepared_audio_transfer_id_.clear();
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone
                         // xiaozhi-style conversational agent. Listening must
@@ -1206,7 +1289,6 @@ void Application::HandleStateChangedEvent() {
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
             listening_profile_ = ListeningProfileAfterStop(listening_profile_);
-            audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableRawCapture(false);

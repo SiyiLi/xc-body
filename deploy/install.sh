@@ -83,28 +83,25 @@ for container in \
 done
 
 echo "[deploy] starting gateway and proxy"
-gateway_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "${compose[@]}" up -d --force-recreate gateway proxy
 
-attempt=0
-while [ "$attempt" -lt 90 ]; do
-  if docker logs --since "$gateway_start" xc-body-gateway 2>&1 \
-    | grep -q 'ESP32 ready'; then
-    break
-  fi
-  attempt=$((attempt + 1))
-  sleep 2
-done
-[ "$attempt" -lt 90 ] \
-  || die "StackChan did not become ready after gateway restart" 68
-
 echo "[deploy] starting pending-thought service"
-pending_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "${compose[@]}" up -d --force-recreate pending
+echo "[deploy] checking public XC Body routes"
 attempt=0
 while [ "$attempt" -lt 90 ]; do
   if docker exec xc-body-pending python3 -c \
-    'import os,urllib.request as u;t=os.getenv("XC_BODY_PENDING_HTTP_TOKEN") or os.getenv("STACKCHAN_TOKEN") or os.getenv("BEARER_TOKEN");r=u.Request("http://127.0.0.1:8770/readyz",headers={"Authorization":"Bearer "+t});raise SystemExit(0 if u.urlopen(r,timeout=5).status==200 else 1)' \
+    '
+import urllib.request as u
+
+urls = (
+    "https://43.143.37.91/xc-body/healthz",
+    "https://43.143.37.91/gateway-mcp/healthz",
+)
+raise SystemExit(
+    0 if all(u.urlopen(url, timeout=5).status == 200 for url in urls) else 1
+)
+' \
     >/dev/null 2>&1; then
     break
   fi
@@ -112,8 +109,12 @@ while [ "$attempt" -lt 90 ]; do
   sleep 2
 done
 [ "$attempt" -lt 90 ] || {
-  docker logs --since "$pending_start" xc-body-pending 2>&1 | tail -80
-  die "pending-thought service did not become ready" 68
+  for container in \
+    xc-body-pending xc-body-gateway xc-body-proxy; do
+    echo "[deploy] $container logs"
+    docker logs --tail 80 "$container" 2>&1 || true
+  done
+  die "public XC Body routes did not become healthy" 68
 }
 
 unexpected=$(

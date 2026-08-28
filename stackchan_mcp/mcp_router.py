@@ -12,6 +12,7 @@ import json
 import logging
 from typing import Any
 
+from . import __version__
 from .tools import TOOL_DEFINITIONS
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 SERVER_INFO = {
     "name": "stackchan-mcp",
-    "version": "0.1.0",
+    "version": __version__,
 }
 
 SERVER_CAPABILITIES = {

@@ -400,6 +400,7 @@ class ESP32Connection:
         state: str,
         *,
         packet_count: int | None = None,
+        transfer_id: str | None = None,
     ) -> None:
         """Send a TTS state notification (``start`` / ``stop`` / ...).
 
@@ -421,6 +422,8 @@ class ESP32Connection:
         }
         if packet_count is not None:
             message["packet_count"] = packet_count
+        if transfer_id is not None:
+            message["transfer_id"] = transfer_id
         await self._ws_send(json.dumps(message))
 
     async def send_listen_state(
@@ -760,6 +763,12 @@ class ESP32Manager:
                     # docs/intent/stackchan_avatar_pipeline.md §C-3 in
                     # the SAIVerse repository).
                     connection.handle_avatar_set_loaded(data)
+
+                elif msg_type == "prepared_audio_metrics":
+                    logger.info(
+                        "prepared_audio_metrics=%s",
+                        json.dumps(data, separators=(",", ":"), sort_keys=True),
+                    )
 
                 elif msg_type == "stackchan-event":
                     await self._emit_stackchan_event(data)
@@ -1342,6 +1351,7 @@ class ESP32Manager:
         state: str,
         *,
         packet_count: int | None = None,
+        transfer_id: str | None = None,
     ) -> None:
         """Send a TTS state notification (``start`` / ``stop`` / ...).
 
@@ -1354,6 +1364,7 @@ class ESP32Manager:
         await self._connection.send_tts_state(
             state,
             packet_count=packet_count,
+            transfer_id=transfer_id,
         )
 
     async def send_listen_state(

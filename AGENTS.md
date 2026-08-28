@@ -61,11 +61,27 @@ configuration that has not been inspected.
 - Think before coding and state assumptions.
 - Prefer the smallest implementation that passes the milestone acceptance
   tests.
+- Give each invariant one owner. Trust guarantees already enforced by upstream
+  or downstream modules; do not duplicate their validation, ordering, queues,
+  retries, or state.
+- Add a local guard only at an untrusted boundary or for a proven safety or
+  recovery failure. Do not guard every step speculatively.
 - Extend the existing `stackchan_mcp` hardware layer before inventing device
   protocols.
 - The agent chooses semantic intentions; deterministic code owns expressions,
   timing, LEDs, and servo motion.
 - Treat servo safety and reconnect recovery as correctness requirements.
+- Before committing a change set under `gateway/` or `stackchan_mcp/`, inspect
+  the currently deployed runtime with `scripts/deploy.sh --status` and bump the
+  gateway version in `pyproject.toml` from that deployed version. Never derive
+  the next version from checked-in source. Firmware versioning remains separate.
+- Before committing firmware runtime changes, inspect the published OTA
+  manifest and bump `PROJECT_VER` from its firmware version. Never derive the
+  next firmware version from checked-in source.
+- Keep every first-party release on the same major/minor version line across
+  firmware, gateway, and the OpenClaw plugin. Their patch versions advance
+  independently from their deployed versions. External dependency and protocol
+  schema versions are not part of this rule.
 - Keep secrets and personal assets out of Git.
 - Preserve unrelated user changes.
 - Do not modify `xc-buddy` from this repository.

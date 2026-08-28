@@ -103,6 +103,7 @@ struct AudioTask {
     std::unique_ptr<RawCaptureFrame> raw_capture_frame;
     uint32_t timestamp = 0;
     uint32_t raw_capture_generation = 0;
+    uint32_t prepared_audio_generation = 0;
 };
 
 struct DebugStatistics {
@@ -110,6 +111,15 @@ struct DebugStatistics {
     uint32_t decode_count = 0;
     uint32_t encode_count = 0;
     uint32_t playback_count = 0;
+};
+
+struct PreparedAudioMetrics {
+    size_t received_packets = 0;
+    size_t decoded_packets = 0;
+    size_t output_frames = 0;
+    int peak_amplitude = 0;
+    bool output_failed = false;
+    bool deferred = false;
 };
 
 class AudioService {
@@ -143,6 +153,7 @@ public:
     bool BeginPreparedAudio(size_t packet_count);
     bool CommitPreparedAudio(bool defer_playback = false);
     bool ReleasePreparedAudioPlayback();
+    PreparedAudioMetrics GetPreparedAudioMetrics();
     void AbortPreparedAudio();
     bool IsPreparedAudioPending();
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
@@ -191,6 +202,11 @@ private:
     bool prepared_audio_pending_ = false;
     bool prepared_audio_playback_blocked_ = false;
     size_t prepared_audio_packets_ = 0;
+    PreparedAudioMetrics prepared_audio_metrics_;
+    bool prepared_audio_tracking_ = false;
+    bool prepared_audio_decode_in_flight_ = false;
+    bool prepared_audio_output_in_flight_ = false;
+    uint32_t prepared_audio_generation_ = 0;
     std::mutex raw_capture_mutex_;
     std::atomic<uint32_t> raw_capture_generation_{0};
     std::unique_ptr<std::vector<int16_t>> raw_capture_buffer_;
@@ -216,6 +232,7 @@ private:
     bool PushRawCaptureFrameToEncodeQueue(uint32_t generation, const int16_t* pcm);
     void ReturnRawCaptureFrame(std::unique_ptr<RawCaptureFrame> frame, uint32_t generation);
     bool IsRawCaptureGenerationCurrent(uint32_t generation) const;
+    void AbortPreparedAudioLocked();
     void AllocateRawCaptureStorage();
     void ReleaseRawCaptureStorage();
     void DropRawCaptureQueuedDataLocked();

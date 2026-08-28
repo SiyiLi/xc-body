@@ -11,36 +11,78 @@ from gateway.direct_conversation import (
 
 
 class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mailbox_allows_only_one_exactly_once_active_turn(self):
+    async def test_mailbox_separates_capture_slot_from_active_turns(self):
         mailbox = VoiceMailbox()
 
+        # Slot full → raises
         first_id = await mailbox.submit(b"first")
+        with self.assertRaisesRegex(
+            DirectConversationError,
+            "another robot turn is pending",
+        ):
+            await mailbox.submit(b"while-slot-full")
+
         first = await mailbox.claim(timeout=0)
         self.assertIsNotNone(first)
         self.assertEqual(first.turn_id, first_id)
         self.assertEqual(first.audio, b"first")
 
-        with self.assertRaisesRegex(
-            DirectConversationError,
-            "another robot turn is pending",
-        ):
-            await mailbox.submit(b"overlap")
-
-        self.assertTrue(await mailbox.abandon(first_id))
-        self.assertFalse(await mailbox.abandon(first_id))
-
+        # Slot empty even though first turn is claimed → second submit succeeds
         second_id = await mailbox.submit(b"second")
         second = await mailbox.claim(timeout=0)
         self.assertIsNotNone(second)
         self.assertEqual(second.turn_id, second_id)
+
+        # First turn begins speaking; second cannot speak simultaneously
+        self.assertTrue(await mailbox.begin_answer(first_id))
+        self.assertFalse(await mailbox.begin_answer(second_id))
+        self.assertFalse(await mailbox.begin_answer(first_id))
+        self.assertFalse(await mailbox.abandon(first_id))
+
+        await mailbox.finish_answer(first_id)
+
+        # First turn gone; second can now speak
         self.assertTrue(await mailbox.begin_answer(second_id))
         self.assertFalse(await mailbox.abandon(second_id))
-        self.assertFalse(await mailbox.begin_answer(second_id))
         await mailbox.finish_answer(second_id)
 
+        # Abandon works for claimed-but-not-speaking turns
         third_id = await mailbox.submit(b"third")
-        self.assertNotEqual(third_id, first_id)
-        self.assertNotEqual(third_id, second_id)
+        await mailbox.claim(timeout=0)
+        self.assertTrue(await mailbox.abandon(third_id))
+        self.assertFalse(await mailbox.abandon(third_id))
+
+        fourth_id = await mailbox.submit(b"fourth")
+        self.assertNotEqual(fourth_id, first_id)
+        self.assertNotEqual(fourth_id, second_id)
+        self.assertNotEqual(fourth_id, third_id)
+
+    async def test_waiting_capture_ttl_starts_after_active_turn(self):
+        mailbox = VoiceMailbox()
+        now = 0.0
+
+        with patch(
+            "gateway.direct_conversation._monotonic",
+            side_effect=lambda: now,
+        ):
+            first_id = await mailbox.submit(b"first")
+            await mailbox.claim(timeout=0)
+
+            now = 1.0
+            second_id = await mailbox.submit(b"second")
+            now = 122.0
+            await mailbox.finish_answer(first_id)
+
+            second = await mailbox.claim(timeout=0)
+            self.assertIsNotNone(second)
+            self.assertEqual(second.turn_id, second_id)
+
+            now = 123.0
+            await mailbox.submit(b"third")
+            now = 244.0
+            await mailbox.finish_answer(second_id)
+            now = 365.0
+            self.assertIsNone(await mailbox.claim(timeout=0))
 
     def test_turn_report_is_content_free_and_derives_latency(self):
         metrics = {

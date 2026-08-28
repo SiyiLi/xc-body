@@ -35,7 +35,7 @@ class FakeConnection:
         self.fail = fail
         self.connected = True
 
-    async def send_tts_state(self, state: str, **metadata: int) -> None:
+    async def send_tts_state(self, state: str, **metadata: object) -> None:
         self.events.append((state, metadata))
 
     async def send_audio_frame(self, packet: bytes) -> None:
@@ -51,7 +51,7 @@ class FakeEsp32:
 
 
 class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
-    async def test_play_requires_complete_transfer(self) -> None:
+    async def test_play_sends_correlated_metrics_id(self) -> None:
         packets = [b"one", b"two"]
         for fail, expected_states in (
             (False, ["prepare", "play", "stop"]),
@@ -68,17 +68,23 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
                     if fail:
                         with self.assertRaises(ConnectionError):
                             await capture_server._play_prepared_opus(
-                                gateway, packets
+                                gateway, packets, "robot:1"
                             )
                     else:
                         await capture_server._play_prepared_opus(
-                            gateway, packets
+                            gateway, packets, "robot:1"
                         )
                 states = [
-                    event[0] for event in esp32.connection.events
+                    event[0]
+                    for event in esp32.connection.events
                     if event[0] != "packet"
                 ]
                 self.assertEqual(states, expected_states)
+                for state, metadata in esp32.connection.events:
+                    if state in ("prepare", "stop"):
+                        self.assertEqual(metadata["transfer_id"], "robot:1")
+                    elif state == "play":
+                        self.assertNotIn("transfer_id", metadata)
 
     async def test_session_change_fails_playback(self) -> None:
         esp32 = FakeEsp32()
@@ -99,7 +105,9 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
             side_effect=replace_session,
         ):
             with self.assertRaisesRegex(ConnectionError, "session changed"):
-                await capture_server._play_prepared_opus(gateway, [b"one"])
+                await capture_server._play_prepared_opus(
+                    gateway, [b"one"], "robot:1"
+                )
 
         self.assertEqual(esp32.connection.events, [])
 

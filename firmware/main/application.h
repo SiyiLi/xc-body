@@ -170,6 +170,8 @@ private:
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
     std::atomic<bool> firmware_upgrade_in_progress_{false};
+    std::mutex prepared_audio_transfer_mutex_;
+    std::string prepared_audio_transfer_id_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;

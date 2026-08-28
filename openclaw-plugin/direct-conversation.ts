@@ -34,6 +34,23 @@ type DirectAnswer = {
   delivered: boolean;
 };
 
+type DirectRunResult = {
+  payloads?: Array<{
+    text?: string;
+    isError?: boolean;
+    isReasoning?: boolean;
+    isCommentary?: boolean;
+  }>;
+  meta: { finalAssistantVisibleText?: string };
+  didDeliverSourceReplyViaMessageTool?: boolean;
+  messagingToolSentTargets?: Array<{
+    provider?: string;
+    to?: string;
+    text?: string;
+  }>;
+  messagingToolSourceReplyPayloads?: Array<{ text?: string }>;
+};
+
 type DirectTurnMetrics = {
   version: 1;
   values: Record<string, number>;
@@ -41,6 +58,7 @@ type DirectTurnMetrics = {
 };
 
 const PROJECTION_FAILURE_SPEECH = "抱歉，在生成最终答案时出了点问题。";
+const SILENT_REPLY_TOKEN = "NO_REPLY";
 
 export async function prepareDirectAnswerSpeech(
   complete: LlmCompleter,
@@ -93,6 +111,74 @@ async function requestJson(
     throw new Error("XC Body voice endpoint returned invalid JSON");
   }
   return value as Record<string, unknown>;
+}
+
+function usableText(value: unknown): string | undefined {
+  return typeof value === "string" ? value.trim() || undefined : undefined;
+}
+
+function visibleText(value: unknown): string | undefined {
+  const text = usableText(value);
+  return text === SILENT_REPLY_TOKEN ? undefined : text;
+}
+
+function normalizeTelegramTarget(value: unknown): string | undefined {
+  const target = usableText(value);
+  return target
+    ?.replace(/^(?:telegram|tg):/i, "")
+    .trim()
+    .toLowerCase() || undefined;
+}
+
+export function resolveDirectAnswer(
+  result: DirectRunResult,
+  telegramTarget: string,
+): DirectAnswer {
+  const normalizedTelegramTarget = normalizeTelegramTarget(telegramTarget);
+  const sourceReplyTexts =
+    result.didDeliverSourceReplyViaMessageTool === true
+      ? (result.messagingToolSourceReplyPayloads ?? [])
+          .map((payload) => visibleText(payload.text))
+          .filter((text): text is string => text !== undefined)
+      : [];
+  const deliveredReplies = (result.messagingToolSentTargets ?? [])
+    .filter(
+      (target) =>
+        target.provider === "telegram" &&
+        normalizedTelegramTarget !== undefined &&
+        normalizeTelegramTarget(target.to) === normalizedTelegramTarget,
+    )
+    .map((target) => visibleText(target.text))
+    .filter((text): text is string => text !== undefined);
+  const deliveredText = deliveredReplies.at(-1);
+  const joinedDeliveredText = deliveredReplies.join("\n\n");
+  const isDelivered = (text: string): boolean =>
+    deliveredReplies.includes(text) || text === joinedDeliveredText;
+  const finalText = visibleText(result.meta.finalAssistantVisibleText);
+  if (finalText) {
+    return { text: finalText, delivered: isDelivered(finalText) };
+  }
+  const payloadText = (result.payloads ?? [])
+    .filter(
+      (candidate) =>
+        candidate.isError !== true &&
+        candidate.isReasoning !== true &&
+        candidate.isCommentary !== true,
+    )
+    .map((payload) => visibleText(payload.text))
+    .filter((text): text is string => text !== undefined)
+    .join("\n\n");
+  if (payloadText) {
+    return { text: payloadText, delivered: isDelivered(payloadText) };
+  }
+  if (deliveredText) {
+    return { text: deliveredText, delivered: true };
+  }
+  const sourceReplyText = sourceReplyTexts.join("\n\n");
+  if (sourceReplyText) {
+    return { text: sourceReplyText, delivered: false };
+  }
+  throw new Error("OpenClaw produced no visible direct answer");
 }
 
 export class DirectConversationService {
@@ -176,6 +262,10 @@ export class DirectConversationService {
       await measure(metrics, stage, () =>
         writeFile(audioPath, Buffer.from(capture.audio_base64, "base64")),
       );
+      const storePath = this.api.runtime.agent.session.resolveStorePath(
+        this.api.config.session?.store,
+        { agentId: this.config.agentId },
+      );
       stage = "transcription";
       const transcription = await measure(metrics, stage, () =>
         this.api.runtime.mediaUnderstanding.transcribeAudioFile({
@@ -192,10 +282,56 @@ export class DirectConversationService {
       await measure(metrics, stage, () =>
         this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
       );
-      stage = "agent";
-      const answer = await measure(metrics, stage, () =>
-        this.runAgent(capture.turn_id, transcript),
+      const result = await this.api.runtime.agent.session.runWithWorkAdmission(
+        { storePath, sessionKey: this.config.sessionKey },
+        async (abortSignal) => {
+          const entry = this.api.runtime.agent.session.getSessionEntry({
+            storePath,
+            sessionKey: this.config.sessionKey,
+          });
+          if (!entry?.sessionId) {
+            throw new Error("configured OpenClaw session is unavailable");
+          }
+          stage = "agent";
+          return await measure(metrics, stage, () =>
+            this.api.runtime.agent.runEmbeddedAgent({
+              sessionId: entry.sessionId,
+              sessionKey: this.config.sessionKey,
+              sessionTarget: {
+                agentId: this.config.agentId,
+                sessionId: entry.sessionId,
+                sessionKey: this.config.sessionKey,
+                storePath,
+              },
+              agentId: this.config.agentId,
+              runId: capture.turn_id,
+              workspaceDir: this.api.runtime.agent.resolveAgentWorkspaceDir(
+                this.api.config,
+                this.config.agentId,
+              ),
+              config: this.api.config,
+              prompt: transcript,
+              trigger: "user",
+              messageChannel: "telegram",
+              messageProvider: "telegram",
+              messageTo: this.config.telegramTarget,
+              currentMessagingTarget: this.config.telegramTarget,
+              senderIsOwner: true,
+              sourceReplyDeliveryMode: "message_tool_only",
+              extraSystemPrompt: [
+                "This user turn was transcribed from XC Body.",
+                "Reply normally to Louis in the existing session.",
+                "Do not mention this transport unless it matters to the answer.",
+              ].join(" "),
+              timeoutMs: this.api.runtime.agent.resolveAgentTimeoutMs(
+                this.api.config,
+              ),
+              abortSignal,
+            }),
+          );
+        },
       );
+      const answer = resolveDirectAnswer(result, this.config.telegramTarget);
       if (!answer.delivered) {
         stage = "answer_delivery";
         await measure(metrics, stage, () => this.sendTelegram(answer.text));
@@ -274,67 +410,4 @@ export class DirectConversationService {
     });
   }
 
-  private async runAgent(
-    turnId: string,
-    transcript: string,
-  ): Promise<DirectAnswer> {
-    const storePath = this.api.runtime.agent.session.resolveStorePath(
-      this.api.config.session?.store,
-      { agentId: this.config.agentId },
-    );
-    return this.api.runtime.agent.session.runWithWorkAdmission(
-      { storePath, sessionKey: this.config.sessionKey },
-      async (abortSignal) => {
-        const entry = this.api.runtime.agent.session.getSessionEntry({
-          storePath,
-          sessionKey: this.config.sessionKey,
-        });
-        if (!entry?.sessionId) {
-          throw new Error("configured OpenClaw session is unavailable");
-        }
-        const result = await this.api.runtime.agent.runEmbeddedAgent({
-          sessionId: entry.sessionId,
-          sessionKey: this.config.sessionKey,
-          sessionTarget: {
-            agentId: this.config.agentId,
-            sessionId: entry.sessionId,
-            sessionKey: this.config.sessionKey,
-            storePath,
-          },
-          agentId: this.config.agentId,
-          runId: turnId,
-          workspaceDir: this.api.runtime.agent.resolveAgentWorkspaceDir(
-            this.api.config,
-            this.config.agentId,
-          ),
-          config: this.api.config,
-          prompt: transcript,
-          trigger: "user",
-          messageChannel: "telegram",
-          messageProvider: "telegram",
-          messageTo: this.config.telegramTarget,
-          currentMessagingTarget: this.config.telegramTarget,
-          senderIsOwner: true,
-          extraSystemPrompt: [
-            "This user turn was transcribed from XC Body.",
-            "Reply normally to Louis in the existing session.",
-            "Do not mention this transport unless it matters to the answer.",
-          ].join(" "),
-          timeoutMs: this.api.runtime.agent.resolveAgentTimeoutMs(
-            this.api.config,
-          ),
-          abortSignal,
-        });
-        const answer = result.meta.finalAssistantVisibleText;
-        if (!answer?.trim()) {
-          throw new Error("OpenClaw produced no visible direct answer");
-        }
-        return {
-          text: answer,
-          delivered:
-            result.didDeliverSourceReplyViaMessageTool === true,
-        };
-      },
-    );
-  }
 }

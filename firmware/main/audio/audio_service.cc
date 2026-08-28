@@ -487,6 +487,7 @@ void AudioService::AudioOutputTask() {
             break;
         }
 
+        prepared_audio_output_in_flight_ = true;
         auto task = std::move(audio_playback_queue_.front());
         audio_playback_queue_.pop_front();
         audio_queue_cv_.notify_all();
@@ -498,7 +499,26 @@ void AudioService::AudioOutputTask() {
             codec_->EnableOutput(true);
         }
 
-        codec_->OutputData(task->pcm);
+        bool output_ok = codec_->OutputData(task->pcm);
+        {
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            if (task->prepared_audio_generation != 0 &&
+                task->prepared_audio_generation == prepared_audio_generation_) {
+                if (output_ok) {
+                    prepared_audio_metrics_.output_frames++;
+                } else {
+                    prepared_audio_metrics_.output_failed = true;
+                }
+                for (int16_t sample : task->pcm) {
+                    int amplitude = sample < 0 ? -static_cast<int>(sample) :
+                        sample;
+                    prepared_audio_metrics_.peak_amplitude = std::max(
+                        prepared_audio_metrics_.peak_amplitude, amplitude);
+                }
+            }
+            prepared_audio_output_in_flight_ = false;
+            audio_queue_cv_.notify_all();
+        }
         if (callbacks_.on_audio_output) {
             callbacks_.on_audio_output();
         }
@@ -541,6 +561,8 @@ void AudioService::OpusCodecTask() {
             audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            uint32_t my_generation = prepared_audio_tracking_ ? prepared_audio_generation_ : 0;
+            prepared_audio_decode_in_flight_ = prepared_audio_tracking_;
             audio_queue_cv_.notify_all();
             lock.unlock();
 
@@ -579,9 +601,13 @@ void AudioService::OpusCodecTask() {
                         task->pcm = std::move(resampled);
                     }
                     lock.lock();
-                    audio_playback_queue_.push_back(std::move(task));
-                    audio_queue_cv_.notify_all();
-                    debug_statistics_.decode_count++;
+                    if (my_generation == 0 || prepared_audio_generation_ == my_generation) {
+                        task->prepared_audio_generation = my_generation;
+                        audio_playback_queue_.push_back(std::move(task));
+                        if (my_generation != 0 && prepared_audio_tracking_) {
+                            prepared_audio_metrics_.decoded_packets++;
+                        }
+                    }
                 } else {
                     ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
                     lock.lock();
@@ -590,6 +616,8 @@ void AudioService::OpusCodecTask() {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
                 lock.lock();
             }
+            prepared_audio_decode_in_flight_ = false;
+            audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
         /* Encode the audio to send queue */
@@ -737,6 +765,9 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
         }
     }
     audio_decode_queue_.push_back(std::move(packet));
+    if (prepared_audio_pending_) {
+        prepared_audio_metrics_.received_packets++;
+    }
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -752,6 +783,9 @@ bool AudioService::BeginPreparedAudio(size_t packet_count) {
     prepared_audio_packets_ = packet_count;
     prepared_audio_pending_ = true;
     prepared_audio_playback_blocked_ = false;
+    prepared_audio_generation_++;
+    prepared_audio_metrics_ = {};
+    prepared_audio_tracking_ = true;
     return true;
 }
 
@@ -762,6 +796,7 @@ bool AudioService::CommitPreparedAudio(bool defer_playback) {
     prepared_audio_pending_ = false;
     prepared_audio_packets_ = 0;
     prepared_audio_playback_blocked_ = complete && defer_playback;
+    prepared_audio_metrics_.deferred = complete && defer_playback;
     if (!complete) {
         audio_decode_queue_.clear();
     }
@@ -779,13 +814,24 @@ bool AudioService::ReleasePreparedAudioPlayback() {
     return true;
 }
 
-void AudioService::AbortPreparedAudio() {
+PreparedAudioMetrics AudioService::GetPreparedAudioMetrics() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return prepared_audio_metrics_;
+}
+
+void AudioService::AbortPreparedAudioLocked() {
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();
     prepared_audio_pending_ = false;
     prepared_audio_playback_blocked_ = false;
     prepared_audio_packets_ = 0;
+    prepared_audio_generation_++;
+    prepared_audio_tracking_ = false;
+}
+
+void AudioService::AbortPreparedAudio() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    AbortPreparedAudioLocked();
     audio_queue_cv_.notify_all();
 }
 
@@ -976,7 +1022,13 @@ bool AudioService::WaitForPlaybackQueueEmpty(
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     return audio_queue_cv_.wait_for(lock, timeout, [this]() {
         return service_stopped_ ||
-            (audio_decode_queue_.empty() && audio_playback_queue_.empty());
+            (audio_decode_queue_.empty() && audio_playback_queue_.empty() &&
+             !prepared_audio_decode_in_flight_ &&
+             !prepared_audio_output_in_flight_ &&
+             (!prepared_audio_tracking_ ||
+              prepared_audio_metrics_.output_failed ||
+              prepared_audio_metrics_.output_frames >=
+                  prepared_audio_metrics_.decoded_packets));
     });
 }
 
@@ -988,10 +1040,8 @@ void AudioService::ResetDecoder() {
     }
     decoder_lock.unlock();
     timestamp_queue_.clear();
-    audio_decode_queue_.clear();
-    audio_playback_queue_.clear();
     audio_testing_queue_.clear();
-    prepared_audio_playback_blocked_ = false;
+    AbortPreparedAudioLocked();
     audio_queue_cv_.notify_all();
 }
 
