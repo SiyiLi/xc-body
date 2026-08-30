@@ -83,22 +83,17 @@ async def prepare_speech(summary: str, voice: str) -> str:
     if ffmpeg is None:
         raise SpeechPreparationError("ffmpeg is required for speech prep")
     with tempfile.TemporaryDirectory(prefix="xc-body-voice-") as temp_dir:
-        source = Path(temp_dir) / "speech.mp3"
         encoded = Path(temp_dir) / "speech.ogg"
-        try:
-            await edge_tts.Communicate(summary, voice).save(str(source))
-        except Exception as exc:
-            raise SpeechPreparationError(
-                f"speech synthesis failed ({type(exc).__name__})"
-            ) from exc
         process = await asyncio.create_subprocess_exec(
             ffmpeg,
             "-hide_banner",
             "-loglevel",
             "error",
             "-y",
+            "-f",
+            "mp3",
             "-i",
-            str(source),
+            "pipe:0",
             "-af",
             "loudnorm=I=-16:TP=-2:LRA=7",
             "-ac",
@@ -114,10 +109,36 @@ async def prepare_speech(summary: str, voice: str) -> str:
             "-frame_duration",
             "60",
             str(encoded),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+        assert process.stdin is not None
+        assert process.stderr is not None
+        stderr_task = asyncio.create_task(process.stderr.read())
+        synthesis_error: Exception | None = None
+        try:
+            async for message in edge_tts.Communicate(
+                summary,
+                voice,
+            ).stream():
+                if message["type"] != "audio":
+                    continue
+                process.stdin.write(message["data"])
+                await process.stdin.drain()
+        except Exception as exc:
+            synthesis_error = exc
+        finally:
+            process.stdin.close()
+        await process.wait()
+        stderr = await stderr_task
+        if synthesis_error is not None and not (
+            isinstance(synthesis_error, (BrokenPipeError, ConnectionResetError))
+            and process.returncode != 0
+        ):
+            raise SpeechPreparationError(
+                f"speech synthesis failed ({type(synthesis_error).__name__})"
+            ) from synthesis_error
         if process.returncode != 0:
             detail = stderr.decode("utf-8", errors="replace").strip()
             raise SpeechPreparationError(
