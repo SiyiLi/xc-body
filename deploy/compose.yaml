@@ -27,8 +27,17 @@ services:
       STACKCHAN_AUDIO_HOOK_URL: https://43.143.37.91/xc-body/voice/v1/capture
       VISION_URL: https://43.143.37.91/capture
       XDG_CONFIG_HOME: /state/config
+    entrypoint:
+      - /opt/xc-body/deploy/run-service-with-persistent-log.sh
+      - gateway.log
+      - stackchan-mcp
+      - serve
+      - --transport
+      - streamable-http
+      - --no-mdns
     volumes:
       - /data/xc-body/gateway-state:/state
+      - /data/xc-body/logs:/logs
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -52,7 +61,10 @@ services:
         condition: service_healthy
     env_file:
       - gateway.env
-    entrypoint: /opt/xc-body/deploy/run-pending-thought-service.sh
+    entrypoint:
+      - /opt/xc-body/deploy/run-service-with-persistent-log.sh
+      - pending.log
+      - /opt/xc-body/deploy/run-pending-thought-service.sh
     expose:
       - "8770"
     networks:
@@ -63,6 +75,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    volumes:
+      - /data/xc-body/logs:/logs
     security_opt:
       - no-new-privileges:true
 

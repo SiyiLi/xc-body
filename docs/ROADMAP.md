@@ -15,7 +15,8 @@ future direction only; it does not authorize implementation.
 Deliberate tap-to-talk uses the existing Louis/XC OpenClaw conversation. The
 recognized question and final answer remain visible in Telegram; the robot
 performs a short attention movement, waits for physical settle, and then speaks
-the answer without the pending-offer consent cycle.
+the answer without the pending-offer consent cycle. Physical acceptance also
+measures and bounds the wait from stopping the recording to hearing speech.
 
 The device also adds a full-screen avatar with compact status icons, swipe-up
 volume settings, visible battery and charging state, and restrained

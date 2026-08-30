@@ -12,6 +12,7 @@ source_commit=${3:-}
 avatar_sha256=${4:-}
 deployment_kind=${5:-}
 root=/data/xc-body
+log_dir=/data/xc-body/logs
 deploy_dir=$root/deploy
 runtime_tag=${runtime_image%@*}
 caddy_tag=${caddy_image%@*}
@@ -36,12 +37,19 @@ flock -n 9 || die "another XC Body deployment is running" 75
 test -r "$deploy_dir/gateway.env" \
   || die "missing private gateway environment" 66
 install -d -m 0755 "$root/firmware" "$root/firmware/releases"
+mkdir -p "$log_dir"
 
 echo "[deploy] pulling TC Artifactory images"
 docker pull "$runtime_image"
 docker pull "$caddy_image"
 docker tag "$runtime_image" "${runtime_image%@*}"
 docker tag "$caddy_image" "${caddy_image%@*}"
+docker run --rm --user 0:0 --entrypoint /bin/sh \
+  -v "$log_dir:/logs" "$runtime_image" \
+  -c 'touch /logs/gateway.log /logs/pending.log &&
+      chown 1000:1000 /logs /logs/gateway.log /logs/pending.log &&
+      chmod 0755 /logs &&
+      chmod 0644 /logs/gateway.log /logs/pending.log'
 
 stage=$(mktemp -d /tmp/xc-body-config.XXXXXX)
 container_id=$(docker create "$runtime_image")

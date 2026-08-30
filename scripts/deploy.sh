@@ -287,7 +287,8 @@ copy_runtime_inputs() {
   find "$context/app" -type f -exec chmod 0644 {} +
   chmod 0755 \
     "$context/app/deploy/install.sh" \
-    "$context/app/deploy/run-pending-thought-service.sh"
+    "$context/app/deploy/run-pending-thought-service.sh" \
+    "$context/app/deploy/run-service-with-persistent-log.sh"
 
 }
 

@@ -2,26 +2,28 @@
 
 ## Objective
 
-Make XC Body useful as a deliberate voice interface to the existing OpenClaw
-agent while giving the device a simple, power-aware avatar, battery, and volume
-experience.
+Make XC Body useful and responsive as a deliberate voice interface to the
+existing OpenClaw agent while giving the device a simple, power-aware avatar,
+battery, and volume experience.
 
 Direct conversation and appliance UX establish a new firmware capability
 contract. Candidate identifiers remain in source metadata and release
 manifests until this milestone or a meaningful submilestone closes.
 
-Milestone 4 has two pillars:
+Milestone 4 has three pillars:
 
 1. Louis can initiate a direct conversation by tapping and speaking to the
    robot.
 2. The display behaves like a useful appliance with an avatar, battery status,
    settings, and restrained power behavior.
+3. The wait from stopping a recording to hearing the answer is measured and
+   short enough to preserve conversational flow.
 
 ## Current Status
 
 The six-element idle clock and weather view has physical display acceptance.
-The remaining direct-conversation, touch-transition, settings, and power
-criteria stay open.
+The remaining direct-conversation, latency, touch-transition, settings, and
+power criteria stay open.
 
 ### Weather icon acceptance record
 
@@ -154,6 +156,29 @@ The VM reuses the physically accepted Edge TTS and prepared-Opus playback path.
 Direct answers and pending-offer speech share the existing serialized
 motion/audio boundary so they cannot overlap.
 
+## End-to-End Latency Contract
+
+The primary user-perceived response latency starts when the second right-ear
+tap stops and submits the recording and ends when robot speech starts. The
+existing content-free timeline reports this as
+`submit_to_speech_start_ms`.
+
+Recording duration is controlled by Louis and is therefore reported
+separately. `end_to_end_ms`, from recording start through turn completion,
+remains useful for diagnosing the whole interaction but must not be presented
+as response latency.
+
+Physical acceptance uses five consecutive fixed short questions that require
+no slow external tool. It records every response-latency sample plus the median
+and worst result with the exact source, firmware, gateway, OpenClaw plugin, and
+OpenClaw versions. Tool-using questions are recorded separately because their
+agent work is intentionally variable.
+
+The first production run establishes the baseline. A numeric response-latency
+budget must then be agreed and recorded here before Milestone 4 can close.
+Optimization follows the slowest measured phase in the existing timeline; it
+must not add another tracing path or bypass the normal OpenClaw session.
+
 ## Display and Settings Contract
 
 The XC avatar is the main display. It remains full-screen in idle and while an
@@ -229,7 +254,10 @@ Milestone 4 extends existing capabilities rather than replacing them:
    200 words and 1000 Unicode characters. Short plain English or Chinese is
    spoken unchanged. Retry once, then apply the caller-specific failure policy
    before reusing accepted TTS and prepared-Opus playback.
-6. **Power:** physically validate the candidate dim, display-off, and
+6. **Latency:** establish the physical response-latency baseline, identify the
+   slowest owned phase, and meet the agreed budget without weakening session
+   continuity or delivery correctness.
+7. **Power:** physically validate the candidate dim, display-off, and
    five-minute battery power-off policy as the acceptance gate.
 
 Each slice must pass focused automated tests before deployment. Firmware,
@@ -263,6 +291,9 @@ acceptance on the real robot.
   playback.
 - A completed direct turn emits one content-free JSON timing record covering
   capture, OpenClaw processing, speech preparation, attention, and playback.
+- Five fixed short direct turns record every `submit_to_speech_start_ms` sample
+  plus the median and worst result, and meet the response-latency budget agreed
+  from the first production baseline.
 
 ## Explicitly Deferred
 

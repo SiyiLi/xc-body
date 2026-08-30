@@ -26,6 +26,10 @@ serves versioned OTA app images and the current manifest from the read-only
 host unrelated workloads, so XC Body has its own containers, credentials,
 lifecycle, health checks, and resource limits.
 
+Gateway and pending-service stdout and stderr remain available through Docker
+and are also persisted across container replacement in
+`/data/xc-body/logs/gateway.log` and `/data/xc-body/logs/pending.log`.
+
 ## Component Ownership
 
 ### OpenClaw
@@ -158,8 +162,8 @@ the normal background-offer path independently.
 Extract completed timelines from production logs with:
 
 ```sh
-docker logs xc-body-pending 2>&1 |
-  jq -R 'fromjson? | select(.event == "xc_body.direct_turn")'
+rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
+  tail -n 1 | jq .
 ```
 
 ### Firmware OTA
