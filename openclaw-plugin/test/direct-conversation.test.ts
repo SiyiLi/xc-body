@@ -5,6 +5,8 @@ import { resolveDirectAnswer } from "../direct-conversation.ts";
 
 const TELEGRAM_TARGET = "12345";
 const OPENCLAW_TELEGRAM_TARGET = `telegram:${TELEGRAM_TARGET}`;
+const OPENCLAW_STREAM_ERROR_FALLBACK_TEXT =
+  "[assistant turn failed before producing content]";
 
 test("resolves complete visible answers without duplicate delivery", () => {
   const cases = [
@@ -78,6 +80,26 @@ test("resolves complete visible answers without duplicate delivery", () => {
     },
     {
       result: {
+        payloads: [{ text: OPENCLAW_STREAM_ERROR_FALLBACK_TEXT }],
+        meta: {
+          finalAssistantVisibleText:
+            OPENCLAW_STREAM_ERROR_FALLBACK_TEXT,
+        },
+        messagingToolSentTargets: [
+          {
+            provider: "telegram",
+            to: OPENCLAW_TELEGRAM_TARGET,
+            text: "delivered answer after stream failure",
+          },
+        ],
+      },
+      expected: {
+        text: "delivered answer after stream failure",
+        delivered: true,
+      },
+    },
+    {
+      result: {
         payloads: [
           { text: "part one" },
           { text: "part two" },
@@ -120,4 +142,21 @@ test("resolves complete visible answers without duplicate delivery", () => {
       expected,
     );
   }
+});
+
+test("rejects the OpenClaw stream-error fallback without a reply", () => {
+  assert.throws(
+    () =>
+      resolveDirectAnswer(
+        {
+          payloads: [{ text: OPENCLAW_STREAM_ERROR_FALLBACK_TEXT }],
+          meta: {
+            finalAssistantVisibleText:
+              OPENCLAW_STREAM_ERROR_FALLBACK_TEXT,
+          },
+        },
+        TELEGRAM_TARGET,
+      ),
+    /OpenClaw produced no visible direct answer/,
+  );
 });

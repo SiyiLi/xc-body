@@ -59,6 +59,8 @@ type DirectTurnMetrics = {
 
 const PROJECTION_FAILURE_SPEECH = "抱歉，在生成最终答案时出了点问题。";
 const SILENT_REPLY_TOKEN = "NO_REPLY";
+const OPENCLAW_STREAM_ERROR_FALLBACK_TEXT =
+  "[assistant turn failed before producing content]";
 
 export async function prepareDirectAnswerSpeech(
   complete: LlmCompleter,
@@ -119,7 +121,10 @@ function usableText(value: unknown): string | undefined {
 
 function visibleText(value: unknown): string | undefined {
   const text = usableText(value);
-  return text === SILENT_REPLY_TOKEN ? undefined : text;
+  return text === SILENT_REPLY_TOKEN ||
+    text === OPENCLAW_STREAM_ERROR_FALLBACK_TEXT
+    ? undefined
+    : text;
 }
 
 function normalizeTelegramTarget(value: unknown): string | undefined {
