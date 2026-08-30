@@ -122,6 +122,12 @@ struct PreparedAudioMetrics {
     bool deferred = false;
 };
 
+enum class PreparedAudioDrainResult {
+    kComplete,
+    kStalled,
+    kFailed,
+};
+
 class AudioService {
 public:
     AudioService();
@@ -136,6 +142,8 @@ public:
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
     bool WaitForPlaybackQueueEmpty(std::chrono::milliseconds timeout);
+    PreparedAudioDrainResult WaitForPreparedAudioComplete(
+        std::chrono::milliseconds stall_timeout);
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
     bool IsRawCaptureRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_RAW_CAPTURE_RUNNING; }
@@ -150,6 +158,8 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    bool PushPreparedPacketToDecodeQueue(
+        std::unique_ptr<AudioStreamPacket> packet);
     bool BeginPreparedAudio(size_t packet_count);
     bool CommitPreparedAudio(bool defer_playback = false);
     bool ReleasePreparedAudioPlayback();
@@ -199,6 +209,8 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    bool audio_decode_in_flight_ = false;
+    bool audio_output_in_flight_ = false;
     bool prepared_audio_pending_ = false;
     bool prepared_audio_playback_blocked_ = false;
     size_t prepared_audio_packets_ = 0;
@@ -232,6 +244,10 @@ private:
     bool PushRawCaptureFrameToEncodeQueue(uint32_t generation, const int16_t* pcm);
     void ReturnRawCaptureFrame(std::unique_ptr<RawCaptureFrame> frame, uint32_t generation);
     bool IsRawCaptureGenerationCurrent(uint32_t generation) const;
+    bool PushPacketToDecodeQueue(
+        std::unique_ptr<AudioStreamPacket> packet,
+        bool wait,
+        bool prepared_audio);
     void AbortPreparedAudioLocked();
     void AllocateRawCaptureStorage();
     void ReleaseRawCaptureStorage();

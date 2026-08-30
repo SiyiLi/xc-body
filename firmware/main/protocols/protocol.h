@@ -13,6 +13,8 @@ struct AudioStreamPacket {
     uint32_t timestamp = 0;
     // Local-only marker used before transport serialization.
     uint32_t raw_capture_generation = 0;
+    // Local-only ownership marker for prepared playback accounting.
+    uint32_t prepared_audio_generation = 0;
     std::vector<uint8_t> payload;
 };
 

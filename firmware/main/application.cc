@@ -549,7 +549,8 @@ void Application::InitializeProtocol() {
     protocol_->OnIncomingAudio([this, &board](
             std::unique_ptr<AudioStreamPacket> packet) {
         if (audio_service_.IsPreparedAudioPending()) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            audio_service_.PushPreparedPacketToDecodeQueue(
+                std::move(packet));
         } else if (GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
@@ -662,16 +663,33 @@ void Application::InitializeProtocol() {
                             audio_service_.AbortPreparedAudio();
                         }
                     }
-                    bool drained = audio_service_.WaitForPlaybackQueueEmpty(
-                        kPlaybackDrainTimeout);
+                    bool drain_timed_out = false;
+                    bool drain_failed = false;
+                    if (requested_transfer_id.empty()) {
+                        drain_timed_out =
+                            !audio_service_.WaitForPlaybackQueueEmpty(
+                                kPlaybackDrainTimeout);
+                    } else {
+                        auto drain_result =
+                            audio_service_.WaitForPreparedAudioComplete(
+                                kPlaybackDrainTimeout);
+                        drain_timed_out =
+                            drain_result ==
+                                PreparedAudioDrainResult::kStalled;
+                        drain_failed =
+                            drain_result ==
+                                PreparedAudioDrainResult::kFailed;
+                    }
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
                     if (requested_transfer_id !=
                             prepared_audio_transfer_id_) {
                         return;
                     }
-                    if (!drained) {
+                    if (drain_timed_out) {
                         ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                    } else if (drain_failed) {
+                        ESP_LOGW(TAG, "Audio drain failed; dropping queue");
                     }
                     auto metrics = audio_service_.GetPreparedAudioMetrics();
                     if (!prepared_audio_transfer_id_.empty()) {
@@ -699,7 +717,7 @@ void Application::InitializeProtocol() {
                         cJSON_AddBoolToObject(
                             result, "deferred", metrics.deferred);
                         cJSON_AddBoolToObject(
-                            result, "drain_timed_out", !drained);
+                            result, "drain_timed_out", drain_timed_out);
                         char* result_str = cJSON_PrintUnformatted(result);
                         if (result_str != nullptr && protocol_) {
                             protocol_->SendText(std::string(result_str));
