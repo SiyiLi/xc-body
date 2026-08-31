@@ -6,6 +6,7 @@ dist/
 .devcontainer/
 sdkconfig.old
 sdkconfig
+sdkconfig.defaults.local
 dependencies.lock
 .env
 releases/

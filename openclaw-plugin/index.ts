@@ -7,6 +7,7 @@ import {
 } from "./core.ts";
 import { DirectConversationService } from "./direct-conversation.ts";
 import { registerCompletionHooks } from "./hooks.ts";
+import { createNvidiaProjectionCompleter } from "./projection-client.ts";
 
 export default definePluginEntry({
   id: "xc-body-native",
@@ -22,10 +23,13 @@ export default definePluginEntry({
       );
       return;
     }
+    const completeProjection = createNvidiaProjectionCompleter({
+      apiKeyFile: config.projectionApiKeyFile,
+      timeoutMs: config.timeoutMs,
+    });
     const integration = new CompletionIntegration({
-      complete: (params) => api.runtime.llm.complete(params),
+      complete: completeProjection,
       submit: (payload) => submitSummary(config, payload),
-      model: config.speechModel,
     });
     if (
       config.voiceUrl &&
@@ -38,8 +42,7 @@ export default definePluginEntry({
         sessionKey: config.sessionKey,
         telegramTarget: config.telegramTarget,
         agentId: config.agentId,
-        complete: (params) => api.runtime.llm.complete(params),
-        speechModel: config.speechModel,
+        complete: completeProjection,
         pollMs: config.pollMs,
         timeoutMs: config.timeoutMs,
       });

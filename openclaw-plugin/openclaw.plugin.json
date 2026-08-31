@@ -2,7 +2,7 @@
   "id": "xc-body-native",
   "name": "XC Body Native Integration",
   "description": "Offers selected OpenClaw background completions through XC Body.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "activation": {
     "onStartup": true
   },
@@ -38,10 +38,10 @@
         "pattern": "^[0-9]+$",
         "description": "Fixed numeric Telegram private-chat ID for transcript and answer delivery."
       },
-      "speechModel": {
+      "projectionApiKeyFile": {
         "type": "string",
         "minLength": 1,
-        "description": "Fast model used for shared spoken projection."
+        "description": "Owner-readable model API key file for fixed transcription and spoken projection."
       },
       "agentId": {
         "type": "string",
@@ -79,8 +79,8 @@
     "telegramTarget": {
       "label": "Telegram target"
     },
-    "speechModel": {
-      "label": "Spoken-summary model"
+    "projectionApiKeyFile": {
+      "label": "Model API key file"
     },
     "agentId": {
       "label": "Agent ID"

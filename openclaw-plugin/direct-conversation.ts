@@ -18,7 +18,6 @@ export type DirectConversationConfig = {
   telegramTarget: string;
   agentId: string;
   complete: LlmCompleter;
-  speechModel?: string;
   pollMs: number;
   timeoutMs: number;
 };
@@ -65,10 +64,9 @@ const OPENCLAW_STREAM_ERROR_FALLBACK_TEXT =
 export async function prepareDirectAnswerSpeech(
   complete: LlmCompleter,
   answer: string,
-  model?: string,
 ): Promise<string> {
   return (
-    (await prepareDirectSpeech(complete, answer, model)) ??
+    (await prepareDirectSpeech(complete, answer)) ??
     PROJECTION_FAILURE_SPEECH
   );
 }
@@ -343,11 +341,7 @@ export class DirectConversationService {
       }
       stage = "projection";
       const speech = await measure(metrics, stage, () =>
-        prepareDirectAnswerSpeech(
-          this.config.complete,
-          answer.text,
-          this.config.speechModel,
-        ),
+        prepareDirectAnswerSpeech(this.config.complete, answer.text),
       );
       metrics.values.plugin_total_before_answer_ms = Math.round(
         performance.now() - started,

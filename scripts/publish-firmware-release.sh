@@ -3,9 +3,9 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGET="${XC_BODY_DEPLOY_TARGET:-medchain@43.143.37.91}"
+TARGET="${XC_BODY_DEPLOY_TARGET:-}"
 IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
-PUBLIC_ROOT="${XC_BODY_FIRMWARE_URL:-https://43.143.37.91/firmware}"
+PUBLIC_ROOT="${XC_BODY_FIRMWARE_URL:-}"
 REMOTE_ROOT=/data/xc-body/firmware
 OTA_ASSET=xc-body-stackchan-ota.bin
 ASSETS_ASSET=xc-body-stackchan-assets.bin
@@ -22,13 +22,17 @@ die() {
   exit "${2:-1}"
 }
 
+[ -n "$TARGET" ] || die "XC_BODY_DEPLOY_TARGET is required" 64
+[ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+[[ "$PUBLIC_ROOT" =~ ^https://[A-Za-z0-9.-]+/firmware$ ]] \
+  || die "XC_BODY_FIRMWARE_URL must be an HTTPS /firmware URL without a port" 64
+
 if [ "${1:-}" = "--activate" ]; then
   [ "$#" -eq 2 ] || die "usage: $0 --activate VERSION" 64
   for command in sed ssh; do
     command -v "$command" >/dev/null 2>&1 \
       || die "required command not found: $command" 64
   done
-  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
   version=$2
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
     || die "invalid firmware version: $version" 65
@@ -74,8 +78,6 @@ for command in docker python3 scp sed ssh; do
   command -v "$command" >/dev/null 2>&1 \
     || die "required command not found: $command" 64
 done
-[ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
-
 version=$(sed -nE \
   's/^set\(PROJECT_VER "([^"]+)"\)$/\1/p' \
   "$REPO/firmware/CMakeLists.txt")

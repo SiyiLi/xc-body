@@ -27,10 +27,8 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
   const submitted: unknown[] = [];
   let completions = 0;
   const integration = new CompletionIntegration({
-    model: "fast/summarizer",
-    async complete(params) {
+    async complete() {
       completions += 1;
-      assert.equal(params.model, "fast/summarizer");
       return { text: "你的私人医疗报告已经整理完成。" };
     },
     async submit(payload) {

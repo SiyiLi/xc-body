@@ -249,11 +249,11 @@ Milestone 4 extends existing capabilities rather than replacing them:
    one-turn VM mailbox, and poll it from the local native plugin.
 4. **Conversation:** transcribe, mirror the labelled question to Telegram, and
    run exactly one normal turn in the existing OpenClaw session.
-5. **Voice egress:** use one shared prompt and configured fast model to classify
-   offers and project long or formatted results into Chinese speech of at most
-   200 words and 1000 Unicode characters. Short plain English or Chinese is
-   spoken unchanged. Retry once, then apply the caller-specific failure policy
-   before reusing accepted TTS and prepared-Opus playback.
+5. **Voice egress:** use one shared prompt and fixed fast-model projection to
+   classify offers and project long or formatted results into Chinese speech of
+   at most 200 words and 1000 Unicode characters. Short plain English or
+   Chinese is spoken unchanged. Retry once, then apply the caller-specific
+   failure policy before reusing accepted TTS and prepared-Opus playback.
 6. **Latency:** establish the physical response-latency baseline, identify the
    slowest owned phase, and meet the agreed budget without weakening session
    continuity or delivery correctness.

@@ -19,8 +19,9 @@ StackChan K151/CoreS3                │ - gateway service          │
 └──────────────────────┘             └────────────────────────────┘
 ```
 
-Caddy terminates public TLS at `https://43.143.37.91`. The gateway, avatar,
-playback, summary, and XC Body MCP routes are proxied internally. Caddy also
+Caddy terminates public TLS at the configured rendezvous origin. The gateway,
+avatar, playback, summary, and XC Body MCP routes are proxied internally. Caddy
+also
 serves versioned OTA app images and the current manifest from the read-only
 `/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
 host unrelated workloads, so XC Body has its own containers, credentials,
@@ -37,13 +38,15 @@ and are also persisted across container replacement in
 - Owns agent identity, reasoning, and the decision to express something.
 - Selects semantic intentions instead of raw servo or animation commands.
 - Observes successful agent, subagent, and cron completions.
-- Classifies a completion as `offer` or `skip` through its native LLM runtime.
+- Classifies a completion as `offer` or `skip` through the fixed projection
+  client.
 - Sends accepted bounded speech over authenticated HTTPS.
 
 ### Completion plugin
 
 `openclaw-plugin/` observes typed completion hooks, including `agent_end`, and
-deduplicates the same run across hook boundaries. It does not own speech
+deduplicates the same run across hook boundaries. Spoken projection uses the
+fixed model with reasoning and thinking disabled. It does not own speech
 encoding, robot motion, pending-offer state, or device connectivity.
 
 ### Pending-thought service

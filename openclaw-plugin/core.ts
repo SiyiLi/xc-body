@@ -22,7 +22,6 @@ export type SummaryPayload = {
 export type IntegrationDependencies = {
   complete: (params: LlmCompleteParams) => Promise<{ text: string }>;
   submit: (payload: SummaryPayload) => Promise<boolean>;
-  model?: string;
 };
 
 export type NativeIntegrationConfig = {
@@ -31,7 +30,7 @@ export type NativeIntegrationConfig = {
   token: string;
   sessionKey?: string;
   telegramTarget?: string;
-  speechModel?: string;
+  projectionApiKeyFile: string;
   agentId: string;
   pollMs: number;
   timeoutMs: number;
@@ -104,7 +103,7 @@ export function parsePluginConfig(
   const token = value.token;
   const sessionKey = value.sessionKey;
   const telegramTarget = value.telegramTarget;
-  const speechModel = value.speechModel;
+  const projectionApiKeyFile = value.projectionApiKeyFile;
   const agentId = value.agentId ?? "main";
   const pollMs = value.pollMs ?? 1_000;
   const timeoutMs = value.timeoutMs ?? 180_000;
@@ -115,7 +114,8 @@ export function parsePluginConfig(
     (voiceUrl !== undefined && typeof voiceUrl !== "string") ||
     (sessionKey !== undefined && typeof sessionKey !== "string") ||
     (telegramTarget !== undefined && typeof telegramTarget !== "string") ||
-    (speechModel !== undefined && typeof speechModel !== "string") ||
+    typeof projectionApiKeyFile !== "string" ||
+    !projectionApiKeyFile.trim() ||
     typeof agentId !== "string" ||
     !agentId.trim() ||
     !Number.isInteger(pollMs) ||
@@ -163,7 +163,7 @@ export function parsePluginConfig(
     token: token.trim(),
     sessionKey: sessionKey?.trim(),
     telegramTarget: telegramTarget?.trim(),
-    speechModel: speechModel?.trim() || undefined,
+    projectionApiKeyFile: projectionApiKeyFile.trim(),
     agentId: agentId.trim(),
     pollMs: pollMs as number,
     timeoutMs: timeoutMs as number,
@@ -276,7 +276,6 @@ export class CompletionIntegration {
     const projection = await projectSpokenText(
       this.dependencies.complete,
       result,
-      this.dependencies.model,
     );
     if (projection === null || projection.decision === "skip") {
       this.record(key, "skipped");

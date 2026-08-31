@@ -38,12 +38,10 @@ test("formatted answers use one shared projection with complete input", async ()
 
   const speech = await prepareDirectSpeech(
     async (params) => {
-      assert.equal(params.model, "fast/summarizer");
       assert.equal(params.messages[0]?.content, answer);
       return { text: "上海今天有雨。" };
     },
     answer,
-    "fast/summarizer",
   );
 
   assert.equal(speech, "上海今天有雨。");
