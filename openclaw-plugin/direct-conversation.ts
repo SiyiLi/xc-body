@@ -1,7 +1,3 @@
-import { Buffer } from "node:buffer";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -10,6 +6,7 @@ import {
   prepareDirectSpeech,
   type LlmCompleter,
 } from "./spoken-text.ts";
+import type { NvidiaAudioTranscriber } from "./projection-client.ts";
 
 export type DirectConversationConfig = {
   voiceUrl: string;
@@ -18,6 +15,7 @@ export type DirectConversationConfig = {
   telegramTarget: string;
   agentId: string;
   complete: LlmCompleter;
+  transcribe: NvidiaAudioTranscriber;
   pollMs: number;
   timeoutMs: number;
 };
@@ -253,39 +251,33 @@ export class DirectConversationService {
   }
 
   private async handle(capture: Capture): Promise<void> {
-    const directory = await mkdtemp(join(tmpdir(), "xc-body-voice-"));
-    const audioPath = join(directory, "capture.ogg");
     const metrics: DirectTurnMetrics = {
       version: 1,
       values: { ...(capture.metrics ?? {}) },
     };
     const started = performance.now();
-    let stage = "audio_decode";
+    let stage = "transcription";
+    let failedStage: string | undefined;
     try {
-      await measure(metrics, stage, () =>
-        writeFile(audioPath, Buffer.from(capture.audio_base64, "base64")),
-      );
       const storePath = this.api.runtime.agent.session.resolveStorePath(
         this.api.config.session?.store,
         { agentId: this.config.agentId },
       );
-      stage = "transcription";
-      const transcription = await measure(metrics, stage, () =>
-        this.api.runtime.mediaUnderstanding.transcribeAudioFile({
-          filePath: audioPath,
-          cfg: this.api.config,
-          mime: "audio/ogg",
-        }),
-      );
-      const transcript = transcription.text?.trim();
+      const transcript = (await measure(metrics, stage, () =>
+        this.config.transcribe(capture.audio_base64),
+      )).trim();
       if (!transcript) {
         throw new Error("XC Body voice transcription was empty");
       }
       stage = "question_delivery";
-      await measure(metrics, stage, () =>
+      const questionDelivery = measure(metrics, stage, () =>
         this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
-      );
-      const result = await this.api.runtime.agent.session.runWithWorkAdmission(
+      ).catch((error) => {
+        this.api.logger.warn(
+          `XC Body transcript mirror failed: ${String(error)}`,
+        );
+      });
+      const agentRun = this.api.runtime.agent.session.runWithWorkAdmission(
         { storePath, sessionKey: this.config.sessionKey },
         async (abortSignal) => {
           const entry = this.api.runtime.agent.session.getSessionEntry({
@@ -320,7 +312,8 @@ export class DirectConversationService {
               messageTo: this.config.telegramTarget,
               currentMessagingTarget: this.config.telegramTarget,
               senderIsOwner: true,
-              sourceReplyDeliveryMode: "message_tool_only",
+              sourceReplyDeliveryMode: "automatic",
+              disableMessageTool: true,
               extraSystemPrompt: [
                 "This user turn was transcribed from XC Body.",
                 "Reply normally to Louis in the existing session.",
@@ -333,16 +326,27 @@ export class DirectConversationService {
             }),
           );
         },
-      );
+      ).catch((error) => {
+        failedStage ??= "agent";
+        throw error;
+      });
+      const result = await agentRun;
       const answer = resolveDirectAnswer(result, this.config.telegramTarget);
-      if (!answer.delivered) {
-        stage = "answer_delivery";
-        await measure(metrics, stage, () => this.sendTelegram(answer.text));
-      }
       stage = "projection";
-      const speech = await measure(metrics, stage, () =>
+      const speechPreparation = measure(metrics, stage, () =>
         prepareDirectAnswerSpeech(this.config.complete, answer.text),
-      );
+      ).catch((error) => {
+        failedStage ??= "projection";
+        throw error;
+      });
+      const answerDelivery = measure(metrics, "answer_delivery", async () => {
+        await questionDelivery;
+        await this.sendTelegram(answer.text);
+      }).catch((error) => {
+        failedStage ??= "answer_delivery";
+        throw error;
+      });
+      const [speech] = await Promise.all([speechPreparation, answerDelivery]);
       metrics.values.plugin_total_before_answer_ms = Math.round(
         performance.now() - started,
       );
@@ -365,11 +369,9 @@ export class DirectConversationService {
       metrics.values.plugin_total_before_answer_ms = Math.round(
         performance.now() - started,
       );
-      metrics.failed_stage = stage;
+      metrics.failed_stage = failedStage ?? stage;
       await this.abandon(capture.turn_id, metrics);
       throw error;
-    } finally {
-      await rm(directory, { recursive: true, force: true });
     }
   }
 

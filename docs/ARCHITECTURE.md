@@ -140,8 +140,9 @@ eventual direct answer.
 
 1. Existing firmware touch and device-driven capture submit one bounded Opus
    recording to the pending service mailbox.
-2. The native OpenClaw plugin claims it, uses native media transcription, and
-   admits one user turn into the configured existing session.
+2. The native OpenClaw plugin claims it, sends the captured Ogg to fixed-model
+   audio transcription, and admits one user turn into the configured existing
+   session.
 3. The final visible answer returns to the pending service exactly once.
 4. The pending runtime requests a deterministic firmware-owned `attention`
    behavior through the shared StackChan gateway behavior boundary.

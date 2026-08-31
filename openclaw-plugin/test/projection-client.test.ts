@@ -1,15 +1,59 @@
 import assert from "node:assert/strict";
-import { homedir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
+  createNvidiaAudioTranscriber,
   createNvidiaProjectionCompleter,
   NVIDIA_PROJECTION_MODEL,
   NVIDIA_PROJECTION_URL,
+  NVIDIA_TRANSCRIPTION_PROMPT,
 } from "../projection-client.ts";
 
 const EXPECTED_TEXT = "XC_BODY_GEMINI_35_FLASH_LITE_OK";
+
+test("sends the captured Ogg directly to fixed-model transcription", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "xc-body-projection-test-"));
+  const apiKeyFile = join(directory, "model-api-key");
+  await writeFile(apiKeyFile, "test-key");
+  let request: RequestInit | undefined;
+  const transcribe = createNvidiaAudioTranscriber(
+    { apiKeyFile, timeoutMs: 1_000 },
+    async (_input, init) => {
+      request = init;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "你好" } }] }),
+        { status: 200 },
+      );
+    },
+  );
+
+  try {
+    assert.equal(await transcribe("b2dnLWF1ZGlv"), "你好");
+    assert.deepEqual(JSON.parse(String(request?.body)), {
+      model: NVIDIA_PROJECTION_MODEL,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              input_audio: { data: "b2dnLWF1ZGlv", format: "ogg" },
+            },
+            { type: "text", text: NVIDIA_TRANSCRIPTION_PROMPT },
+          ],
+        },
+      ],
+      max_tokens: 2048,
+      reasoning_effort: "none",
+      thinking_level: "off",
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Gemini 3.5 Flash Lite completes a live projection request", {
   timeout: 30_000,

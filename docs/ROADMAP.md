@@ -12,8 +12,9 @@ future direction only; it does not authorize implementation.
 
 ## Milestone 4: Direct Conversation and Appliance UX
 
-Deliberate tap-to-talk uses the existing Louis/XC OpenClaw conversation. The
-recognized question and final answer remain visible in Telegram; the robot
+Deliberate tap-to-talk uses the existing Louis/XC OpenClaw conversation. A
+best-effort labelled Telegram mirror records the recognized question, and the
+final answer follows it after that delivery succeeds or fails. The robot
 performs a short attention movement, waits for physical settle, and then speaks
 the answer without the pending-offer consent cycle. Physical acceptance also
 measures and bounds the wait from stopping the recording to hearing speech.

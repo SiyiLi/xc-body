@@ -73,11 +73,13 @@ A direct question uses `ask -> attention move -> tell`:
 3. Tapping the screen-left ear while listening cancels and discards it.
 4. The recognized question is transcribed and added as a real user turn in the
    existing Louis/XC OpenClaw conversation.
-5. Telegram receives a clearly labelled mirror such as
+5. XC Body sends Telegram a clearly labelled best-effort mirror such as
    `🎙️ Louis via XC Body: <transcript>` so the complete conversation remains
-   visible there.
-6. OpenClaw runs one normal agent turn with the same context, tools, and
-   policies as the bound Telegram session.
+   visible there when delivery succeeds. A mirror failure does not block the
+   agent turn, but the final answer is sent only after the mirror succeeds or
+   fails.
+6. OpenClaw runs one normal agent turn with the same context and policies as
+   the bound Telegram session. The local plugin owns final Telegram delivery.
 7. When the answer is ready, XC Body performs a short deterministic attention
    movement.
 8. Speech begins only after the movement has physically settled.
@@ -109,9 +111,9 @@ The canonical conversation is the existing bound Louis/XC OpenClaw session,
 not a separate robot assistant or isolated chat.
 
 Telegram cannot attribute a bot-created transcript mirror to Louis's personal
-account. The mirror must therefore identify its source honestly. This platform
-limitation does not permit omitting the question: both the recognized question
-and the final answer must remain visible when reviewing Telegram.
+account. The mirror must therefore identify its source honestly. It is
+best-effort observability and never gates the agent turn. The final answer is
+sent after the mirror succeeds or fails.
 
 Each robot recording has one stable turn ID. At most one direct robot turn may
 be active. The implementation must not duplicate an agent turn, Telegram
@@ -129,7 +131,7 @@ The minimal path is an outbound pull from the local native plugin:
 XC Body microphone
   -> existing Opus capture on the rendezvous VM
   <- authenticated long-poll by the local xc-body-native plugin
-  -> native OpenClaw transcription
+  -> fixed-model audio transcription
   -> normal turn in the existing Louis/XC session
   -> normal Telegram answer delivery
   -> shared fast-model projection when the answer is not TTS-friendly
@@ -145,7 +147,7 @@ The local plugin:
 
 - binds a configured robot endpoint, Telegram target, and OpenClaw session;
 - does not accept arbitrary session or delivery targets from the VM;
-- transcribes through OpenClaw's native media-understanding runtime;
+- transcribes the captured Ogg through fixed-model audio inference;
 - mirrors the recognized question to Telegram;
 - admits one normal agent turn against the existing session;
 - delivers the full final answer through the ordinary Telegram path; and
@@ -230,7 +232,7 @@ Milestone 4 extends existing capabilities rather than replacing them:
 
 - FT6336 screen tap and manual-stop listening;
 - bounded Opus capture and authenticated audio-hook forwarding;
-- OpenClaw native audio transcription and existing-session agent turns;
+- fixed-model audio transcription and existing-session agent turns;
 - accepted Edge TTS and prepared-Opus playback;
 - serialized motion, settle, and playback behavior;
 - CoreS3 output volume and NVS persistence;
@@ -268,8 +270,8 @@ acceptance on the real robot.
 
 - Right ear, speak, and right ear produces one bounded recording and one
   transcription; left ear cancels without submission.
-- The labelled recognized question and final answer are both visible in the
-  existing Telegram conversation.
+- When transcript mirror delivery succeeds, the labelled recognized question
+  and final answer are both visible in the existing Telegram conversation.
 - The question is a real user turn in the existing OpenClaw session and may use
   its normal context and tools.
 - XC Body performs one short attention movement after the answer is ready,
