@@ -644,6 +644,9 @@ void Application::InitializeProtocol() {
                 auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
                 std::string requested_transfer_id =
                     cJSON_IsString(transfer_id) ? transfer_id->valuestring : "";
+                auto drain_id = cJSON_GetObjectItem(root, "drain_id");
+                std::string requested_drain_id =
+                    cJSON_IsString(drain_id) ? drain_id->valuestring : "";
                 if (requested_transfer_id.empty()) {
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
@@ -651,7 +654,9 @@ void Application::InitializeProtocol() {
                 }
                 Schedule([this, &board,
                           requested_transfer_id =
-                              std::move(requested_transfer_id)]() {
+                              std::move(requested_transfer_id),
+                          requested_drain_id =
+                              std::move(requested_drain_id)]() {
                     {
                         std::lock_guard<std::mutex> transfer_lock(
                             prepared_audio_transfer_mutex_);
@@ -762,6 +767,21 @@ void Application::InitializeProtocol() {
                     // OnTtsStop() is idempotent (no-op for boards without
                     // an avatar / when lip-sync is already stopped).
                     board.OnTtsStop();
+                    if (!requested_drain_id.empty() && protocol_) {
+                        cJSON* result = cJSON_CreateObject();
+                        cJSON_AddStringToObject(result, "type", "tts");
+                        cJSON_AddStringToObject(result, "state", "drained");
+                        cJSON_AddStringToObject(
+                            result, "drain_id", requested_drain_id.c_str());
+                        cJSON_AddBoolToObject(
+                            result, "ok", !drain_timed_out && !drain_failed);
+                        char* result_str = cJSON_PrintUnformatted(result);
+                        if (result_str != nullptr) {
+                            protocol_->SendText(std::string(result_str));
+                            cJSON_free(result_str);
+                        }
+                        cJSON_Delete(result);
+                    }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");

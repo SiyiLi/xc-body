@@ -34,6 +34,7 @@ from .audio_utils import (
 )
 from .base import EngineRegistry, get_registry
 from .emoji_expression import detect_emoji_face, strip_emoji_for_plain_tts
+from ..esp32_client import stop_tts_after_drain
 
 if TYPE_CHECKING:
     from ..gateway import Gateway
@@ -500,19 +501,6 @@ async def send_pcm_audio(
             "No ESP32 device connected; cannot deliver audio."
         )
 
-    # WebSocket protocol version gate. The firmware decodes raw Opus
-    # binary frames only on protocol v1; v2/v3 wrap each binary message
-    # in a BinaryProtocol header that this gateway does not yet emit.
-    connection = getattr(gateway.esp32, "connection", None)
-    proto_version = getattr(connection, "protocol_version", 1)
-    if proto_version != 1:
-        raise RuntimeError(
-            f"send_pcm_audio requires WebSocket protocol v1, but the "
-            f"connected device negotiated v{proto_version}. Rebuild the "
-            "firmware with v1 (the default for this repository) — v2/v3 "
-            "BinaryProtocol header wrapping is not yet supported."
-        )
-
     # Resample to the device's rate before Opus encoding. ``encode_opus_frames``
     # expects samples at DEVICE_SAMPLE_RATE; passing a different rate would
     # produce frames that play back too fast / too slow on the device.
@@ -542,9 +530,26 @@ async def send_pcm_audio(
 
     sent = 0
     push_error: ConnectionError | None = None
+    stop_error: Exception | None = None
     async with lock_ctx:
+        connection = gateway.esp32.connection
+        if connection is None or not connection.connected:
+            raise RuntimeError(
+                "No ESP32 device connected; cannot deliver audio."
+            )
+        # WebSocket protocol version gate. The firmware decodes raw Opus
+        # binary frames only on protocol v1; v2/v3 wrap each binary message
+        # in a BinaryProtocol header that this gateway does not yet emit.
+        proto_version = getattr(connection, "protocol_version", 1)
+        if proto_version != 1:
+            raise RuntimeError(
+                f"send_pcm_audio requires WebSocket protocol v1, but the "
+                f"connected device negotiated v{proto_version}. Rebuild the "
+                "firmware with v1 (the default for this repository) — v2/v3 "
+                "BinaryProtocol header wrapping is not yet supported."
+            )
         try:
-            await gateway.esp32.send_tts_state("start")
+            await connection.send_tts_state("start")
         except ConnectionError as exc:
             raise RuntimeError(
                 f"Device disconnected before TTS start notification: {exc}"
@@ -576,7 +581,7 @@ async def send_pcm_audio(
                 if now < next_send_time:
                     await asyncio.sleep(next_send_time - now)
                 try:
-                    await gateway.esp32.send_audio_frame(frame)
+                    await connection.send_audio_frame(frame)
                 except ConnectionError as exc:
                     # Stop pushing on the first disconnect, but fall
                     # through to the stop notification (see finally) so
@@ -590,20 +595,23 @@ async def send_pcm_audio(
             playback_complete = push_error is None
         finally:
             try:
-                await gateway.esp32.send_tts_state("stop")
-            except ConnectionError:
-                # If the device dropped, it'll return to idle on its
-                # own when the WebSocket close lands; nothing to do
-                # here.
-                pass
+                if connection is not None and connection.connected:
+                    await stop_tts_after_drain(connection)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                stop_error = exc
 
         if (
             playback_complete
             and push_error is None
+            and stop_error is None
             and after_playback_complete is not None
         ):
             await after_playback_complete()
 
+    if stop_error is not None:
+        raise RuntimeError(f"TTS drain failed: {stop_error}") from stop_error
     if push_error is not None:
         raise RuntimeError(
             f"Device disconnected after sending "
@@ -731,6 +739,7 @@ async def send_pcm_stream(
     sent = 0
     first_audio_frame_sent_ms: int | None = None
     push_error: ConnectionError | None = None
+    stop_error: Exception | None = None
     # ``buffer`` accumulates source-rate PCM bytes. Chunks may be odd-byte
     # (HTTP chunked uploads can split a 16-bit sample across two transport
     # chunks), so we accumulate raw bytes here and only resample / encode
@@ -921,10 +930,19 @@ async def send_pcm_stream(
         finally:
             if connection.connected:
                 try:
-                    await connection.send_tts_state("stop")
-                except ConnectionError:
-                    pass
+                    await stop_tts_after_drain(connection)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    stop_error = exc
 
+    if stop_error is not None:
+        if sent:
+            raise PcmStreamError(
+                f"PCM drain failed after sending {sent} frames: {stop_error}",
+                metrics=partial_metrics(),
+            ) from stop_error
+        raise RuntimeError(f"PCM drain failed: {stop_error}") from stop_error
     if push_error is not None:
         raise PcmStreamError(
             f"Device disconnected after sending {sent} frames: {push_error}",

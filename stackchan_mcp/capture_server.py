@@ -58,6 +58,8 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from aiohttp import web
 
+from .esp32_client import stop_tts_after_drain
+
 if TYPE_CHECKING:
     from .gateway import Gateway
 
@@ -650,8 +652,8 @@ async def _play_prepared_opus(
                 )
         finally:
             if started and connection.connected:
-                await connection.send_tts_state(
-                    "stop",
+                await stop_tts_after_drain(
+                    connection,
                     transfer_id=transfer_id,
                 )
         return {

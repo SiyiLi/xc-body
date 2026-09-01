@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sys
 import types
 import unittest
 from unittest import mock
+
+from stackchan_mcp.esp32_client import ESP32Connection
+from stackchan_mcp.tts.orchestrator import send_pcm_stream
 
 
 try:
@@ -48,6 +52,15 @@ class FakeEsp32:
     def __init__(self, fail: bool = False) -> None:
         self.connection = FakeConnection(fail)
         self.tts_lock = asyncio.Lock()
+
+
+class _Encoder:
+    def __init__(self, *args) -> None:
+        del args
+
+    def encode(self, pcm, samples_per_frame) -> bytes:
+        del pcm, samples_per_frame
+        return b"opus-frame"
 
 
 class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
@@ -110,6 +123,75 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(esp32.connection.events, [])
+
+    async def test_prepared_opus_holds_tts_lane_before_direct_pcm(self) -> None:
+        class WebSocket:
+            def __init__(self) -> None:
+                self.messages = []
+
+            async def send(self, message) -> None:
+                self.messages.append(message)
+
+            async def close(self, **_kwargs) -> None:
+                pass
+
+            def drain_ids(self) -> list[str]:
+                return [
+                    payload["drain_id"]
+                    for message in self.messages
+                    if isinstance(message, str)
+                    for payload in (json.loads(message),)
+                    if payload.get("state") == "stop"
+                    and payload.get("drain_id")
+                ]
+
+        async def one_frame():
+            yield b"\x00" * 1920
+
+        async def wait_for_drains(websocket, count: int) -> None:
+            while len(websocket.drain_ids()) < count:
+                await asyncio.sleep(0.001)
+
+        websocket = WebSocket()
+        connection = ESP32Connection(websocket, "device-session-1")
+        connection.tts_drain_ack = True
+        esp32 = types.SimpleNamespace(
+            connection=connection,
+            tts_lock=asyncio.Lock(),
+        )
+        gateway = types.SimpleNamespace(esp32=esp32)
+        opuslib = types.SimpleNamespace(
+            Encoder=_Encoder,
+            APPLICATION_VOIP=object(),
+        )
+        with mock.patch.dict(sys.modules, {"opuslib": opuslib}):
+            prepared = asyncio.create_task(
+                capture_server._play_prepared_opus(gateway, [b"one"], "robot:1")
+            )
+            await asyncio.wait_for(wait_for_drains(websocket, 1), timeout=1)
+            direct = asyncio.create_task(send_pcm_stream(gateway, one_frame()))
+            await asyncio.sleep(0.01)
+            self.assertFalse(direct.done())
+
+            connection.handle_tts_drained(
+                {
+                    "type": "tts",
+                    "state": "drained",
+                    "drain_id": websocket.drain_ids()[0],
+                    "ok": True,
+                }
+            )
+            await prepared
+            await asyncio.wait_for(wait_for_drains(websocket, 2), timeout=1)
+            connection.handle_tts_drained(
+                {
+                    "type": "tts",
+                    "state": "drained",
+                    "drain_id": websocket.drain_ids()[1],
+                    "ok": True,
+                }
+            )
+            await direct
 
 
 if __name__ == "__main__":
