@@ -52,8 +52,9 @@ encoding, robot motion, pending-offer state, or device connectivity.
 ### Pending-thought service
 
 The VM summary boundary keeps plaintext in request scope, prepares normalized
-16 kHz mono Opus, validates the packet profile, and submits the existing
-pending-thought contract. Plaintext is not stored or logged.
+16 kHz mono Opus for pending offers, validates the packet profile, and submits
+the existing pending-thought contract. Direct answers use the existing PCM
+streaming path after attention settles. Plaintext is not stored or logged.
 
 One process-owned runtime keeps at most one pending offer. It exposes only
 `consider_thought`, receives StackChan events through one persistent upstream
@@ -147,7 +148,7 @@ eventual direct answer.
 4. The pending runtime requests a deterministic firmware-owned `attention`
    behavior through the shared StackChan gateway behavior boundary.
 5. The gateway reuses its servo lane, correlated completion waiter, timeout,
-   and recovery path. Prepared Opus playback starts only after the firmware
+   and recovery path. Direct PCM playback starts only after the firmware
    reports physical settle and neutral return.
 6. The pending offer, if any, is untouched and its base view is restored after
    either success or failure.

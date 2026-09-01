@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import http.client
 import json
 import logging
 import time
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from threading import RLock
 from typing import Any
+from urllib.parse import urlsplit
 
 from gateway.pending_thought import KnockWaitTell
 from gateway.stackchan_event_session import create_stackchan_client_session
@@ -23,6 +25,34 @@ logger = logging.getLogger(__name__)
 class PendingThoughtRuntimeError(RuntimeError):
     """The persistent thought runtime could not complete a body operation."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        metrics: Mapping[str, int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.metrics = dict(metrics or {})
+
+
+def _stream_playback_metrics(playback: Mapping[str, object]) -> dict[str, int]:
+    """Extract content-free PCM playback metrics from one gateway response."""
+
+    metrics: dict[str, int] = {}
+    for source, target in (
+        ("duration_ms", "playback_audio_ms"),
+        ("frame_count", "streamed_audio_frames"),
+        (
+            "gateway_first_audio_frame_sent_ms",
+            "gateway_first_audio_frame_sent_ms",
+        ),
+        ("gateway_playback_completed_ms", "gateway_playback_completed_ms"),
+    ):
+        value = playback.get(source)
+        if isinstance(value, int) and value >= 0:
+            metrics[target] = value
+    return metrics
+
 
 class StackChanThoughtBody:
     """Synchronous knock/tell ports backed by an injected MCP tool caller."""
@@ -32,10 +62,12 @@ class StackChanThoughtBody:
         call_tool: ToolCaller,
         *,
         playback_url: str | None = None,
+        streaming_url: str | None = None,
         playback_token: str = "",
     ):
         self._call_tool = call_tool
         self._playback_url = playback_url
+        self._streaming_url = streaming_url
         self._playback_token = playback_token
         self._verified_session_id: str | None = None
         self._base_view: str | None = None
@@ -105,15 +137,20 @@ class StackChanThoughtBody:
             self._base_view = None
             self.set_base_view()
 
-    def tell_direct(
+    def tell_direct_stream(
         self,
         turn_id: str,
-        audio: bytes,
+        pcm: Any,
     ) -> dict[str, int]:
-        """Run the firmware-owned attention behavior, then speak."""
+        """Run attention, then hold the body lane through PCM playback."""
 
         with self._operation_lock:
             self._require_ready()
+            session_id = self._verified_session_id
+            if session_id is None:
+                raise PendingThoughtRuntimeError(
+                    "reviewed avatar session is unavailable"
+                )
             self._base_view = "avatar"
             started = time.monotonic()
             self._call(
@@ -121,30 +158,47 @@ class StackChanThoughtBody:
                 {"behavior_id": turn_id, "kind": "attention"},
             )
             attention_ms = round((time.monotonic() - started) * 1000)
+            attention_completed_ms = time.time_ns() // 1_000_000
+            metrics = {
+                "attention_ms": attention_ms,
+                "attention_completed_ms": attention_completed_ms,
+            }
+            try:
+                pcm.wait_for_playable()
+            except Exception as exc:
+                raise PendingThoughtRuntimeError(
+                    f"direct stream: {type(exc).__name__}",
+                    metrics=metrics,
+                ) from exc
             started = time.monotonic()
-            playback = self._play_audio_bytes(audio, turn_id)
-            playback_request_ms = round(
+            try:
+                playback = self._play_pcm_stream(
+                    pcm.iter_pcm_chunks(),
+                    turn_id,
+                    session_id,
+                )
+            except PendingThoughtRuntimeError as exc:
+                metrics["playback_request_ms"] = round(
+                    (time.monotonic() - started) * 1000
+                )
+                metrics.update(exc.metrics)
+                raise PendingThoughtRuntimeError(
+                    str(exc),
+                    metrics=metrics,
+                ) from exc
+            except Exception as exc:
+                metrics["playback_request_ms"] = round(
+                    (time.monotonic() - started) * 1000
+                )
+                raise PendingThoughtRuntimeError(
+                    f"stream audio: {type(exc).__name__}",
+                    metrics=metrics,
+                ) from exc
+            metrics["playback_request_ms"] = round(
                 (time.monotonic() - started) * 1000
             )
             self._base_view = None
-            metrics = {
-                "attention_ms": attention_ms,
-                "playback_request_ms": playback_request_ms,
-            }
-            for source, target in (
-                ("duration_ms", "playback_audio_ms"),
-                ("packet_count", "prepared_audio_packets"),
-            ):
-                value = playback.get(source)
-                if isinstance(value, int) and value >= 0:
-                    metrics[target] = value
-            for name in (
-                "gateway_playback_started_ms",
-                "gateway_playback_completed_ms",
-            ):
-                value = playback.get(name)
-                if isinstance(value, int) and value >= 0:
-                    metrics[name] = value
+            metrics.update(_stream_playback_metrics(playback))
             return metrics
 
     def set_offer_pending(self, pending: bool) -> None:
@@ -190,6 +244,82 @@ class StackChanThoughtBody:
             raise PendingThoughtRuntimeError(
                 f"play audio: {result.get('error', 'playback failed')}"
             )
+        return result
+
+    def _play_pcm_stream(
+        self,
+        chunks: Iterator[bytes],
+        turn_id: str,
+        session_id: str,
+    ) -> Mapping[str, object]:
+        if not self._streaming_url:
+            raise PendingThoughtRuntimeError(
+                "PCM playback URL is not configured"
+            )
+        parsed = urlsplit(self._streaming_url)
+        if not parsed.hostname:
+            raise PendingThoughtRuntimeError("PCM playback URL is invalid")
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        connection_type = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        connection = connection_type(
+            parsed.hostname,
+            parsed.port,
+            timeout=300,
+        )
+        stream_error: Exception | None = None
+        try:
+            connection.putrequest("POST", target)
+            connection.putheader(
+                "Authorization",
+                f"Bearer {self._playback_token}",
+            )
+            connection.putheader("Content-Type", "application/octet-stream")
+            connection.putheader("Transfer-Encoding", "chunked")
+            connection.putheader("X-Message-Id", turn_id)
+            connection.putheader("X-StackChan-Session", session_id)
+            connection.putheader("X-Sample-Rate", "16000")
+            connection.putheader("X-Channels", "1")
+            connection.endheaders()
+            try:
+                for chunk in chunks:
+                    if not chunk:
+                        continue
+                    connection.send(f"{len(chunk):X}\r\n".encode("ascii"))
+                    connection.send(chunk)
+                    connection.send(b"\r\n")
+            except Exception as exc:
+                stream_error = exc
+            connection.send(b"0\r\n\r\n")
+            response = connection.getresponse()
+            result = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise PendingThoughtRuntimeError(
+                f"stream audio: {type(exc).__name__}"
+            ) from exc
+        finally:
+            connection.close()
+        metrics = _stream_playback_metrics(result) if isinstance(
+            result,
+            Mapping,
+        ) else {}
+        if not isinstance(result, Mapping) or result.get("ok") is not True:
+            detail = result.get("error") if isinstance(result, Mapping) else None
+            raise PendingThoughtRuntimeError(
+                f"stream audio: {detail or 'playback failed'}",
+                metrics=metrics,
+            )
+        if stream_error is not None:
+            metrics.pop("gateway_playback_completed_ms", None)
+            raise PendingThoughtRuntimeError(
+                f"stream audio: {type(stream_error).__name__}",
+                metrics=metrics,
+            ) from stream_error
         return result
 
     def _require_ready(self) -> None:
@@ -247,9 +377,11 @@ class PendingThoughtRuntime:
         self,
         *,
         playback_url: str | None = None,
+        streaming_url: str | None = None,
         playback_token: str = "",
     ) -> None:
         self._playback_url = playback_url
+        self._streaming_url = streaming_url
         self._playback_token = playback_token
         self.machine: KnockWaitTell | None = None
         self.body: StackChanThoughtBody | None = None
@@ -289,23 +421,39 @@ class PendingThoughtRuntime:
             )
         return pending_id
 
-    async def tell_direct(
+    async def tell_direct_stream(
         self,
         turn_id: str,
-        audio: bytes,
+        pcm: Any,
     ) -> dict[str, int]:
-        """Serialize a direct answer against pending-offer body operations."""
+        """Keep direct attention and streamed playback in one body lane."""
 
         if self.machine is None or self.body is None:
             raise PendingThoughtRuntimeError("runtime session is not initialized")
         try:
-            return await asyncio.to_thread(
-                self.body.tell_direct,
+            result = await asyncio.to_thread(
+                self.body.tell_direct_stream,
                 turn_id,
-                audio,
+                pcm,
             )
-        finally:
-            await asyncio.to_thread(self.body.restore_base_view)
+        except BaseException:
+            try:
+                await asyncio.to_thread(self.body.restore_base_view)
+            except Exception as exc:
+                logger.warning(
+                    "direct stream cleanup failed (%s)",
+                    type(exc).__name__,
+                )
+            raise
+        else:
+            try:
+                await asyncio.to_thread(self.body.restore_base_view)
+            except Exception as exc:
+                raise PendingThoughtRuntimeError(
+                    "direct stream cleanup failed",
+                    metrics=result,
+                ) from exc
+            return result
 
     async def consider_thought(
         self, payload: Mapping[str, object]
@@ -329,6 +477,7 @@ class PendingThoughtRuntime:
             self.body = StackChanThoughtBody(
                 self._caller,
                 playback_url=self._playback_url,
+                streaming_url=self._streaming_url,
                 playback_token=self._playback_token,
             )
             self.machine = KnockWaitTell(

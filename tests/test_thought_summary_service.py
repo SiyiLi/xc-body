@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.speech_preparation import (
     DEFAULT_VOICE,
+    EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
+    EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
     VOICE_ENV,
     prepare_speech,
 )
@@ -266,7 +268,12 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(prepared, _PREPARED_AUDIO_BASE64)
-        communicate.assert_called_once_with("完整答案", DEFAULT_VOICE)
+        communicate.assert_called_once_with(
+            "完整答案",
+            DEFAULT_VOICE,
+            connect_timeout=EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
+            receive_timeout=EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
+        )
         self.assertEqual(
             [item.args[0] for item in stdin.write.call_args_list],
             [b"first", b"second"],

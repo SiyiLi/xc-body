@@ -245,6 +245,7 @@ def build_app(
 
     runtime = PendingThoughtRuntime(
         playback_url=playback_config.url,
+        streaming_url=playback_config.streaming_url,
         playback_token=playback_config.token,
     )
     voice_mailbox = VoiceMailbox()
@@ -385,6 +386,8 @@ def build_app(
             )
         except Exception as exc:
             status = "body_unavailable"
+            if isinstance(exc, DirectConversationError):
+                body_metrics = exc.metrics
             logger.warning("direct answer failed (%s)", type(exc).__name__)
             response = JSONResponse(
                 {"ok": False, "error": "body_unavailable"},

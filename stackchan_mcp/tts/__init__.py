@@ -19,6 +19,7 @@ from typing import Callable
 from .base import EngineRegistry, TTSEngine, get_registry
 from .orchestrator import (
     DEFAULT_VOICE,
+    PcmStreamError,
     send_pcm_audio,
     send_pcm_stream,
     synthesize_and_send,
@@ -68,6 +69,7 @@ _try_register(_register_edge_tts, "edge-tts")
 __all__ = [
     "DEFAULT_VOICE",
     "EngineRegistry",
+    "PcmStreamError",
     "TTSEngine",
     "get_registry",
     "send_pcm_audio",

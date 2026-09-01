@@ -136,7 +136,7 @@ XC Body microphone
   -> normal Telegram answer delivery
   -> shared fast-model projection when the answer is not TTS-friendly
   -> authenticated spoken-text response to the VM
-  -> accepted Edge TTS and prepared-Opus robot playback
+  -> Edge TTS and bounded PCM robot playback
 ```
 
 The VM holds at most one completed capture in a bounded in-memory mailbox. It
@@ -154,9 +154,10 @@ The local plugin:
 - returns either a short plain answer or its concise Chinese projection to the
   VM for robot speech.
 
-The VM reuses the physically accepted Edge TTS and prepared-Opus playback path.
-Direct answers and pending-offer speech share the existing serialized
-motion/audio boundary so they cannot overlap.
+The VM reuses accepted Edge TTS and the existing serialized motion/audio
+boundary. Direct answers fill a bounded PCM buffer during attention, then use
+the existing PCM stream after attention settles and a safe initial buffer is
+ready. Pending offers retain their complete prepared-Opus path.
 
 ## End-to-End Latency Contract
 
@@ -255,7 +256,8 @@ Milestone 4 extends existing capabilities rather than replacing them:
    classify offers and project long or formatted results into Chinese speech of
    at most 200 words and 1000 Unicode characters. Short plain English or
    Chinese is spoken unchanged. Retry once, then apply the caller-specific
-   failure policy before reusing accepted TTS and prepared-Opus playback.
+   failure policy before direct PCM playback. Pending offers retain prepared
+   Opus playback.
 6. **Latency:** establish the physical response-latency baseline, identify the
    slowest owned phase, and meet the agreed budget without weakening session
    continuity or delivery correctness.
@@ -293,6 +295,9 @@ acceptance on the real robot.
   playback.
 - A completed direct turn emits one content-free JSON timing record covering
   capture, OpenClaw processing, speech preparation, attention, and playback.
+- `gateway_first_audio_frame_sent_ms` records the first frame sent toward the
+  device, not physical sound onset; `submit_to_speech_start_ms` uses it as the
+  available proxy.
 - Five fixed short direct turns record every `submit_to_speech_start_ms` sample
   plus the median and worst result, and meet the response-latency budget agreed
   from the first production baseline.
@@ -302,7 +307,7 @@ acceptance on the real robot.
 - Always-on listening.
 - Voice activity detection or automatic end-of-speech.
 - Continuous or realtime conversation.
-- Barge-in and streaming TTS.
+- Barge-in and realtime streaming speech interaction.
 - Durable audio or conversation queues.
 - Multiple settings pages or a generic gesture framework.
 - Free-form model-generated motion.

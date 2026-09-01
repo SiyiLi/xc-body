@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -172,31 +173,36 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         caller.status["session_id"] = "device-session-2"
         self.assertFalse(asyncio.run(runtime.is_ready()))
 
-    def test_direct_tell_restores_idle_base_view(self):
-        runtime = PendingThoughtRuntime()
-        runtime.machine = Mock(pending_thought_id="eval:waiting")
-        runtime.body = Mock()
+    def test_direct_stream_waits_for_attention_before_opening_pcm(self):
+        class Pcm:
+            def __init__(self):
+                self.calls = []
 
-        asyncio.run(runtime.tell_direct("robot:1", b"audio"))
+            def wait_for_playable(self):
+                self.calls.append("wait")
 
-        runtime.body.restore_base_view.assert_called_once_with()
+            def iter_pcm_chunks(self):
+                self.calls.append("iterate")
+                return iter((b"pcm",))
 
-    @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
-    def test_direct_tell_reuses_firmware_attention_behavior(self, urlopen):
-        response = Mock()
-        response.read.return_value = (
-            b'{"ok":true,"duration_ms":420,"packet_count":7,'
-            b'"gateway_playback_started_ms":1000,'
-            b'"gateway_playback_completed_ms":1420}'
-        )
-        urlopen.return_value.__enter__.return_value = response
         caller = RecordingCaller()
         body = ready_body(
             caller,
-            playback_url="http://127.0.0.1:8080/play",
+            streaming_url="http://127.0.0.1:8766/pcm",
         )
-
-        metrics = body.tell_direct("robot:1", b"audio")
+        pcm = Pcm()
+        with patch.object(
+            body,
+            "_play_pcm_stream",
+            return_value={
+                "ok": True,
+                "frame_count": 1,
+                "duration_ms": 60,
+                "gateway_first_audio_frame_sent_ms": 1000,
+                "gateway_playback_completed_ms": 1060,
+            },
+        ) as play:
+            metrics = body.tell_direct_stream("robot:1", pcm)
 
         self.assertEqual(
             caller.calls,
@@ -208,11 +214,200 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
                 ),
             ],
         )
-        self.assertEqual(urlopen.call_args.args[0].data, b"audio")
-        self.assertEqual(metrics["playback_audio_ms"], 420)
-        self.assertEqual(metrics["prepared_audio_packets"], 7)
-        self.assertEqual(metrics["gateway_playback_started_ms"], 1000)
-        self.assertEqual(metrics["gateway_playback_completed_ms"], 1420)
+        self.assertEqual(pcm.calls, ["wait", "iterate"])
+        self.assertEqual(play.call_args.args[1], "robot:1")
+        self.assertEqual(play.call_args.args[2], "device-session-1")
+        self.assertEqual(metrics["streamed_audio_frames"], 1)
+        self.assertEqual(metrics["gateway_first_audio_frame_sent_ms"], 1000)
+
+    def test_direct_stream_never_opens_pcm_after_producer_failure(self):
+        class Pcm:
+            def wait_for_playable(self):
+                raise RuntimeError("producer failed")
+
+            def iter_pcm_chunks(self):
+                raise AssertionError("PCM iterator must not be opened")
+
+        body = ready_body(
+            RecordingCaller(),
+            streaming_url="http://127.0.0.1:8766/pcm",
+        )
+        with patch.object(body, "_play_pcm_stream") as play:
+            with self.assertRaisesRegex(
+                PendingThoughtRuntimeError,
+                "direct stream: RuntimeError",
+            ):
+                body.tell_direct_stream("robot:1", Pcm())
+
+        play.assert_not_called()
+
+    def test_stream_failure_after_pcm_write_returns_partial_metrics(self):
+        class Response:
+            def read(self):
+                return (
+                    b'{"ok":true,"frame_count":1,"duration_ms":60,'
+                    b'"gateway_first_audio_frame_sent_ms":1000,'
+                    b'"gateway_playback_completed_ms":1060}'
+                )
+
+        class Connection:
+            def __init__(self):
+                self.sent = []
+                self.closed = False
+
+            def putrequest(self, *args):
+                del args
+
+            def putheader(self, *args):
+                del args
+
+            def endheaders(self):
+                pass
+
+            def send(self, payload):
+                self.sent.append(payload)
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                self.closed = True
+
+        def chunks():
+            yield b"pcm"
+            raise RuntimeError("producer failed")
+
+        connection = Connection()
+        body = ready_body(
+            RecordingCaller(),
+            streaming_url="http://127.0.0.1:8766/pcm",
+        )
+        with patch(
+            "gateway.pending_thought_runtime.http.client.HTTPConnection",
+            return_value=connection,
+        ):
+            with self.assertRaisesRegex(
+                PendingThoughtRuntimeError,
+                "stream audio: RuntimeError",
+            ) as raised:
+                body._play_pcm_stream(
+                    chunks(),
+                    "robot:1",
+                    "device-session-1",
+                )
+
+        self.assertEqual(
+            connection.sent,
+            [b"3\r\n", b"pcm", b"\r\n", b"0\r\n\r\n"],
+        )
+        self.assertTrue(connection.closed)
+        self.assertEqual(raised.exception.metrics["streamed_audio_frames"], 1)
+        self.assertNotIn(
+            "gateway_playback_completed_ms",
+            raised.exception.metrics,
+        )
+
+    def test_direct_stream_keeps_the_body_lane_until_playback_ends(self):
+        class Pcm:
+            def wait_for_playable(self):
+                pass
+
+            def iter_pcm_chunks(self):
+                return iter((b"pcm",))
+
+        playback_started = threading.Event()
+        release_playback = threading.Event()
+        knock_finished = threading.Event()
+        body = ready_body(
+            RecordingCaller(),
+            streaming_url="http://127.0.0.1:8766/pcm",
+        )
+
+        def play(*args):
+            del args
+            playback_started.set()
+            release_playback.wait(timeout=1)
+            return {"ok": True}
+
+        def knock():
+            body.knock("eval:next")
+            knock_finished.set()
+
+        with patch.object(body, "_play_pcm_stream", side_effect=play):
+            direct = threading.Thread(
+                target=body.tell_direct_stream,
+                args=("robot:1", Pcm()),
+            )
+            direct.start()
+            self.assertTrue(playback_started.wait(timeout=1))
+            contender = threading.Thread(target=knock)
+            contender.start()
+            self.assertFalse(knock_finished.wait(timeout=0.02))
+            release_playback.set()
+            direct.join(timeout=1)
+            contender.join(timeout=1)
+
+        self.assertFalse(direct.is_alive())
+        self.assertTrue(knock_finished.is_set())
+
+    def test_runtime_restores_base_view_after_stream_failure(self):
+        runtime = PendingThoughtRuntime()
+        runtime.machine = Mock(pending_thought_id=None)
+        runtime.body = Mock()
+        runtime.body.tell_direct_stream.side_effect = PendingThoughtRuntimeError(
+            "stream audio: RuntimeError",
+            metrics={"gateway_first_audio_frame_sent_ms": 1000},
+        )
+
+        with self.assertRaises(PendingThoughtRuntimeError):
+            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
+
+        runtime.body.restore_base_view.assert_called_once_with()
+
+    def test_restore_failure_preserves_stream_failure_metrics(self):
+        runtime = PendingThoughtRuntime()
+        runtime.machine = Mock(pending_thought_id=None)
+        runtime.body = Mock()
+        runtime.body.tell_direct_stream.side_effect = PendingThoughtRuntimeError(
+            "stream audio: ConnectionError",
+            metrics={
+                "gateway_first_audio_frame_sent_ms": 1000,
+                "streamed_audio_frames": 1,
+            },
+        )
+        runtime.body.restore_base_view.side_effect = RuntimeError(
+            "device unavailable"
+        )
+
+        with self.assertRaises(PendingThoughtRuntimeError) as raised:
+            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
+
+        self.assertEqual(
+            raised.exception.metrics["gateway_first_audio_frame_sent_ms"],
+            1000,
+        )
+        runtime.body.restore_base_view.assert_called_once_with()
+
+    def test_restore_failure_preserves_completed_stream_metrics(self):
+        runtime = PendingThoughtRuntime()
+        runtime.machine = Mock(pending_thought_id=None)
+        runtime.body = Mock()
+        metrics = {
+            "streamed_audio_frames": 5,
+            "playback_audio_ms": 300,
+            "gateway_first_audio_frame_sent_ms": 1000,
+            "gateway_playback_completed_ms": 1300,
+        }
+        runtime.body.tell_direct_stream.return_value = metrics
+        runtime.body.restore_base_view.side_effect = RuntimeError(
+            "restore failed"
+        )
+
+        with self.assertRaises(PendingThoughtRuntimeError) as raised:
+            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
+
+        self.assertEqual(raised.exception.metrics, metrics)
+        runtime.body.restore_base_view.assert_called_once_with()
 
     def test_base_view_cache_is_invalidated_for_replacement_session(self):
         caller = RecordingCaller()
@@ -228,7 +423,6 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             caller.calls,
             [("set_avatar", {"face": "idle"})],
         )
-
 
 
 if __name__ == "__main__":

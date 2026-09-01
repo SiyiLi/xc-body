@@ -36,6 +36,7 @@ _CONTRACT_PATH = (
 )
 TOOL_NAME = "consider_thought"
 PLAYBACK_URL_ENV = "XC_BODY_PLAYBACK_URL"
+PCM_URL_ENV = "XC_BODY_PCM_URL"
 PLAYBACK_TOKEN_ENV = "XC_BODY_PLAYBACK_TOKEN"
 
 
@@ -46,6 +47,7 @@ class PendingThoughtServiceError(RuntimeError):
 @dataclass(frozen=True)
 class PlaybackConfig:
     url: str
+    streaming_url: str
     token: str = field(repr=False)
 
 
@@ -60,17 +62,23 @@ def _is_loopback_url_host(hostname: str | None) -> bool:
         return False
 
 
-def validate_playback_url(url: str) -> None:
+def validate_playback_url(url: str, name: str = PLAYBACK_URL_ENV) -> None:
     """Require an absolute HTTP(S) URL and TLS outside loopback."""
 
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise PendingThoughtServiceError(
-            f"{PLAYBACK_URL_ENV} must be an absolute HTTP(S) URL"
+            f"{name} must be an absolute HTTP(S) URL"
         )
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise PendingThoughtServiceError(
+            f"{name} must include a valid port"
+        ) from exc
     if parsed.scheme == "http" and not _is_loopback_url_host(parsed.hostname):
         raise PendingThoughtServiceError(
-            f"non-loopback {PLAYBACK_URL_ENV} values must use HTTPS"
+            f"non-loopback {name} values must use HTTPS"
         )
 
 
@@ -81,6 +89,7 @@ def load_playback_config(
 
     values = os.environ if environ is None else environ
     url = values.get(PLAYBACK_URL_ENV, "").strip()
+    streaming_url = values.get(PCM_URL_ENV, "").strip()
     token = values.get(PLAYBACK_TOKEN_ENV, "").strip()
     if not url:
         raise PendingThoughtServiceError(
@@ -90,8 +99,17 @@ def load_playback_config(
         raise PendingThoughtServiceError(
             f"{PLAYBACK_TOKEN_ENV} is required for prepared-audio playback"
         )
+    if not streaming_url:
+        raise PendingThoughtServiceError(
+            f"{PCM_URL_ENV} is required for streamed direct playback"
+        )
     validate_playback_url(url)
-    return PlaybackConfig(url=url, token=token)
+    validate_playback_url(streaming_url, PCM_URL_ENV)
+    return PlaybackConfig(
+        url=url,
+        streaming_url=streaming_url,
+        token=token,
+    )
 
 
 def create_service_server(runtime: PendingThoughtRuntime) -> Any:
@@ -271,6 +289,7 @@ async def run_stdio_service(
                     avatar_path=config.avatar_path,
                     runtime=PendingThoughtRuntime(
                         playback_url=playback_config.url,
+                        streaming_url=playback_config.streaming_url,
                         playback_token=playback_config.token,
                     ),
                 )

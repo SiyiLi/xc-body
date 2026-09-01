@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 import uuid
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from threading import Condition
 
-from gateway.pending_thought_runtime import PendingThoughtRuntime
-from gateway.speech_preparation import prepare_speech
+from gateway.pending_thought_runtime import (
+    PendingThoughtRuntime,
+    PendingThoughtRuntimeError,
+)
+from gateway.speech_preparation import (
+    EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
+    EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
+    stream_speech_pcm,
+)
 
 _MAX_AUDIO_BYTES = 768 * 1024
 _CAPTURE_TTL_SECONDS = 120
 _ACTIVE_TURN_TTL_SECONDS = 48 * 60 * 60
 _MAX_METRIC_VALUE = 10**16
+_PCM_SAMPLE_BYTES = 2
+_PCM_PREBUFFER_BYTES = 16_000 * _PCM_SAMPLE_BYTES * 240 // 1000
+_PCM_BUFFER_MAX_BYTES = 16_000 * _PCM_SAMPLE_BYTES
+_PCM_PROGRESS_TIMEOUT_SECONDS = (
+    EDGE_TTS_CONNECT_TIMEOUT_SECONDS
+    + EDGE_TTS_RECEIVE_TIMEOUT_SECONDS
+    + 5
+)
 _TURN_METRIC_NAMES = frozenset(
     (
         "capture_started_uptime_us",
@@ -73,12 +89,6 @@ _DERIVED_METRICS = (
         1,
     ),
     (
-        "submit_to_speech_start_ms",
-        "gateway_capture_stopped_ms",
-        "gateway_playback_started_ms",
-        1,
-    ),
-    (
         "submit_to_complete_ms",
         "gateway_capture_stopped_ms",
         "server_completed_ms",
@@ -97,6 +107,167 @@ _monotonic = time.monotonic
 
 class DirectConversationError(RuntimeError):
     """A direct robot turn could not complete safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        metrics: Mapping[str, int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.metrics = dict(metrics or {})
+
+
+class DirectPcmBuffer:
+    """Bounded PCM FIFO shared by the async producer and body worker."""
+
+    def __init__(
+        self,
+        *,
+        prebuffer_bytes: int = _PCM_PREBUFFER_BYTES,
+        max_bytes: int = _PCM_BUFFER_MAX_BYTES,
+        progress_timeout_seconds: float = _PCM_PROGRESS_TIMEOUT_SECONDS,
+    ) -> None:
+        if not 0 < prebuffer_bytes <= max_bytes:
+            raise ValueError("PCM buffer bounds are invalid")
+        if progress_timeout_seconds <= 0:
+            raise ValueError("PCM progress timeout must be positive")
+        self._prebuffer_bytes = prebuffer_bytes
+        self._max_bytes = max_bytes
+        self._progress_timeout_seconds = progress_timeout_seconds
+        self._chunks: deque[bytes] = deque()
+        self._buffered_bytes = 0
+        self._condition = Condition()
+        self._finished = False
+        self._failure: Exception | None = None
+        self._aborted = False
+        self._first_pcm_ready_ms: int | None = None
+        self._completed_ms: int | None = None
+        self._last_progress = time.monotonic()
+
+    async def put(self, chunk: bytes) -> None:
+        """Append PCM, applying backpressure once the FIFO is full."""
+
+        await asyncio.to_thread(self.put_blocking, chunk)
+
+    def put_blocking(self, chunk: bytes) -> None:
+        """Blocking half of :meth:`put`, used by the async bridge."""
+
+        if not chunk:
+            return
+        offset = 0
+        with self._condition:
+            while offset < len(chunk):
+                while self._buffered_bytes >= self._max_bytes:
+                    self._raise_terminal_locked()
+                    self._condition.wait()
+                self._raise_terminal_locked()
+                count = min(
+                    self._max_bytes - self._buffered_bytes,
+                    len(chunk) - offset,
+                )
+                part = chunk[offset : offset + count]
+                self._chunks.append(part)
+                self._buffered_bytes += count
+                offset += count
+                self._last_progress = time.monotonic()
+                if self._first_pcm_ready_ms is None:
+                    self._first_pcm_ready_ms = _unix_ms()
+                self._condition.notify_all()
+
+    def finish(self) -> None:
+        """Mark clean producer EOS without discarding an incomplete tail."""
+
+        with self._condition:
+            if self._failure is None and not self._aborted:
+                self._finished = True
+                self._completed_ms = _unix_ms()
+            self._condition.notify_all()
+
+    def fail(self, error: Exception) -> None:
+        """Abort unread PCM so a partial utterance is never completed."""
+
+        with self._condition:
+            if self._failure is None and not self._aborted:
+                self._failure = error
+                self._chunks.clear()
+                self._buffered_bytes = 0
+            self._condition.notify_all()
+
+    def abort(self) -> None:
+        """Release a blocked producer after an independent body failure."""
+
+        with self._condition:
+            self._aborted = True
+            self._chunks.clear()
+            self._buffered_bytes = 0
+            self._condition.notify_all()
+
+    def wait_for_playable(self) -> None:
+        """Wait for the initial prebuffer or a nonempty final PCM tail."""
+
+        with self._condition:
+            while True:
+                self._raise_terminal_locked()
+                if self._buffered_bytes >= self._prebuffer_bytes:
+                    return
+                if self._finished:
+                    if self._buffered_bytes >= _PCM_SAMPLE_BYTES:
+                        return
+                    raise DirectConversationError(
+                        "speech synthesis produced no audio"
+                    )
+                self._wait_for_progress_locked()
+
+    def iter_pcm_chunks(self) -> Iterator[bytes]:
+        """Drain PCM in order and surface producer failures to the upload."""
+
+        while True:
+            with self._condition:
+                while not self._chunks:
+                    self._raise_terminal_locked()
+                    if self._finished:
+                        return
+                    self._wait_for_progress_locked()
+                chunk = self._chunks.popleft()
+                self._buffered_bytes -= len(chunk)
+                self._condition.notify_all()
+            yield chunk
+
+    def metrics(self) -> dict[str, int]:
+        """Return content-free production timestamps for the turn timeline."""
+
+        metrics: dict[str, int] = {}
+        if self._first_pcm_ready_ms is not None:
+            metrics["tts_first_pcm_ready_ms"] = self._first_pcm_ready_ms
+        if self._completed_ms is not None:
+            metrics["tts_completed_ms"] = self._completed_ms
+        return metrics
+
+    def _raise_terminal_locked(self) -> None:
+        if self._failure is not None:
+            if isinstance(self._failure, DirectConversationError):
+                raise self._failure
+            raise DirectConversationError(
+                "speech synthesis failed"
+            ) from self._failure
+        if self._aborted:
+            raise DirectConversationError("speech stream was aborted")
+
+    def _wait_for_progress_locked(self) -> None:
+        """Wait only until new PCM must arrive to keep the stream alive."""
+
+        remaining = self._progress_timeout_seconds - (
+            time.monotonic() - self._last_progress
+        )
+        if remaining <= 0:
+            error = DirectConversationError("speech synthesis stalled")
+            self._failure = error
+            self._chunks.clear()
+            self._buffered_bytes = 0
+            self._condition.notify_all()
+            raise error
+        self._condition.wait(remaining)
 
 
 def _unix_ms() -> int:
@@ -143,6 +314,14 @@ def build_direct_turn_report(
     for name, start, end, divisor in _DERIVED_METRICS:
         if start in metrics and end in metrics and metrics[end] >= metrics[start]:
             metrics[name] = round((metrics[end] - metrics[start]) / divisor)
+    first_frame = metrics.get("gateway_first_audio_frame_sent_ms")
+    capture_stopped = metrics.get("gateway_capture_stopped_ms")
+    if (
+        isinstance(first_frame, int)
+        and isinstance(capture_stopped, int)
+        and first_frame >= capture_stopped
+    ):
+        metrics["submit_to_speech_start_ms"] = first_frame - capture_stopped
     report: dict[str, object] = {
         "event": "xc_body.direct_turn",
         "version": 1,
@@ -291,14 +470,50 @@ async def speak_direct_answer(
     answer: str,
     voice: str,
 ) -> dict[str, int]:
-    """Prepare speech, perform attention, settle, and play exactly once."""
+    """Generate speech during attention and stream it after the safe gate."""
 
     answer = answer.strip()
     if not answer:
         raise DirectConversationError("direct answer is empty")
-    started = time.monotonic()
-    audio_base64 = await prepare_speech(answer, voice)
-    tts_ms = round((time.monotonic() - started) * 1000)
-    audio = base64.b64decode(audio_base64)
-    body_metrics = await runtime.tell_direct(turn_id, audio)
-    return {"tts_ms": tts_ms, **body_metrics}
+    pcm = DirectPcmBuffer()
+
+    async def produce() -> None:
+        try:
+            await stream_speech_pcm(
+                answer,
+                voice,
+                pcm.put,
+                on_failure=pcm.fail,
+            )
+        except asyncio.CancelledError:
+            pcm.abort()
+            raise
+        except Exception as exc:
+            pcm.fail(exc)
+            raise
+        else:
+            pcm.finish()
+
+    producer = asyncio.create_task(produce())
+    try:
+        body_metrics = await runtime.tell_direct_stream(turn_id, pcm)
+        await producer
+    except asyncio.CancelledError:
+        pcm.abort()
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
+        raise
+    except Exception as exc:
+        pcm.abort()
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
+        metrics = pcm.metrics()
+        if isinstance(exc, PendingThoughtRuntimeError):
+            metrics.update(exc.metrics)
+        if isinstance(exc, DirectConversationError):
+            metrics.update(exc.metrics)
+        raise DirectConversationError(
+            "direct answer playback failed",
+            metrics=metrics,
+        ) from exc
+    return {**pcm.metrics(), **body_metrics}

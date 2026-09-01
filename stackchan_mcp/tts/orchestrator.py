@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
@@ -64,6 +65,19 @@ DEFAULT_VOICE = "voicevox"
 #: takes precedence over this; this only changes the fallback when no
 #: ``voice`` is given. Unset → :data:`DEFAULT_VOICE`.
 TTS_ENGINE_ENV_VAR = "STACKCHAN_TTS_ENGINE"
+
+
+class PcmStreamError(RuntimeError):
+    """A PCM stream failed after handing audio to the device transport."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        metrics: dict[str, int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.metrics = dict(metrics or {})
 
 
 def _extract_set_avatar_payload(result: Any) -> dict[str, Any] | None:
@@ -620,6 +634,7 @@ async def send_pcm_stream(
     *,
     source_rate: int = DEVICE_SAMPLE_RATE,
     source_label: str = "stream",
+    expected_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Encode and push PCM as it arrives from an async iterator.
 
@@ -653,6 +668,8 @@ async def send_pcm_stream(
         source_label: Label used in the orchestrator log so streaming
             producers can be traced separately (e.g.
             ``"voice-tts:msg_abc123"``).
+        expected_session_id: Connected robot session allowed to receive this
+            stream. A replacement session fails rather than receiving it.
 
     Returns:
         Dict describing the push: ``source``, ``frame_count``,
@@ -661,30 +678,15 @@ async def send_pcm_stream(
         was cancelled before yielding any audio.
 
     Raises:
-        RuntimeError: if ``gateway`` is missing, no device is connected,
-            the negotiated protocol is not v1, opuslib is unavailable,
-            Opus encoding fails, or the device disconnects mid-stream.
+        RuntimeError: if ``gateway`` is missing, the session is unavailable,
+            the negotiated protocol is not v1, or opuslib is unavailable.
+        PcmStreamError: if audio was handed to the device before a stream,
+            encoder, or transport failure.
     """
     if gateway is None:
         raise RuntimeError(
             "send_pcm_stream requires a 'gateway' argument to push audio "
             "frames; this call appears to be a validation probe without one."
-        )
-
-    if not gateway.esp32.device_connected:
-        raise RuntimeError(
-            "No ESP32 device connected; cannot deliver streamed audio."
-        )
-
-    # WebSocket protocol version gate (same reasoning as send_pcm_audio).
-    connection = getattr(gateway.esp32, "connection", None)
-    proto_version = getattr(connection, "protocol_version", 1)
-    if proto_version != 1:
-        raise RuntimeError(
-            f"send_pcm_stream requires WebSocket protocol v1, but the "
-            f"connected device negotiated v{proto_version}. Rebuild the "
-            "firmware with v1 (the default for this repository) — v2/v3 "
-            "BinaryProtocol header wrapping is not yet supported."
         )
 
     # opuslib is the same optional extra used by ``encode_opus_frames``;
@@ -727,6 +729,7 @@ async def send_pcm_stream(
     lock_ctx = tts_lock if tts_lock is not None else nullcontext()
 
     sent = 0
+    first_audio_frame_sent_ms: int | None = None
     push_error: ConnectionError | None = None
     # ``buffer`` accumulates source-rate PCM bytes. Chunks may be odd-byte
     # (HTTP chunked uploads can split a 16-bit sample across two transport
@@ -734,18 +737,32 @@ async def send_pcm_stream(
     # when the buffer holds at least one full source-rate frame's worth.
     buffer = bytearray()
 
+    def partial_metrics() -> dict[str, int]:
+        metrics = {
+            "frame_count": sent,
+            "frame_duration_ms": DEVICE_FRAME_DURATION_MS,
+            "duration_ms": sent * DEVICE_FRAME_DURATION_MS,
+        }
+        if first_audio_frame_sent_ms is not None:
+            metrics["gateway_first_audio_frame_sent_ms"] = (
+                first_audio_frame_sent_ms
+            )
+        return metrics
+
     async def _push(opus_frame: bytes) -> bool:
         """Pace, send, advance counters. Returns False on disconnect."""
-        nonlocal sent, push_error, next_send_time
+        nonlocal first_audio_frame_sent_ms, sent, push_error, next_send_time
         now = loop.time()
         if now < next_send_time:
             await asyncio.sleep(next_send_time - now)
         try:
-            await gateway.esp32.send_audio_frame(opus_frame)
+            await connection.send_audio_frame(opus_frame)
         except ConnectionError as exc:
             push_error = exc
             return False
         sent += 1
+        if first_audio_frame_sent_ms is None:
+            first_audio_frame_sent_ms = time.time_ns() // 1_000_000
         # Advance the schedule from whichever is later: the previous
         # target (when we kept up — preserves the underlying 20 ms
         # cadence and absorbs sub-frame jitter), or the actual current
@@ -762,8 +779,29 @@ async def send_pcm_stream(
         return True
 
     async with lock_ctx:
+        connection = gateway.esp32.connection
+        if connection is None or not connection.connected:
+            raise RuntimeError(
+                "No ESP32 device connected; cannot deliver streamed audio."
+            )
+        if (
+            expected_session_id is not None
+            and connection.session_id != expected_session_id
+        ):
+            raise RuntimeError(
+                "ESP32 session changed before streamed playback"
+            )
+        # WebSocket protocol version gate (same reasoning as send_pcm_audio).
+        proto_version = getattr(connection, "protocol_version", 1)
+        if proto_version != 1:
+            raise RuntimeError(
+                f"send_pcm_stream requires WebSocket protocol v1, but the "
+                f"connected device negotiated v{proto_version}. Rebuild the "
+                "firmware with v1 (the default for this repository) — v2/v3 "
+                "BinaryProtocol header wrapping is not yet supported."
+            )
         try:
-            await gateway.esp32.send_tts_state("start")
+            await connection.send_tts_state("start")
         except ConnectionError as exc:
             raise RuntimeError(
                 f"Device disconnected before TTS start notification: {exc}"
@@ -871,15 +909,26 @@ async def send_pcm_stream(
                             f"Opus encoding failed: {exc}"
                         ) from exc
                     await _push(opus_frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if sent:
+                raise PcmStreamError(
+                    f"PCM stream failed after sending {sent} frames: {exc}",
+                    metrics=partial_metrics(),
+                ) from exc
+            raise
         finally:
-            try:
-                await gateway.esp32.send_tts_state("stop")
-            except ConnectionError:
-                pass
+            if connection.connected:
+                try:
+                    await connection.send_tts_state("stop")
+                except ConnectionError:
+                    pass
 
     if push_error is not None:
-        raise RuntimeError(
-            f"Device disconnected after sending {sent} frames: {push_error}"
+        raise PcmStreamError(
+            f"Device disconnected after sending {sent} frames: {push_error}",
+            metrics=partial_metrics(),
         ) from push_error
 
     duration_ms = sent * DEVICE_FRAME_DURATION_MS
@@ -898,10 +947,16 @@ async def send_pcm_stream(
             duration_ms,
         )
 
-    return {
+    result = {
         "source": source_label,
         "frame_count": sent,
         "sample_rate": DEVICE_SAMPLE_RATE,
         "frame_duration_ms": DEVICE_FRAME_DURATION_MS,
         "duration_ms": duration_ms,
     }
+    if first_audio_frame_sent_ms is not None:
+        result["gateway_first_audio_frame_sent_ms"] = (
+            first_audio_frame_sent_ms
+        )
+    result["gateway_playback_completed_ms"] = time.time_ns() // 1_000_000
+    return result

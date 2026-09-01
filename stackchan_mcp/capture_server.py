@@ -400,6 +400,8 @@ async def handle_pcm(request: web.Request) -> web.Response:
             content_type="application/json",
         )
 
+    expected_session_id = request.headers.get("X-StackChan-Session") or None
+
     message_id = request.headers.get("X-Message-Id", "")
     source_label = f"http_pcm:{message_id}" if message_id else "http_pcm"
 
@@ -416,7 +418,7 @@ async def handle_pcm(request: web.Request) -> web.Response:
     # without the extra, so we only require it when /pcm is actually
     # used.
     try:
-        from .tts import send_pcm_stream
+        from .tts import PcmStreamError, send_pcm_stream
     except ImportError as exc:
         return web.Response(
             text=json.dumps(
@@ -434,6 +436,15 @@ async def handle_pcm(request: web.Request) -> web.Response:
             _pcm_chunks_from_request(request),
             source_rate=source_rate,
             source_label=source_label,
+            expected_session_id=expected_session_id,
+        )
+    except PcmStreamError as exc:
+        return web.Response(
+            text=json.dumps(
+                {"ok": False, "error": str(exc), **exc.metrics}
+            ),
+            status=500,
+            content_type="application/json",
         )
     except RuntimeError as exc:
         # send_pcm_stream raises RuntimeError on no-device / protocol
@@ -447,7 +458,10 @@ async def handle_pcm(request: web.Request) -> web.Response:
             content_type="application/json",
         )
 
-    return web.Response(text=json.dumps(result), content_type="application/json")
+    return web.Response(
+        text=json.dumps({"ok": True, **result}),
+        content_type="application/json",
+    )
 
 
 class PreparedOpusValidationError(ValueError):

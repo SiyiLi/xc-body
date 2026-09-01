@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,10 +10,12 @@ from gateway.pending_thought_http_service import (
     _BearerAuthApp,
     _maintain_pending_runtime,
     _readiness_payload,
+    build_app,
     load_downstream_token,
     main,
     validate_bind_safety,
 )
+from gateway.direct_conversation import DirectConversationError
 from gateway.pending_thought_service import (
     PlaybackConfig,
     PendingThoughtServiceError,
@@ -33,19 +36,33 @@ class RecordingApp:
         await send({"type": "http.response.body", "body": b""})
 
 
-async def call_app(app, path, authorization=None):
+async def call_app(
+    app,
+    path,
+    authorization=None,
+    *,
+    method="GET",
+    body=b"",
+):
     headers = []
     if authorization is not None:
         headers.append((b"authorization", authorization.encode("ascii")))
     scope = {"type": "http", "path": path, "headers": headers}
     messages = []
 
+    received = False
+
     async def receive():
-        return {"type": "http.request", "body": b""}
+        nonlocal received
+        if received:
+            return {"type": "http.disconnect"}
+        received = True
+        return {"type": "http.request", "body": body}
 
     async def send(message):
         messages.append(message)
 
+    scope["method"] = method
     await app(scope, receive, send)
     return messages
 
@@ -234,6 +251,7 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             DOWNSTREAM_TOKEN_ENV: "downstream-secret",
             "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
+            "XC_BODY_PCM_URL": "http://127.0.0.1:8766/pcm",
             "XC_BODY_PLAYBACK_TOKEN": "playback-secret",
             "XC_BODY_VOICE": "zh-CN-XiaoxiaoNeural",
         }
@@ -255,12 +273,90 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             service.await_args.args[1],
             PlaybackConfig(
                 url="http://127.0.0.1:8766/opus",
+                streaming_url="http://127.0.0.1:8766/pcm",
                 token="playback-secret",
             ),
         )
         self.assertEqual(
             service.await_args.kwargs["voice"],
             "zh-CN-XiaoxiaoNeural",
+        )
+
+    def test_failed_answer_records_partial_metrics_without_retry(self):
+        async def exercise():
+            config = SimpleNamespace(
+                url="https://stackchan.invalid/mcp",
+                token="upstream-secret",
+                avatar_path="/srv/xc-body/avatar.rgb565le",
+            )
+            playback_config = PlaybackConfig(
+                url="http://127.0.0.1:8766/opus",
+                streaming_url="http://127.0.0.1:8766/pcm",
+                token="playback-secret",
+            )
+            app = build_app(
+                config,
+                playback_config,
+                host="127.0.0.1",
+                downstream_token="downstream-secret",
+                voice="zh-CN-XiaoxiaoNeural",
+            )
+            bearer = "Bearer downstream-secret"
+            captured = await call_app(
+                app,
+                "/voice/v1/capture",
+                bearer,
+                method="POST",
+                body=b"audio",
+            )
+            turn_id = json.loads(captured[-1]["body"])["turn_id"]
+            await call_app(app, "/voice/v1/capture", bearer)
+            reports = []
+            error = DirectConversationError(
+                "partial speech",
+                metrics={
+                    "tts_first_pcm_ready_ms": 1000,
+                    "attention_completed_ms": 1100,
+                    "gateway_first_audio_frame_sent_ms": 1200,
+                    "streamed_audio_frames": 1,
+                },
+            )
+            answer = json.dumps(
+                {"turn_id": turn_id, "answer": "answer"}
+            ).encode()
+            with patch(
+                "gateway.pending_thought_http_service.speak_direct_answer",
+                new=AsyncMock(side_effect=error),
+            ) as speak, patch(
+                "gateway.pending_thought_http_service.emit_direct_turn_metrics",
+                side_effect=reports.append,
+            ):
+                failed = await call_app(
+                    app,
+                    "/voice/v1/answer",
+                    bearer,
+                    method="POST",
+                    body=answer,
+                )
+                repeated = await call_app(
+                    app,
+                    "/voice/v1/answer",
+                    bearer,
+                    method="POST",
+                    body=answer,
+                )
+
+            return failed, repeated, reports, speak
+
+        failed, repeated, reports, speak = asyncio.run(exercise())
+
+        self.assertEqual(failed[0]["status"], 503)
+        self.assertEqual(repeated[0]["status"], 409)
+        speak.assert_awaited_once()
+        self.assertEqual(reports[0]["status"], "body_unavailable")
+        self.assertEqual(
+            reports[0]["metrics"]["gateway_first_audio_frame_sent_ms"],
+            1200,
         )
 
 

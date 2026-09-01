@@ -24,6 +24,9 @@
 	handle /opus {
 		reverse_proxy gateway:8766
 	}
+	handle /pcm {
+		reverse_proxy gateway:8766
+	}
 	handle {
 		reverse_proxy gateway:8765
 	}

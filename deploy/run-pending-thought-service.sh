@@ -15,6 +15,7 @@ export XC_BODY_STACKCHAN_MCP_URL=$public_url/gateway-mcp/mcp
 export XC_BODY_STACKCHAN_MCP_TOKEN="$gateway_token"
 export XC_BODY_AVATAR_ARCHIVE_PATH=/opt/xc-body/xc-body-native-320.rgb565le
 export XC_BODY_PLAYBACK_URL=$public_url/opus
+export XC_BODY_PCM_URL=$public_url/pcm
 export XC_BODY_PLAYBACK_TOKEN="$playback_token"
 export XC_BODY_PENDING_HTTP_TOKEN="$pending_token"
 export XC_BODY_VOICE=${XC_BODY_VOICE:-zh-CN-YunxiNeural}
