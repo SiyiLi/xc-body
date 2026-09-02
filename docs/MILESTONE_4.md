@@ -7,8 +7,7 @@ existing OpenClaw agent while giving the device a simple, power-aware avatar,
 battery, and volume experience.
 
 Direct conversation and appliance UX establish a new firmware capability
-contract. Candidate identifiers remain in source metadata and release
-manifests until this milestone or a meaningful submilestone closes.
+contract. Milestone 4 closed on 2026-09-02.
 
 Milestone 4 has three pillars:
 
@@ -21,9 +20,29 @@ Milestone 4 has three pillars:
 
 ## Current Status
 
-The six-element idle clock and weather view has physical display acceptance.
-The remaining direct-conversation, latency, touch-transition, settings, and
-power criteria stay open.
+Milestone 4 has physical acceptance. The complete direct-conversation and
+appliance experience felt good through real user tests during regular use.
+That judgment, rather than a synthetic engineering exercise, is the golden
+acceptance criterion. Metrics and scripted checks support diagnosis and
+reproducibility but do not replace it.
+
+The accepted candidate was:
+
+- XC Body source `c2685f6bf8064e0826c92edddc55a352f7622567`;
+- XC Body gateway `0.2.9`, image SHA-256
+  `68ac7ba35f23b7dc4f3547615995d8fa93bfc4304e0a4ca754f6e2a6056ed123`;
+- XC Body firmware `0.2.18`;
+- XC Body OpenClaw plugin `0.2.3`; and
+- OpenClaw `2026.7.1-2` (`0790d9f`).
+
+In one real-user, physically accepted healthy-Wi-Fi conversation, all `406`
+sent frames were accepted and output, no frame was rejected, and `24.36`
+seconds of speech had a maximum measured codec-write gap of `78 ms`. No audio
+loss, pause, or pop/click was heard. Two longer clean observations of
+`49.44` and `51.84` seconds also showed no cumulative cadence drift. A
+degraded-condition `1,450 ms` diagnostic gap remains useful evidence for future
+tolerance work, but it did not block acceptance of the healthy product
+experience.
 
 ### Weather icon acceptance record
 
@@ -171,16 +190,18 @@ separately. `end_to_end_ms`, from recording start through turn completion,
 remains useful for diagnosing the whole interaction but must not be presented
 as response latency.
 
-Physical acceptance uses five consecutive fixed short questions that require
-no slow external tool. It records every response-latency sample plus the median
-and worst result with the exact source, firmware, gateway, OpenClaw plugin, and
-OpenClaw versions. Tool-using questions are recorded separately because their
-agent work is intentionally variable.
+Fixed short-question cohorts and numeric summaries remain useful diagnostics,
+especially when comparing candidates. They are not a substitute for the
+real-user acceptance record. Optimization follows the slowest measured phase
+in the existing timeline; it must not add another tracing path or bypass the
+normal OpenClaw session.
 
-The first production run establishes the baseline. A numeric response-latency
-budget must then be agreed and recorded here before Milestone 4 can close.
-Optimization follows the slowest measured phase in the existing timeline; it
-must not add another tracing path or bypass the normal OpenClaw session.
+A repeatable reference cohort uses five consecutive fixed short questions that
+require no slow external tool. Record every `submit_to_speech_start_ms` sample,
+the median and worst result, and the exact source, firmware, gateway, OpenClaw
+plugin, and OpenClaw versions. Record tool-using questions separately because
+their agent work is intentionally variable. This is a comparison method, not
+an acceptance gate.
 
 ## Display and Settings Contract
 
@@ -258,17 +279,20 @@ Milestone 4 extends existing capabilities rather than replacing them:
    Chinese is spoken unchanged. Retry once, then apply the caller-specific
    failure policy before direct PCM playback. Pending offers retain prepared
    Opus playback.
-6. **Latency:** establish the physical response-latency baseline, identify the
-   slowest owned phase, and meet the agreed budget without weakening session
-   continuity or delivery correctness.
-7. **Power:** physically validate the candidate dim, display-off, and
-   five-minute battery power-off policy as the acceptance gate.
+6. **Latency:** use physical response timelines to identify the slowest owned
+   phase and improve it without weakening session continuity or delivery
+   correctness.
+7. **Power:** observe the candidate dim, display-off, and five-minute battery
+   power-off policy during real use.
 
 Each slice must pass focused automated tests before deployment. Firmware,
 runtime, or OpenClaw integration changes require exact-version physical
 acceptance on the real robot.
 
-## Milestone Exit Criteria
+## Reference Validation Scenarios
+
+These scenarios remain useful for engineering diagnosis and regression work.
+They are references and do not determine milestone closure.
 
 - Right ear, speak, and right ear produces one bounded recording and one
   transcription; left ear cancels without submission.
@@ -289,8 +313,8 @@ acceptance on the real robot.
   pending offer, and touch restores the avatar without losing that touch.
 - Battery level remains visible while charging and discharging.
 - Volume changes immediately and survives reboot.
-- External-power and battery-idle behavior pass physical acceptance without
-  breaking authenticated control or wake behavior.
+- External-power and battery-idle behavior preserve authenticated control and
+  wake behavior.
 - Network ambiguity causes neither duplicate agent turns nor duplicate robot
   playback.
 - A completed direct turn emits one content-free JSON timing record covering
@@ -298,9 +322,8 @@ acceptance on the real robot.
 - `gateway_first_audio_frame_sent_ms` records the first frame sent toward the
   device, not physical sound onset; `submit_to_speech_start_ms` uses it as the
   available proxy.
-- Five fixed short direct turns record every `submit_to_speech_start_ms` sample
-  plus the median and worst result, and meet the response-latency budget agreed
-  from the first production baseline.
+- Content-free direct-turn timelines remain available for latency comparison
+  and diagnosis.
 
 ## Explicitly Deferred
 

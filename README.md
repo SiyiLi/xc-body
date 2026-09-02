@@ -33,18 +33,21 @@ turning it off should make the room feel a little emptier.
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   configured cloud rendezvous host; raw service ports remain private.
-- Milestone 4 direct conversation and appliance UX remain under physical
-  acceptance. Exact candidate identifiers live in source metadata and release
-  manifests. The six-element idle clock and weather view has physical display
-  acceptance; the remaining Milestone 4 criteria stay open.
-- Deliberate tap-to-talk microphone input is part of Milestone 4. Camera input,
-  always-on capture, durable queues, quiet hours, free-form motion, Home
-  Assistant, and Stick S3 integration are not part of the current scope.
+- Milestone 4 direct conversation and appliance UX have physical acceptance.
+  Exact candidate identifiers and the real-user acceptance record are in the
+  milestone document.
+- Milestone 5 is active. It gives direct answers one of six deterministic
+  expressions; `agree` uses a restrained nod. `Neutral` is the fallback base
+  presence, combining the idle pose with sparse ambient life and local touch
+  reactions. The fixed direct projection selects the expression while
+  deterministic XC Body code owns physical execution. A USB-only calibration
+  loop previews and stores robot-specific motor recipes used by production
+  expressions. Background offers remain unchanged.
+- Milestone 6 is reserved for explicit bounded camera observation.
 
-The active scope and remaining acceptance work are in
-[`docs/MILESTONE_4.md`](docs/MILESTONE_4.md). The current system structure is
-in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future milestone direction
-is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current
+system structure is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future
+milestone direction is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Repository Checks
 
@@ -137,13 +140,9 @@ synchronization is disabled; the idle clock and date remain available.
 
 ## Start Here
 
-Read these files in order before changing the repository:
-
-1. [`AGENTS.md`](AGENTS.md)
-2. [`docs/MILESTONE_3.md`](docs/MILESTONE_3.md)
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-4. [`docs/MILESTONE_2.md`](docs/MILESTONE_2.md)
-5. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
+Read [`AGENTS.md`](AGENTS.md) before changing the repository. It owns the
+phase-aware read order, including when an active or historical milestone is
+relevant.
 
 The machine-readable boundaries are the
 [`embodiment intent contract`][intent-contract] and
@@ -164,8 +163,7 @@ stackchan_mcp/  StackChan gateway
 tests/          Standard-library contract and behavior tests
 ```
 
-XC Body is separate from `xc-buddy`. Do not move StackChan work into the Stick
-S3 project or modify `xc-buddy` from this repository.
+Do not modify `xc-buddy` from this repository.
 
 [intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json

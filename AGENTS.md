@@ -4,11 +4,11 @@
 
 Before proposing or making changes, read:
 
-1. `README.md`
-2. `docs/MILESTONE_3.md`
-3. `docs/ARCHITECTURE.md`
-4. `docs/MILESTONE_2.md`
-5. `docs/MILESTONE_1.md`
+1. `README.md` for current status and the active milestone.
+2. `docs/ARCHITECTURE.md` for the current execution model.
+3. The active milestone linked from `README.md`.
+4. Only the historical milestone files that own behavior being changed.
+5. `docs/ROADMAP.md` only when reasoning about future direction.
 
 Firmware and gateway source are maintained directly under `firmware/` and
 `stackchan_mcp/`.
@@ -17,24 +17,26 @@ Before changing firmware, also read `firmware/README.md`.
 
 ## Current Phase
 
-Milestones 1 and 2 have historical physical acceptance. Milestone 3 is in
-progress. Native OpenClaw completion integration is one part of it; the
-milestone also covers reproducible deployment, reconnect recovery, continuity,
-and restraint. Do not treat completion of the native integration as completion
-of Milestone 3.
+Milestones 1 through 4 have physical acceptance. Milestone 5 is active and
+covers expression-aware direct conversation plus sparse deterministic ambient
+presence.
 
-Keep the completed Milestone 2 scope limited to:
+Keep Milestone 5 constrained to:
 
-- `ignore`, `remember`, and `offer` decisions.
-- One pending offer at a time.
-- A silent deterministic knock that reveals no prepared audio.
-- Deliberate CoreS3 head-pat or head-stroke acknowledgment.
-- OpenClaw-prepared Opus playback after acknowledgment.
-- Duplicate suppression for retained recent IDs within the running process.
+- six named expressions plus neutral ambient presence selected by projection;
+- deterministic face and head recipes with reviewed servo limits;
+- replacement of the direct turn's existing attention behavior only;
+- sparse neutral ambient behavior with strict activity budgets;
+- local touch reactions that create no agent or Telegram traffic;
+- USB-only preview and persistence of robot-specific motor calibration;
+- exact safe return and existing body-operation serialization; and
+- explicit user requests to show one supported expression.
 
-Do not add restart persistence, quiet hours, cooldowns, background-event policy,
-microphone or camera input, free-form motion, Home Assistant, Stick S3
-integration, or a mobile app during Milestone 2.
+Do not add expressions to background offers, model-generated motion parameters,
+camera input, autonomous semantic moods, constant servo activity, or more
+expressions without evidence from real use during Milestone 5. Milestone 6 owns
+camera work. USB calibration must not create a second motion runner or expose
+raw motor parameters through the network.
 
 ## Known Deployment Fact
 
@@ -59,8 +61,8 @@ configuration that has not been inspected.
 ## Engineering Rules
 
 - Think before coding and state assumptions.
-- Prefer the smallest implementation that passes the milestone acceptance
-  tests.
+- Prefer the smallest implementation that advances the active milestone and
+  preserves its reference validation scenarios.
 - Give each invariant one owner. Trust guarantees already enforced by upstream
   or downstream modules; do not duplicate their validation, ordering, queues,
   retries, or state.
@@ -99,8 +101,8 @@ configuration that has not been inspected.
 - Keep Markdown prose at 80 columns or fewer. URLs, commands, and diagrams may
   exceed the limit when wrapping would reduce clarity.
 - Run the repository line-length check before reporting success.
-- Every implementation change must identify the active milestone acceptance
-  criterion it satisfies.
+- Every implementation change must identify the active milestone behavior it
+  advances.
 - Prefer fake-device or contract tests before touching hardware.
 - After hardware testing, record the exact firmware, gateway, OpenClaw, and
   source versions used. Historical acceptance without a complete version record
