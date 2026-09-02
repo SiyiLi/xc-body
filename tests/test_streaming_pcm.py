@@ -370,14 +370,16 @@ class StreamingPcmTests(unittest.IsolatedAsyncioTestCase):
     async def test_pcm_senders_preroll_pace_and_flush_tail(self):
         async def stream(gateway):
             async def chunks():
-                yield b"\x00" * ((1920 * 7) + 2)
+                yield b"\x00" * (1920 * 4)
+                self.assertEqual(len(gateway.esp32.frames), 4)
+                yield b"\x00" * ((1920 * 11) + 2)
 
             return await send_pcm_stream(gateway, chunks())
 
         async def buffered(gateway):
             return await send_pcm_audio(
                 gateway,
-                b"\x00" * ((1920 * 7) + 2),
+                b"\x00" * ((1920 * 15) + 2),
             )
 
         async def measure(sender):
@@ -420,15 +422,15 @@ class StreamingPcmTests(unittest.IsolatedAsyncioTestCase):
         for sender in (stream, buffered):
             with self.subTest(sender=sender.__name__):
                 result, send_times = await measure(sender)
-                self.assertEqual(result["frame_count"], 8)
+                self.assertEqual(result["frame_count"], 16)
                 for previous, current in zip(
-                    send_times[:3],
-                    send_times[1:4],
+                    send_times[:11],
+                    send_times[1:12],
                 ):
                     self.assertAlmostEqual(current - previous, 0.005)
                 for previous, current in zip(
-                    send_times[3:],
-                    send_times[4:],
+                    send_times[11:],
+                    send_times[12:],
                 ):
                     self.assertAlmostEqual(current - previous, 0.060)
 

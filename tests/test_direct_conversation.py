@@ -132,7 +132,7 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
                 return {"gateway_first_audio_frame_sent_ms": 1234}
 
         async def synthesize(_answer, _voice, sink, **_kwargs):
-            await sink(b"a" * 8000)
+            await sink(b"a" * _PCM_PREBUFFER_BYTES)
             pcm_ready.set()
             await release_tts.wait()
             await sink(b"tail")
@@ -155,7 +155,10 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             release_tts.set()
             metrics = await task
 
-        self.assertEqual(runtime.audio, b"a" * 8000 + b"tail")
+        self.assertEqual(
+            runtime.audio,
+            b"a" * _PCM_PREBUFFER_BYTES + b"tail",
+        )
         self.assertIn("tts_first_pcm_ready_ms", metrics)
         self.assertIn("tts_completed_ms", metrics)
 

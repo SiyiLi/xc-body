@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 #: direct-audio ingress synchronously, while its visible speaking state
 #: still settles on the main task.
 TTS_START_TRANSITION_DELAY_S = 0.05
-DIRECT_PCM_PREROLL_FRAMES = 4
+DIRECT_PCM_START_FRAMES = 4
+DIRECT_PCM_BURST_FRAMES = 12
 
 #: Delay after the ``tts.stop`` notification before reasserting an
 #: emoji-selected face. Firmware handles stop by scheduling the idle /
@@ -565,13 +566,13 @@ async def send_pcm_audio(
             if before_first_frame is not None:
                 await before_first_frame()
 
-            # Burst the firmware's four-frame reserve, then replenish it
-            # at the device's consumption rate.
+            # Burst up to the startup target, then replenish at the device's
+            # consumption rate.
             frame_period_s = DEVICE_FRAME_DURATION_MS / 1000.0
             loop = asyncio.get_running_loop()
             next_send_time = 0.0
             for index, frame in enumerate(opus_frames):
-                if index >= DIRECT_PCM_PREROLL_FRAMES:
+                if index >= DIRECT_PCM_BURST_FRAMES:
                     delay = next_send_time - loop.time()
                     if delay > 0:
                         await asyncio.sleep(delay)
@@ -742,10 +743,13 @@ async def send_pcm_stream(
             raise RuntimeError(f"Opus encoding failed: {exc}") from exc
         if not started:
             preroll.append(opus_frame)
-            if len(preroll) < DIRECT_PCM_PREROLL_FRAMES and not final:
+            if len(preroll) < DIRECT_PCM_START_FRAMES and not final:
                 return True
             return await start_preroll()
-        return await send_frame(opus_frame, paced=True)
+        return await send_frame(
+            opus_frame,
+            paced=sent >= DIRECT_PCM_BURST_FRAMES,
+        )
 
     tts_lock = getattr(gateway.esp32, "tts_lock", None)
     lock_context = tts_lock if tts_lock is not None else nullcontext()

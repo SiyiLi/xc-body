@@ -1,6 +1,6 @@
 [project]
 name = "xc-body-stackchan"
-version = "0.2.8"
+version = "0.2.9"
 description = "XC Body gateway for the StackChan K151/CoreS3 robot"
 requires-python = ">=3.10"
 license = "MIT"
