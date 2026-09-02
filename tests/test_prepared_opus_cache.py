@@ -155,6 +155,7 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
         websocket = WebSocket()
         connection = ESP32Connection(websocket, "device-session-1")
         connection.tts_drain_ack = True
+        connection.direct_audio_metrics = True
         esp32 = types.SimpleNamespace(
             connection=connection,
             tts_lock=asyncio.Lock(),
@@ -189,6 +190,10 @@ class PreparedOpusCacheTests(unittest.IsolatedAsyncioTestCase):
                     "state": "drained",
                     "drain_id": websocket.drain_ids()[1],
                     "ok": True,
+                    "accepted_frames": 1,
+                    "rejected_frames": 0,
+                    "codec_output_frames": 1,
+                    "max_codec_write_gap_ms": 0,
                 }
             )
             await direct

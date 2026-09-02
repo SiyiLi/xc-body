@@ -470,7 +470,7 @@ async def speak_direct_answer(
     answer: str,
     voice: str,
 ) -> dict[str, int]:
-    """Generate speech during attention and stream it after the safe gate."""
+    """Synthesize during attention, then stream speech to the robot."""
 
     answer = answer.strip()
     if not answer:

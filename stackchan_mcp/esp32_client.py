@@ -147,17 +147,10 @@ class ESP32Connection:
         self._tts_drain_waiter: tuple[
             str, asyncio.Future[dict[str, Any]]
         ] | None = None
-        # Firmware advertises this in its hello message. Older firmware keeps
+        # Firmware advertises these in its hello message. Older firmware keeps
         # the established stop-only behavior during a rolling deployment.
         self.tts_drain_ack = False
-        # Device-declared WebSocket protocol version (from the hello
-        # message). Defaults to 1, which matches the firmware's default
-        # (firmware/main/protocols/websocket_protocol.h: ``version_ = 1``)
-        # and the audio framing this gateway emits today (raw Opus
-        # payload). v2/v3 add a BinaryProtocol header that this gateway
-        # does not yet wrap — see Issue follow-up to #70.
-        self.protocol_version: int = 1
-
+        self.direct_audio_metrics = False
     @property
     def connected(self) -> bool:
         return self._connected
@@ -782,10 +775,7 @@ class ESP32Manager:
                     # Binary = audio frame. Forward to the audio_stream
                     # module which buffers it for STT capture (Issue
                     # #91) when a recording slot is open, or discards
-                    # it otherwise. Only protocol v1 is supported on
-                    # the inbound side today; the orchestrator gates
-                    # listen() on protocol_version=1 so v2/v3 frames
-                    # cannot reach this point with recording active.
+                    # it otherwise. XC Body uses raw Opus protocol v1.
                     await handle_audio_frame(message, session_id)
                     continue
 
@@ -808,27 +798,19 @@ class ESP32Manager:
                     connection.tts_drain_ack = (
                         features.get("tts_drain_ack") is True
                     )
+                    connection.direct_audio_metrics = (
+                        features.get("direct_audio_metrics") is True
+                    )
 
-                    # Capture the device's WebSocket protocol version
-                    # so callers (e.g. the TTS pipeline) can decide
-                    # whether their wire format is compatible. The
-                    # firmware accepts raw Opus only on v1; v2/v3 wrap
-                    # the payload in a BinaryProtocol header.
-                    raw_version = data.get("version", 1)
-                    try:
-                        connection.protocol_version = int(raw_version)
-                    except (TypeError, ValueError):
-                        connection.protocol_version = 1
-                    if connection.protocol_version != 1:
+                    raw_version = data.get("version")
+                    if type(raw_version) is not int or raw_version != 1:
                         logger.warning(
-                            "ESP32 negotiated WebSocket protocol "
-                            "version=%s; the gateway emits raw Opus "
-                            "binary frames matching v1 only. TTS "
-                            "calls (say) will be blocked at the "
-                            "orchestrator until v2/v3 BinaryProtocol "
-                            "header wrapping is implemented",
-                            connection.protocol_version,
+                            "ESP32 protocol version=%r rejected; "
+                            "XC Body requires v1",
+                            raw_version,
                         )
+                        await ws.close()
+                        return
 
                     # Send hello response
                     resp = HelloResponse(session_id=session_id)

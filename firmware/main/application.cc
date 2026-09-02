@@ -551,7 +551,7 @@ void Application::InitializeProtocol() {
         if (audio_service_.IsPreparedAudioPending()) {
             audio_service_.PushPreparedPacketToDecodeQueue(
                 std::move(packet));
-        } else if (GetDeviceState() == kDeviceStateSpeaking) {
+        } else if (audio_service_.IsDirectAudioActive()) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -581,6 +581,7 @@ void Application::InitializeProtocol() {
             }
             prepared_audio_transfer_id_.clear();
             audio_service_.AbortPreparedAudio();
+            audio_service_.AbortDirectAudio();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -631,9 +632,10 @@ void Application::InitializeProtocol() {
                     }
                 });
             } else if (strcmp(state->valuestring, "start") == 0) {
+                audio_service_.ResetDecoder();
+                audio_service_.BeginDirectAudio();
                 Schedule([this, &board]() {
                     aborted_ = false;
-                    audio_service_.ResetDecoder();
                     SetDeviceState(kDeviceStateSpeaking);
                     // Phase 4 audio (Issue #76): drive avatar mouth animation
                     // for the lifetime of this TTS utterance. Default no-op
@@ -670,10 +672,15 @@ void Application::InitializeProtocol() {
                     }
                     bool drain_timed_out = false;
                     bool drain_failed = false;
-                    if (requested_transfer_id.empty()) {
+                    bool direct_audio = requested_transfer_id.empty();
+                    DirectAudioMetrics direct_metrics;
+                    if (direct_audio) {
+                        audio_service_.FinishDirectAudio();
                         drain_timed_out =
                             !audio_service_.WaitForPlaybackQueueEmpty(
                                 kPlaybackDrainTimeout);
+                        direct_metrics =
+                            audio_service_.GetDirectAudioMetrics();
                     } else {
                         auto drain_result =
                             audio_service_.WaitForPreparedAudioComplete(
@@ -731,6 +738,7 @@ void Application::InitializeProtocol() {
                         cJSON_Delete(result);
                     }
                     audio_service_.AbortPreparedAudio();
+                    audio_service_.AbortDirectAudio();
                     prepared_audio_transfer_id_.clear();
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone
@@ -775,6 +783,23 @@ void Application::InitializeProtocol() {
                             result, "drain_id", requested_drain_id.c_str());
                         cJSON_AddBoolToObject(
                             result, "ok", !drain_timed_out && !drain_failed);
+                        if (direct_audio) {
+                            cJSON_AddNumberToObject(
+                                result, "accepted_frames",
+                                static_cast<double>(
+                                    direct_metrics.accepted_frames));
+                            cJSON_AddNumberToObject(
+                                result, "rejected_frames",
+                                static_cast<double>(
+                                    direct_metrics.rejected_frames));
+                            cJSON_AddNumberToObject(
+                                result, "codec_output_frames",
+                                static_cast<double>(
+                                    direct_metrics.codec_output_frames));
+                            cJSON_AddNumberToObject(
+                                result, "max_codec_write_gap_ms",
+                                direct_metrics.max_codec_write_gap_ms);
+                        }
                         char* result_str = cJSON_PrintUnformatted(result);
                         if (result_str != nullptr) {
                             protocol_->SendText(std::string(result_str));

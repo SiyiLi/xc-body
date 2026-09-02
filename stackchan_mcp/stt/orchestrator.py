@@ -377,23 +377,6 @@ async def listen_and_transcribe(
             "No ESP32 device connected; cannot capture audio for STT."
         )
 
-    # Protocol version gate, identical in spirit to the TTS side
-    # (PR #75). The gateway's inbound binary handler decodes raw Opus
-    # only on protocol v1; v2/v3 wrap the binary message in a
-    # BinaryProtocol header that this gateway does not yet parse on
-    # the inbound side either, so the buffered frames would be
-    # unusable.
-    connection = getattr(gateway.esp32, "connection", None)
-    proto_version = getattr(connection, "protocol_version", 1)
-    if proto_version != 1:
-        raise RuntimeError(
-            f"listen() requires WebSocket protocol v1, but the connected "
-            f"device negotiated v{proto_version}. Rebuild the firmware "
-            "with v1 (the default for this repository) — v2/v3 "
-            "BinaryProtocol header wrapping is not yet supported on the "
-            "STT path."
-        )
-
     # Acquire the device's listen lock so two concurrent listen() calls
     # cannot interleave their capture windows. Same getattr fallback
     # pattern as the TTS orchestrator's ``tts_lock`` so test fakes that

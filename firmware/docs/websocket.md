@@ -103,36 +103,10 @@ These headers are sent with the WebSocket handshake; the server can use them for
 
 ---
 
-## 3. Binary Protocol Versions
+## 3. Binary Protocol
 
-The device supports several binary protocol versions, selected by the `version` field in settings:
-
-### 3.1 Version 1 (default)
-Raw Opus frames with no extra metadata. The WebSocket layer already distinguishes text and binary frames.
-
-### 3.2 Version 2
-Uses the `BinaryProtocol2` structure:
-```c
-struct BinaryProtocol2 {
-    uint16_t version;        // protocol version
-    uint16_t type;           // message type (0: OPUS, 1: JSON)
-    uint32_t reserved;       // reserved
-    uint32_t timestamp;      // timestamp in milliseconds (useful for server-side AEC)
-    uint32_t payload_size;   // payload size in bytes
-    uint8_t payload[];       // payload
-} __attribute__((packed));
-```
-
-### 3.3 Version 3
-Uses the `BinaryProtocol3` structure:
-```c
-struct BinaryProtocol3 {
-    uint8_t type;            // message type
-    uint8_t reserved;        // reserved
-    uint16_t payload_size;   // payload size
-    uint8_t payload[];       // payload
-} __attribute__((packed));
-```
+XC Body uses protocol version 1. Binary WebSocket messages contain raw Opus
+frames with no additional header.
 
 ---
 
@@ -321,7 +295,7 @@ WebSocket text frames carry JSON. The most common `"type"` values and their sema
 
 1. **Device uploads microphone audio**
    - After optional AEC / NR / AGC processing, the audio is Opus-encoded and sent as binary frames.
-   - Depending on the protocol version, the frames may be raw Opus (v1) or wrapped in the metadata structures (v2/v3).
+   - Frames use XC Body's fixed raw Opus v1 wire format.
 
 2. **Device plays server audio**
    - Incoming binary frames are also treated as Opus.
@@ -433,12 +407,9 @@ stateDiagram
 3. **Audio payload**
    - Default audio format is Opus at 16 kHz, mono. The frame duration is controlled by `OPUS_FRAME_DURATION_MS` (typically 60 ms). The server may use 24 kHz on the downlink for better music playback.
 
-4. **Binary protocol version selection**
-   - Configured through the `version` setting:
-     - v1: raw Opus
-     - v2: metadata + timestamp (useful for server-side AEC)
-     - v3: lightweight header
-   - The value is echoed back in the `Protocol-Version` header and the hello message.
+4. **Binary protocol version**
+   - XC Body uses v1 raw Opus frames.
+   - The fixed value is sent in the `Protocol-Version` header and hello message.
 
 5. **IoT control via MCP**
    - All IoT capability discovery and control flows through MCP (`type: "mcp"`). The legacy `type: "iot"` protocol is deprecated.
@@ -533,7 +504,7 @@ A simplified two-way exchange:
 This protocol carries JSON text and binary Opus frames over a WebSocket connection to implement audio streaming, TTS playback, speech recognition, device state management, MCP dispatch, and more. Key traits:
 
 - **Handshake**: send `"type":"hello"` and wait for the server reply.
-- **Audio channel**: bidirectional Opus streaming, with three binary framing variants.
+- **Audio channel**: bidirectional Opus streaming with v1 raw Opus frames.
 - **JSON messages**: dispatched by `"type"` (TTS, STT, MCP, WakeWord, System, Alert, Custom, ...).
 - **Extensibility**: extra fields in JSON, additional headers for authentication.
 

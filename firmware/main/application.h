@@ -70,8 +70,8 @@ public:
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
     bool AcceptsIncomingAudio() {
-        return GetDeviceState() == kDeviceStateSpeaking ||
-               audio_service_.IsPreparedAudioPending();
+        return audio_service_.IsPreparedAudioPending() ||
+               audio_service_.IsDirectAudioActive();
     }
     std::string GetConnectedGatewayUrl() const {
         return protocol_ ? protocol_->GetConnectedUrl() : "";

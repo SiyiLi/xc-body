@@ -78,9 +78,8 @@ def decode_opus_frames(
     """Decode an iterable of Opus frames into a single PCM blob.
 
     Args:
-        frames: Iterable of raw Opus payloads (i.e. the protocol v1
-            wire format the firmware emits when ``protocol_version=1``;
-            see :class:`stackchan_mcp.esp32_client.ESP32Connection`).
+        frames: Iterable of raw Opus payloads in XC Body's protocol v1
+            wire format.
             Each frame must contain exactly ``frame_duration_ms`` of
             audio at ``sample_rate`` mono.
         sample_rate: Decoder sample rate (Hz). Defaults to the device's

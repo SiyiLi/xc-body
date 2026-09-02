@@ -47,6 +47,10 @@ def _stream_playback_metrics(playback: Mapping[str, object]) -> dict[str, int]:
             "gateway_first_audio_frame_sent_ms",
         ),
         ("gateway_playback_completed_ms", "gateway_playback_completed_ms"),
+        ("accepted_frames", "firmware_accepted_audio_frames"),
+        ("rejected_frames", "firmware_rejected_audio_frames"),
+        ("codec_output_frames", "firmware_codec_output_frames"),
+        ("max_codec_write_gap_ms", "firmware_max_codec_write_gap_ms"),
     ):
         value = playback.get(source)
         if isinstance(value, int) and value >= 0:

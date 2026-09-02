@@ -17,7 +17,6 @@ PCM_SAMPLE_RATE = 16_000
 PCM_CHUNK_BYTES = 4_096
 EDGE_TTS_CONNECT_TIMEOUT_SECONDS = 10
 EDGE_TTS_RECEIVE_TIMEOUT_SECONDS = 60
-
 PcmSink = Callable[[bytes], Awaitable[None]]
 PcmFailureSink = Callable[[Exception], None]
 

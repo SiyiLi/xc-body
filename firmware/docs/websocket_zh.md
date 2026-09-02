@@ -92,36 +92,10 @@
 
 ---
 
-## 3. 二进制协议版本
+## 3. 二进制协议
 
-设备支持多种二进制协议版本，通过配置中的 `version` 字段指定：
-
-### 3.1 版本1（默认）
-直接发送 Opus 音频数据，无额外元数据。Websocket 协议会区分 text 与 binary。
-
-### 3.2 版本2
-使用 `BinaryProtocol2` 结构：
-```c
-struct BinaryProtocol2 {
-    uint16_t version;        // 协议版本
-    uint16_t type;           // 消息类型 (0: OPUS, 1: JSON)
-    uint32_t reserved;       // 保留字段
-    uint32_t timestamp;      // 时间戳（毫秒，用于服务器端AEC）
-    uint32_t payload_size;   // 负载大小（字节）
-    uint8_t payload[];       // 负载数据
-} __attribute__((packed));
-```
-
-### 3.3 版本3
-使用 `BinaryProtocol3` 结构：
-```c
-struct BinaryProtocol3 {
-    uint8_t type;            // 消息类型
-    uint8_t reserved;        // 保留字段
-    uint16_t payload_size;   // 负载大小
-    uint8_t payload[];       // 负载数据
-} __attribute__((packed));
-```
+XC Body 固定使用版本1。WebSocket 二进制消息直接承载 Opus 音频帧，
+不包含额外头部。
 
 ---
 
@@ -296,7 +270,7 @@ WebSocket 文本帧以 JSON 方式传输，以下为常见的 `"type"` 字段及
 
 1. **设备端发送录音数据**  
    - 音频输入经过可能的回声消除、降噪或音量增益后，通过 Opus 编码打包为二进制帧发送给服务器。  
-   - 根据协议版本，可能直接发送 Opus 数据（版本1）或使用带元数据的二进制协议（版本2/3）。
+   - 音频帧固定使用 XC Body 的版本1原始 Opus 格式。
 
 2. **设备端播放收到的音频**  
    - 收到服务器的二进制帧时，同样认定是 Opus 数据。  
@@ -390,11 +364,8 @@ stateDiagram
 3. **音频负载**  
    - 代码里默认使用 Opus 格式，并设置 `sample_rate = 16000`，单声道。帧时长由 `OPUS_FRAME_DURATION_MS` 控制，一般为 60ms。可根据带宽或性能做适当调整。为了获得更好的音乐播放效果，服务器下行音频可能使用 24000 采样率。
 
-4. **协议版本配置**  
-   - 通过设置中的 `version` 字段配置二进制协议版本（1、2 或 3）
-   - 版本1：直接发送 Opus 数据
-   - 版本2：使用带时间戳的二进制协议，适用于服务器端 AEC
-   - 版本3：使用简化的二进制协议
+4. **协议版本**
+   - XC Body 固定使用版本1，直接发送 Opus 数据。
 
 5. **物联网控制推荐 MCP 协议**  
    - 设备与服务器之间的物联网能力发现、状态同步、控制指令等，建议全部通过 MCP 协议（type: "mcp"）实现。原有的 type: "iot" 方案已废弃。
@@ -488,7 +459,7 @@ stateDiagram
 本协议通过在 WebSocket 上层传输 JSON 文本与二进制音频帧，完成功能包括音频流上传、TTS 音频播放、语音识别与状态管理、MCP 指令下发等。其核心特征：
 
 - **握手阶段**：发送 `"type":"hello"`，等待服务器返回。  
-- **音频通道**：采用 Opus 编码的二进制帧双向传输语音流，支持多种协议版本。  
+- **音频通道**：采用 v1 原始 Opus 帧双向传输语音流。
 - **JSON 消息**：使用 `"type"` 为核心字段标识不同业务逻辑，包括 TTS、STT、MCP、WakeWord、System、Custom 等。  
 - **扩展性**：可根据实际需求在 JSON 消息中添加字段，或在 headers 里进行额外鉴权。
 
