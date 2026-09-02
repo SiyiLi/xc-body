@@ -32,28 +32,35 @@ turning it off should make the room feel a little emptier.
   and connected idle display dimming. OpenClaw, route, robot, gateway, pending
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
-  cloud rendezvous host. The public route is `https://43.143.37.91`; raw
-  service ports remain private.
-- Milestone 4 direct conversation and appliance UX remain under physical
-  acceptance. Exact candidate identifiers live in source metadata and release
-  manifests. The six-element idle clock and weather view has physical display
-  acceptance; the remaining Milestone 4 criteria stay open.
-- Deliberate tap-to-talk microphone input is part of Milestone 4. Camera input,
-  always-on capture, durable queues, quiet hours, free-form motion, Home
-  Assistant, and Stick S3 integration are not part of the current scope.
+  configured cloud rendezvous host; raw service ports remain private.
+- Milestone 4 direct conversation and appliance UX have physical acceptance.
+  Exact candidate identifiers and the real-user acceptance record are in the
+  milestone document.
+- Milestone 5 is active. It gives direct answers one of six deterministic
+  expressions; `agree` uses a restrained nod. `Neutral` is the fallback base
+  presence, combining the idle pose with sparse ambient life and local touch
+  reactions. The fixed direct projection selects the expression while
+  deterministic XC Body code owns physical execution. A USB-only calibration
+  loop previews and stores robot-specific motor recipes used by production
+  expressions. Background offers remain unchanged.
+- Milestone 6 is reserved for explicit bounded camera observation.
 
-The active scope and remaining acceptance work are in
-[`docs/MILESTONE_4.md`](docs/MILESTONE_4.md). The current system structure is
-in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future milestone direction
-is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current
+system structure is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future
+milestone direction is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Repository Checks
 
 ```sh
 python3 -m unittest discover -s tests -v
+npm test --prefix openclaw-plugin
+npm run build --prefix openclaw-plugin
 python3 scripts/check_line_lengths.py
 git diff --check
 ```
+
+The plugin test suite includes a real request to the fixed projection model and
+uses the protected local key file.
 
 ## USB Maintenance
 
@@ -63,11 +70,11 @@ application reboot. It never returns the saved bearer token.
 
 ```sh
 scripts/stackchan_usb.py status
-scripts/stackchan_usb.py configure --url wss://43.143.37.91
+scripts/stackchan_usb.py configure --url wss://<public-host>
 scripts/stackchan_usb.py automatic-ota disable
 scripts/stackchan_usb.py automatic-ota enable
 scripts/stackchan_usb.py update \
-  --manifest https://43.143.37.91/firmware/manifest.json
+  --manifest https://<public-host>/firmware/manifest.json
 scripts/stackchan_usb.py reboot
 scripts/stackchan_usb.py monitor --seconds 30
 ```
@@ -88,19 +95,31 @@ recovery path.
 The VM services and local OpenClaw plugin have separate deployment boundaries:
 
 ```sh
-scripts/deploy.sh
-XC_BODY_OPENCLAW_SESSION_KEY=<session-key> \
-XC_BODY_TELEGRAM_TARGET=<target> scripts/deploy-openclaw-plugin.sh
-scripts/publish-firmware-release.sh
+XC_BODY_DEPLOY_TARGET=user@host.example \
+XC_BODY_PUBLIC_URL=https://body.example \
+XC_BODY_REGISTRY_REPOSITORY=registry.example/xc-body scripts/deploy.sh
+
+XC_BODY_DEPLOY_TARGET=user@host.example \
+XC_BODY_PUBLIC_URL=https://body.example \
+XC_BODY_PROJECTION_API_KEY_FILE=/path/to/model-api-key \
+XC_BODY_OPENCLAW_SESSION_KEY=agent:main:telegram:direct:CHAT_ID \
+XC_BODY_TELEGRAM_TARGET=CHAT_ID scripts/deploy-openclaw-plugin.sh
 ```
 
-Each command requires fresh permission for its own deployment surface. None of
-them flashes the robot. The OpenClaw plugin controller requires the exact
-existing conversation session and fixed Telegram target so it cannot silently
-install a completion-only configuration with direct conversation disabled.
-It builds and installs a fresh compiled runtime, then restarts OpenClaw and
-probes the loaded plugin. Source changes do not reach the installed plugin
-until the controller runs again.
+Private per-installation wrappers should own these deployment values. The
+tracked controllers require explicit inputs and contain no private topology.
+Omit both OpenClaw session variables for a completion-only plugin installation.
+Firmware publishing must run through the private per-installation wrapper,
+which writes the ignored local OTA URL before invoking the tracked publisher.
+Do not invoke `scripts/publish-firmware-release.sh` directly. Each command
+requires fresh permission for its own deployment surface. None of them flashes
+the robot. Direct conversation requires the exact existing
+session and fixed Telegram target as one pair; setting only one fails closed.
+The controller builds and installs a fresh compiled runtime, restarts OpenClaw,
+and probes the loaded plugin. Projection uses the fixed model request with
+reasoning and thinking disabled; its owner-readable API key file stays outside
+Git. Source changes do not reach the installed plugin until the controller runs
+again.
 
 The optional Milestone 4 weather display uses QWeather current conditions.
 Keep these values in the VM's private `gateway.env`:
@@ -121,13 +140,9 @@ synchronization is disabled; the idle clock and date remain available.
 
 ## Start Here
 
-Read these files in order before changing the repository:
-
-1. [`AGENTS.md`](AGENTS.md)
-2. [`docs/MILESTONE_3.md`](docs/MILESTONE_3.md)
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-4. [`docs/MILESTONE_2.md`](docs/MILESTONE_2.md)
-5. [`docs/MILESTONE_1.md`](docs/MILESTONE_1.md)
+Read [`AGENTS.md`](AGENTS.md) before changing the repository. It owns the
+phase-aware read order, including when an active or historical milestone is
+relevant.
 
 The machine-readable boundaries are the
 [`embodiment intent contract`][intent-contract] and
@@ -148,8 +163,7 @@ stackchan_mcp/  StackChan gateway
 tests/          Standard-library contract and behavior tests
 ```
 
-XC Body is separate from `xc-buddy`. Do not move StackChan work into the Stick
-S3 project or modify `xc-buddy` from this repository.
+Do not modify `xc-buddy` from this repository.
 
 [intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json

@@ -3,10 +3,11 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGET="${XC_BODY_DEPLOY_TARGET:-medchain@43.143.37.91}"
+TARGET="${XC_BODY_DEPLOY_TARGET:-}"
 IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
-REGISTRY=docker.tc.nvda.ai
-REGISTRY_REPO=$REGISTRY/nvcr.io/xc-body
+PUBLIC_URL="${XC_BODY_PUBLIC_URL:-}"
+REGISTRY_REPO="${XC_BODY_REGISTRY_REPOSITORY:-}"
+REGISTRY=${REGISTRY_REPO%%/*}
 RUNTIME_VERSION=$(sed -nE \
   's/^version = "([^"]+)"$/\1/p' "$REPO/pyproject.toml")
 [[ "$RUNTIME_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
@@ -47,7 +48,8 @@ Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images |
        --restart-gateway | --restart-pending | --configure-weather |
        --trigger-ota VERSION
 
-Build linux/amd64 production images, push them to TC Artifactory, and deploy
+Build linux/amd64 production images, push them to the configured registry,
+and deploy
 their exact digests to the XC Body rendezvous VM. Use --candidate only for an
 explicitly authorized deployment from uncommitted runtime inputs.
 
@@ -287,7 +289,8 @@ copy_runtime_inputs() {
   find "$context/app" -type f -exec chmod 0644 {} +
   chmod 0755 \
     "$context/app/deploy/install.sh" \
-    "$context/app/deploy/run-pending-thought-service.sh"
+    "$context/app/deploy/run-pending-thought-service.sh" \
+    "$context/app/deploy/run-service-with-persistent-log.sh"
 
 }
 
@@ -350,7 +353,7 @@ with open(path, encoding="utf-8") as config_file:
     config = json.load(config_file)
 auth = config.get("auths", {}).get(registry, {}).get("auth", "")
 if not auth:
-    raise SystemExit("TC Artifactory Docker credential is missing")
+    raise SystemExit("configured Docker registry credential is missing")
 username, password = base64.b64decode(auth).decode().split(":", 1)
 print(username)
 print(password)
@@ -371,11 +374,11 @@ login_vm_to_registry() {
 
 deploy_images() {
   local runtime_ref=$1 caddy_ref=$2 source_commit=$3
-  local avatar_sha256=$4 deployment_kind=$5
+  local avatar_sha256=$4 deployment_kind=$5 public_url=$6
   login_vm_to_registry
   ssh_vm bash -s -- \
     "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
-    "$deployment_kind" < "$REPO/deploy/install.sh"
+    "$deployment_kind" "$public_url" < "$REPO/deploy/install.sh"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -402,6 +405,9 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+[ -n "$TARGET" ] || die "XC_BODY_DEPLOY_TARGET is required" 64
+[ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
 
 if [ -n "$trigger_ota_version" ]; then
   [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
@@ -437,6 +443,8 @@ if [ "$status_only" = "1" ]; then
 fi
 if [ "$cleanup_images_only" = "1" ]; then
   [ "$candidate" = "0" ] || die "deployment modes conflict" 64
+  [[ "$REGISTRY_REPO" == */* ]] \
+    || die "XC_BODY_REGISTRY_REPOSITORY is required" 64
   cleanup_vm_images
   exit 0
 fi
@@ -444,7 +452,10 @@ fi
 for command in docker git python3 shasum ssh tar; do
   require_command "$command"
 done
-[ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+[[ "$PUBLIC_URL" =~ ^https://[A-Za-z0-9.-]+$ ]] \
+  || die "XC_BODY_PUBLIC_URL must be an HTTPS origin without a port" 64
+[[ "$REGISTRY_REPO" == */* ]] \
+  || die "XC_BODY_REGISTRY_REPOSITORY is required" 64
 
 source_commit=$(git -C "$REPO" rev-parse HEAD)
 
@@ -480,7 +491,7 @@ caddy_ref=$CADDY_TAG@$caddy_digest
 
 deploy_images \
   "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
-  "$deployment_kind"
+  "$deployment_kind" "$PUBLIC_URL"
 
 cat > "$STATE_DIR/last-deploy-state.txt" <<EOF
 status=$deployment_kind

@@ -480,13 +480,6 @@ class BeatMode:
     def _ensure_device_ready(self) -> None:
         if not getattr(self._gateway.esp32, "device_connected", False):
             raise RuntimeError("No ESP32 device connected; cannot start beat mode.")
-        connection = getattr(self._gateway.esp32, "connection", None)
-        proto_version = getattr(connection, "protocol_version", 1)
-        if proto_version != 1:
-            raise RuntimeError(
-                "beat mode requires WebSocket protocol v1 because the inbound "
-                "audio path receives raw Opus frames"
-            )
 
     async def _arm_listen(self) -> None:
         lock = getattr(self._gateway.esp32, "listen_lock", None)

@@ -3,14 +3,14 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGET="${XC_BODY_DEPLOY_TARGET:-medchain@43.143.37.91}"
+TARGET="${XC_BODY_DEPLOY_TARGET:-}"
 IDENTITY="${XC_BODY_DEPLOY_IDENTITY:-$HOME/.ssh/id_ed25519}"
-SUMMARY_URL=https://43.143.37.91/xc-body/summary/v1
-VOICE_URL=https://43.143.37.91/xc-body/voice/v1/
+PUBLIC_URL="${XC_BODY_PUBLIC_URL:-}"
+SUMMARY_URL=$PUBLIC_URL/xc-body/summary/v1
 SESSION_KEY="${XC_BODY_OPENCLAW_SESSION_KEY:-}"
 TELEGRAM_TARGET="${XC_BODY_TELEGRAM_TARGET:-}"
-SPEECH_MODEL="${XC_BODY_SPEECH_MODEL:-inference-nvidia/gcp/google/gemini-3.7-flash}"
-STATE_DIR=$REPO/build/deploy
+PROJECTION_API_KEY_FILE="${XC_BODY_PROJECTION_API_KEY_FILE:-}"
+STATE_DIR="${XC_BODY_DEPLOY_STATE_DIR:-$REPO/build/deploy}"
 SSH_OPTIONS=(
   -i "$IDENTITY"
   -o IdentitiesOnly=yes
@@ -27,11 +27,19 @@ for command in npm openclaw python3 ssh; do
   command -v "$command" >/dev/null 2>&1 \
     || die "required command not found: $command" 64
 done
+[ -n "$TARGET" ] || die "XC_BODY_DEPLOY_TARGET is required" 64
 [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
-[ -n "$SESSION_KEY" ] \
-  || die "XC_BODY_OPENCLAW_SESSION_KEY is required" 64
-[ -n "$TELEGRAM_TARGET" ] \
-  || die "XC_BODY_TELEGRAM_TARGET is required" 64
+[ -r "$PROJECTION_API_KEY_FILE" ] \
+  || die "projection API key file is missing: $PROJECTION_API_KEY_FILE" 64
+[[ "$PUBLIC_URL" =~ ^https://[A-Za-z0-9.-]+$ ]] \
+  || die "XC_BODY_PUBLIC_URL must be an HTTPS origin without a port" 64
+if [ -n "$SESSION_KEY" ] || [ -n "$TELEGRAM_TARGET" ]; then
+  [ -n "$SESSION_KEY" ] && [ -n "$TELEGRAM_TARGET" ] \
+    || die "session key and Telegram target must be set together" 64
+  VOICE_URL=$PUBLIC_URL/xc-body/voice/v1/
+else
+  VOICE_URL=
+fi
 
 token=$(ssh "${SSH_OPTIONS[@]}" -T "$TARGET" bash -s <<'REMOTE'
 set -eu
@@ -81,25 +89,26 @@ openclaw plugins install --force "$plugin_path" >/dev/null
 unset configured_paths plugin_path
 config=$(python3 - \
   "$token" "$SUMMARY_URL" "$VOICE_URL" "$SESSION_KEY" \
-  "$TELEGRAM_TARGET" "$SPEECH_MODEL" <<'PY'
+  "$TELEGRAM_TARGET" "$PROJECTION_API_KEY_FILE" <<'PY'
 import json
 import sys
 
-token, summary_url, voice_url, session_key, telegram_target, speech_model = (
+token, summary_url, voice_url, session_key, telegram_target, api_key_file = (
     sys.argv[1:]
 )
-print(json.dumps(
-    {
-        "summaryUrl": summary_url,
+config = {
+    "summaryUrl": summary_url,
+    "token": token,
+    "projectionApiKeyFile": api_key_file,
+    "timeoutMs": 180000,
+}
+if voice_url:
+    config.update({
         "voiceUrl": voice_url,
-        "token": token,
         "sessionKey": session_key,
         "telegramTarget": telegram_target,
-        "speechModel": speech_model,
-        "timeoutMs": 180000,
-    },
-    separators=(",", ":"),
-))
+    })
+print(json.dumps(config, separators=(",", ":")))
 PY
 )
 openclaw config set plugins.entries.xc-body-native.config \
@@ -107,21 +116,12 @@ openclaw config set plugins.entries.xc-body-native.config \
 openclaw config set \
   plugins.entries.xc-body-native.hooks.allowConversationAccess \
   true --strict-json >/dev/null
-openclaw config set plugins.entries.xc-body-native.llm.allowModelOverride \
-  true --strict-json >/dev/null
-allowed_models=$(python3 - "$SPEECH_MODEL" <<'PY'
-import json
-import sys
-
-print(json.dumps([sys.argv[1]], separators=(",", ":")))
-PY
-)
-openclaw config set plugins.entries.xc-body-native.llm.allowedModels \
-  "$allowed_models" --strict-json >/dev/null
+openclaw config unset plugins.entries.xc-body-native.llm >/dev/null 2>&1 \
+  || true
 openclaw plugins enable xc-body-native >/dev/null
 openclaw mcp unset xc-body >/dev/null 2>&1 || true
 openclaw mcp unset xc-body-embodiment >/dev/null 2>&1 || true
-unset token config allowed_models
+unset token config
 
 mkdir -p "$STATE_DIR"
 gateway_probe=$STATE_DIR/openclaw-gateway.json

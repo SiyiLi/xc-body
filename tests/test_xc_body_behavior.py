@@ -66,6 +66,21 @@ class FakeConnection:
 
 @unittest.skipIf(ESP32Manager is None, "requires Python 3.10+")
 class XcBodyBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_v1_device_is_rejected_at_admission(self) -> None:
+        manager = ESP32Manager()
+        websocket = mock.MagicMock(request=None)
+        websocket.__aiter__.return_value = iter(
+            ['{"type":"hello","version":2,"features":{"mcp":true}}']
+        )
+        websocket.close = mock.AsyncMock()
+        websocket.send = mock.AsyncMock()
+
+        await manager._handler(websocket)
+
+        websocket.close.assert_awaited_once_with()
+        websocket.send.assert_not_awaited()
+        self.assertIsNone(manager.connection)
+
     async def test_behavior_failures_clean_the_correlated_waiter(self) -> None:
         async def run_failure(mode: str) -> str:
             manager = ESP32Manager()

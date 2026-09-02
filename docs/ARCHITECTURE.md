@@ -19,12 +19,17 @@ StackChan K151/CoreS3                │ - gateway service          │
 └──────────────────────┘             └────────────────────────────┘
 ```
 
-Caddy terminates public TLS at `https://43.143.37.91`. The gateway, avatar,
-playback, summary, and XC Body MCP routes are proxied internally. Caddy also
+Caddy terminates public TLS at the configured rendezvous origin. The gateway,
+avatar, playback, summary, and XC Body MCP routes are proxied internally. Caddy
+also
 serves versioned OTA app images and the current manifest from the read-only
 `/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
 host unrelated workloads, so XC Body has its own containers, credentials,
 lifecycle, health checks, and resource limits.
+
+Gateway and pending-service stdout and stderr remain available through Docker
+and are also persisted across container replacement in
+`/data/xc-body/logs/gateway.log` and `/data/xc-body/logs/pending.log`.
 
 ## Component Ownership
 
@@ -33,20 +38,23 @@ lifecycle, health checks, and resource limits.
 - Owns agent identity, reasoning, and the decision to express something.
 - Selects semantic intentions instead of raw servo or animation commands.
 - Observes successful agent, subagent, and cron completions.
-- Classifies a completion as `offer` or `skip` through its native LLM runtime.
+- Classifies a completion as `offer` or `skip` through the fixed projection
+  client.
 - Sends accepted bounded speech over authenticated HTTPS.
 
 ### Completion plugin
 
 `openclaw-plugin/` observes typed completion hooks, including `agent_end`, and
-deduplicates the same run across hook boundaries. It does not own speech
+deduplicates the same run across hook boundaries. Spoken projection uses the
+fixed model with reasoning and thinking disabled. It does not own speech
 encoding, robot motion, pending-offer state, or device connectivity.
 
 ### Pending-thought service
 
 The VM summary boundary keeps plaintext in request scope, prepares normalized
-16 kHz mono Opus, validates the packet profile, and submits the existing
-pending-thought contract. Plaintext is not stored or logged.
+16 kHz mono Opus for pending offers, validates the packet profile, and submits
+the existing pending-thought contract. Direct answers use the existing PCM
+streaming path after attention settles. Plaintext is not stored or logged.
 
 One process-owned runtime keeps at most one pending offer. It exposes only
 `consider_thought`, receives StackChan events through one persistent upstream
@@ -133,13 +141,14 @@ eventual direct answer.
 
 1. Existing firmware touch and device-driven capture submit one bounded Opus
    recording to the pending service mailbox.
-2. The native OpenClaw plugin claims it, uses native media transcription, and
-   admits one user turn into the configured existing session.
+2. The native OpenClaw plugin claims it, sends the captured Ogg to fixed-model
+   audio transcription, and admits one user turn into the configured existing
+   session.
 3. The final visible answer returns to the pending service exactly once.
 4. The pending runtime requests a deterministic firmware-owned `attention`
    behavior through the shared StackChan gateway behavior boundary.
 5. The gateway reuses its servo lane, correlated completion waiter, timeout,
-   and recovery path. Prepared Opus playback starts only after the firmware
+   and recovery path. Direct PCM playback starts only after the firmware
    reports physical settle and neutral return.
 6. The pending offer, if any, is untouched and its base view is restored after
    either success or failure.
@@ -158,8 +167,8 @@ the normal background-offer path independently.
 Extract completed timelines from production logs with:
 
 ```sh
-docker logs xc-body-pending 2>&1 |
-  jq -R 'fromjson? | select(.event == "xc_body.direct_turn")'
+rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
+  tail -n 1 | jq .
 ```
 
 ### Firmware OTA

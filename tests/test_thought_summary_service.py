@@ -2,10 +2,17 @@ import asyncio
 import base64
 import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.speech_preparation import DEFAULT_VOICE, VOICE_ENV
+from gateway.speech_preparation import (
+    DEFAULT_VOICE,
+    EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
+    EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
+    VOICE_ENV,
+    prepare_speech,
+)
 from gateway.thought_summary_service import (
     handle_summary_request,
     load_summary_voice,
@@ -18,6 +25,13 @@ _OPUS_PACKET = bytes.fromhex(
 )
 _FRAMED_OPUS = len(_OPUS_PACKET).to_bytes(2, "big") + _OPUS_PACKET
 _PREPARED_AUDIO_BASE64 = base64.b64encode(_FRAMED_OPUS).decode("ascii")
+_OGG_OPUS = (
+    b"OggS"
+    + bytes(22)
+    + b"\x01"
+    + bytes((len(_OPUS_PACKET),))
+    + _OPUS_PACKET
+)
 
 
 def ready_runtime(**values):
@@ -211,6 +225,67 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
             load_summary_voice({VOICE_ENV: " zh-CN-XiaoxiaoNeural "}),
             "zh-CN-XiaoxiaoNeural",
         )
+
+    def test_speech_audio_streams_into_encoder_before_validation(self):
+        async def stream():
+            yield {"type": "WordBoundary", "text": "ignored"}
+            yield {"type": "audio", "data": b"first"}
+            yield {"type": "audio", "data": b"second"}
+
+        stdin = SimpleNamespace(
+            write=Mock(),
+            drain=AsyncMock(),
+            close=Mock(),
+        )
+        process = SimpleNamespace(
+            stdin=stdin,
+            stderr=SimpleNamespace(read=AsyncMock(return_value=b"")),
+            returncode=0,
+            wait=AsyncMock(),
+        )
+
+        async def create_process(*args, **kwargs):
+            Path(args[-1]).write_bytes(_OGG_OPUS)
+            return process
+
+        communicate = Mock(return_value=SimpleNamespace(stream=stream))
+        with (
+            patch.dict(
+                "sys.modules",
+                {"edge_tts": SimpleNamespace(Communicate=communicate)},
+            ),
+            patch(
+                "gateway.speech_preparation.shutil.which",
+                return_value="/fake/ffmpeg",
+            ),
+            patch(
+                "gateway.speech_preparation.asyncio.create_subprocess_exec",
+                side_effect=create_process,
+            ) as create,
+        ):
+            prepared = asyncio.run(
+                prepare_speech("完整答案", DEFAULT_VOICE)
+            )
+
+        self.assertEqual(prepared, _PREPARED_AUDIO_BASE64)
+        communicate.assert_called_once_with(
+            "完整答案",
+            DEFAULT_VOICE,
+            connect_timeout=EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
+            receive_timeout=EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            [item.args[0] for item in stdin.write.call_args_list],
+            [b"first", b"second"],
+        )
+        stdin.close.assert_called_once_with()
+        args, kwargs = create.await_args
+        input_index = args.index("-f")
+        self.assertEqual(
+            args[input_index : input_index + 4],
+            ("-f", "mp3", "-i", "pipe:0"),
+        )
+        self.assertIs(kwargs["stdin"], asyncio.subprocess.PIPE)
 
 
 if __name__ == "__main__":

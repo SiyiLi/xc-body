@@ -4,7 +4,7 @@ export type LlmCompleteParams = {
   purpose: string;
   maxTokens: number;
   temperature?: number;
-  model?: string;
+  signal?: AbortSignal;
 };
 
 export type LlmCompleter = (
@@ -107,7 +107,6 @@ export function parseSpokenProjection(
 export async function projectSpokenText(
   complete: LlmCompleter,
   fullResult: string,
-  model?: string,
 ): Promise<SpokenProjection | null> {
   const result = fullResult.trim();
   if (!result) {
@@ -120,7 +119,6 @@ export async function projectSpokenText(
         systemPrompt: BACKGROUND_PROJECTION_PROMPT,
         purpose: "xc-body-native.spoken-projection",
         maxTokens: 4096,
-        ...(model ? { model } : {}),
       });
       const projection = parseSpokenProjection(completion.text);
       if (projection !== null) {
@@ -136,7 +134,6 @@ export async function projectSpokenText(
 export async function prepareDirectSpeech(
   complete: LlmCompleter,
   fullAnswer: string,
-  model?: string,
 ): Promise<string | null> {
   const answer = fullAnswer.trim();
   if (!needsSpeechProjection(answer)) {
@@ -149,7 +146,6 @@ export async function prepareDirectSpeech(
         systemPrompt: DIRECT_PROJECTION_PROMPT,
         purpose: "xc-body-native.direct-speech-projection",
         maxTokens: 4096,
-        ...(model ? { model } : {}),
       });
       const speech = completion.text.trim();
       if (isValidProjectedSpeech(speech)) {

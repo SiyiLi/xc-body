@@ -63,6 +63,7 @@ class PendingThoughtServiceTests(unittest.TestCase):
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
             "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
+            "XC_BODY_PCM_URL": "http://127.0.0.1:8766/pcm",
             "XC_BODY_PLAYBACK_TOKEN": "playback-token",
         }
 
@@ -84,6 +85,10 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertEqual(
             playback_config.url,
             "http://127.0.0.1:8766/opus",
+        )
+        self.assertEqual(
+            playback_config.streaming_url,
+            "http://127.0.0.1:8766/pcm",
         )
         self.assertEqual(playback_config.token, "playback-token")
         self.assertNotIn("playback-token", repr(playback_config))

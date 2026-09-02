@@ -7,6 +7,12 @@ import {
 } from "./core.ts";
 import { DirectConversationService } from "./direct-conversation.ts";
 import { registerCompletionHooks } from "./hooks.ts";
+import {
+  createNvidiaAudioTranscriber,
+  createNvidiaProjectionCompleter,
+} from "./projection-client.ts";
+
+const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
 export default definePluginEntry({
   id: "xc-body-native",
@@ -22,10 +28,17 @@ export default definePluginEntry({
       );
       return;
     }
+    const completeProjection = createNvidiaProjectionCompleter({
+      apiKeyFile: config.projectionApiKeyFile,
+      timeoutMs: config.timeoutMs,
+    });
+    const transcribeAudio = createNvidiaAudioTranscriber({
+      apiKeyFile: config.projectionApiKeyFile,
+      timeoutMs: Math.min(config.timeoutMs, TRANSCRIPTION_TIMEOUT_MS),
+    });
     const integration = new CompletionIntegration({
-      complete: (params) => api.runtime.llm.complete(params),
+      complete: completeProjection,
       submit: (payload) => submitSummary(config, payload),
-      model: config.speechModel,
     });
     if (
       config.voiceUrl &&
@@ -38,8 +51,8 @@ export default definePluginEntry({
         sessionKey: config.sessionKey,
         telegramTarget: config.telegramTarget,
         agentId: config.agentId,
-        complete: (params) => api.runtime.llm.complete(params),
-        speechModel: config.speechModel,
+        complete: completeProjection,
+        transcribe: transcribeAudio,
         pollMs: config.pollMs,
         timeoutMs: config.timeoutMs,
       });

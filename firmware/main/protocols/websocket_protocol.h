@@ -87,7 +87,6 @@ private:
     // flag is still true, so post-disconnect stale values are not reported.
     std::string connected_url_;
     int reconnect_interval_ms_ = WEBSOCKET_RECONNECT_INITIAL_INTERVAL_MS;
-    int version_ = 1;
 
     void ParseServerHello(const cJSON* root,
                           const std::shared_ptr<std::atomic<bool>>& notify_disconnect,

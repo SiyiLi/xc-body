@@ -1,8 +1,8 @@
 {
-	default_sni 43.143.37.91
+	default_sni {$XC_BODY_PUBLIC_HOST}
 }
 
-43.143.37.91 {
+{$XC_BODY_PUBLIC_HOST} {
 	tls {
 		issuer acme {
 			profile shortlived
@@ -22,6 +22,9 @@
 		reverse_proxy gateway:8766
 	}
 	handle /opus {
+		reverse_proxy gateway:8766
+	}
+	handle /pcm {
 		reverse_proxy gateway:8766
 	}
 	handle {

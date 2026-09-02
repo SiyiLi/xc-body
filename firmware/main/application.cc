@@ -549,8 +549,9 @@ void Application::InitializeProtocol() {
     protocol_->OnIncomingAudio([this, &board](
             std::unique_ptr<AudioStreamPacket> packet) {
         if (audio_service_.IsPreparedAudioPending()) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
-        } else if (GetDeviceState() == kDeviceStateSpeaking) {
+            audio_service_.PushPreparedPacketToDecodeQueue(
+                std::move(packet));
+        } else if (audio_service_.IsDirectAudioActive()) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -580,6 +581,7 @@ void Application::InitializeProtocol() {
             }
             prepared_audio_transfer_id_.clear();
             audio_service_.AbortPreparedAudio();
+            audio_service_.AbortDirectAudio();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -630,9 +632,10 @@ void Application::InitializeProtocol() {
                     }
                 });
             } else if (strcmp(state->valuestring, "start") == 0) {
+                audio_service_.ResetDecoder();
+                audio_service_.BeginDirectAudio();
                 Schedule([this, &board]() {
                     aborted_ = false;
-                    audio_service_.ResetDecoder();
                     SetDeviceState(kDeviceStateSpeaking);
                     // Phase 4 audio (Issue #76): drive avatar mouth animation
                     // for the lifetime of this TTS utterance. Default no-op
@@ -643,6 +646,9 @@ void Application::InitializeProtocol() {
                 auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
                 std::string requested_transfer_id =
                     cJSON_IsString(transfer_id) ? transfer_id->valuestring : "";
+                auto drain_id = cJSON_GetObjectItem(root, "drain_id");
+                std::string requested_drain_id =
+                    cJSON_IsString(drain_id) ? drain_id->valuestring : "";
                 if (requested_transfer_id.empty()) {
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
@@ -650,7 +656,9 @@ void Application::InitializeProtocol() {
                 }
                 Schedule([this, &board,
                           requested_transfer_id =
-                              std::move(requested_transfer_id)]() {
+                              std::move(requested_transfer_id),
+                          requested_drain_id =
+                              std::move(requested_drain_id)]() {
                     {
                         std::lock_guard<std::mutex> transfer_lock(
                             prepared_audio_transfer_mutex_);
@@ -662,16 +670,38 @@ void Application::InitializeProtocol() {
                             audio_service_.AbortPreparedAudio();
                         }
                     }
-                    bool drained = audio_service_.WaitForPlaybackQueueEmpty(
-                        kPlaybackDrainTimeout);
+                    bool drain_timed_out = false;
+                    bool drain_failed = false;
+                    bool direct_audio = requested_transfer_id.empty();
+                    DirectAudioMetrics direct_metrics;
+                    if (direct_audio) {
+                        audio_service_.FinishDirectAudio();
+                        drain_timed_out =
+                            !audio_service_.WaitForPlaybackQueueEmpty(
+                                kPlaybackDrainTimeout);
+                        direct_metrics =
+                            audio_service_.GetDirectAudioMetrics();
+                    } else {
+                        auto drain_result =
+                            audio_service_.WaitForPreparedAudioComplete(
+                                kPlaybackDrainTimeout);
+                        drain_timed_out =
+                            drain_result ==
+                                PreparedAudioDrainResult::kStalled;
+                        drain_failed =
+                            drain_result ==
+                                PreparedAudioDrainResult::kFailed;
+                    }
                     std::lock_guard<std::mutex> transfer_lock(
                         prepared_audio_transfer_mutex_);
                     if (requested_transfer_id !=
                             prepared_audio_transfer_id_) {
                         return;
                     }
-                    if (!drained) {
+                    if (drain_timed_out) {
                         ESP_LOGW(TAG, "Audio drain timed out; dropping queue");
+                    } else if (drain_failed) {
+                        ESP_LOGW(TAG, "Audio drain failed; dropping queue");
                     }
                     auto metrics = audio_service_.GetPreparedAudioMetrics();
                     if (!prepared_audio_transfer_id_.empty()) {
@@ -699,7 +729,7 @@ void Application::InitializeProtocol() {
                         cJSON_AddBoolToObject(
                             result, "deferred", metrics.deferred);
                         cJSON_AddBoolToObject(
-                            result, "drain_timed_out", !drained);
+                            result, "drain_timed_out", drain_timed_out);
                         char* result_str = cJSON_PrintUnformatted(result);
                         if (result_str != nullptr && protocol_) {
                             protocol_->SendText(std::string(result_str));
@@ -708,6 +738,7 @@ void Application::InitializeProtocol() {
                         cJSON_Delete(result);
                     }
                     audio_service_.AbortPreparedAudio();
+                    audio_service_.AbortDirectAudio();
                     prepared_audio_transfer_id_.clear();
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         // stackchan-mcp is an MCP gateway, not a standalone
@@ -744,6 +775,38 @@ void Application::InitializeProtocol() {
                     // OnTtsStop() is idempotent (no-op for boards without
                     // an avatar / when lip-sync is already stopped).
                     board.OnTtsStop();
+                    if (!requested_drain_id.empty() && protocol_) {
+                        cJSON* result = cJSON_CreateObject();
+                        cJSON_AddStringToObject(result, "type", "tts");
+                        cJSON_AddStringToObject(result, "state", "drained");
+                        cJSON_AddStringToObject(
+                            result, "drain_id", requested_drain_id.c_str());
+                        cJSON_AddBoolToObject(
+                            result, "ok", !drain_timed_out && !drain_failed);
+                        if (direct_audio) {
+                            cJSON_AddNumberToObject(
+                                result, "accepted_frames",
+                                static_cast<double>(
+                                    direct_metrics.accepted_frames));
+                            cJSON_AddNumberToObject(
+                                result, "rejected_frames",
+                                static_cast<double>(
+                                    direct_metrics.rejected_frames));
+                            cJSON_AddNumberToObject(
+                                result, "codec_output_frames",
+                                static_cast<double>(
+                                    direct_metrics.codec_output_frames));
+                            cJSON_AddNumberToObject(
+                                result, "max_codec_write_gap_ms",
+                                direct_metrics.max_codec_write_gap_ms);
+                        }
+                        char* result_str = cJSON_PrintUnformatted(result);
+                        if (result_str != nullptr) {
+                            protocol_->SendText(std::string(result_str));
+                            cJSON_free(result_str);
+                        }
+                        cJSON_Delete(result);
+                    }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");

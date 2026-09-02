@@ -21,14 +21,23 @@ services:
       - /tmp:size=64m,mode=1777
     environment:
       HOME: /state
-      MCP_HTTP_ALLOWED_HOSTS: 43.143.37.91
+      MCP_HTTP_ALLOWED_HOSTS: ${XC_BODY_PUBLIC_HOST:?}
       PYTHONPATH: /opt/xc-body
       STACKCHAN_NOTIFY_CONFIG: /opt/xc-body/deploy/notify.yml
-      STACKCHAN_AUDIO_HOOK_URL: https://43.143.37.91/xc-body/voice/v1/capture
-      VISION_URL: https://43.143.37.91/capture
+      STACKCHAN_AUDIO_HOOK_URL: ${XC_BODY_PUBLIC_URL:?}/xc-body/voice/v1/capture
+      VISION_URL: ${XC_BODY_PUBLIC_URL:?}/capture
       XDG_CONFIG_HOME: /state/config
+    entrypoint:
+      - /opt/xc-body/deploy/run-service-with-persistent-log.sh
+      - gateway.log
+      - stackchan-mcp
+      - serve
+      - --transport
+      - streamable-http
+      - --no-mdns
     volumes:
       - /data/xc-body/gateway-state:/state
+      - /data/xc-body/logs:/logs
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -52,7 +61,12 @@ services:
         condition: service_healthy
     env_file:
       - gateway.env
-    entrypoint: /opt/xc-body/deploy/run-pending-thought-service.sh
+    environment:
+      XC_BODY_PUBLIC_URL: ${XC_BODY_PUBLIC_URL:?}
+    entrypoint:
+      - /opt/xc-body/deploy/run-service-with-persistent-log.sh
+      - pending.log
+      - /opt/xc-body/deploy/run-pending-thought-service.sh
     expose:
       - "8770"
     networks:
@@ -63,6 +77,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    volumes:
+      - /data/xc-body/logs:/logs
     security_opt:
       - no-new-privileges:true
 
@@ -75,6 +91,7 @@ services:
       - gateway
     environment:
       HOME: /state
+      XC_BODY_PUBLIC_HOST: ${XC_BODY_PUBLIC_HOST:?}
       XDG_CONFIG_HOME: /state/config
       XDG_DATA_HOME: /state/data
     ports:

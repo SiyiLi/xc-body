@@ -10,6 +10,7 @@ const sources = [
   "direct-conversation.ts",
   "hooks.ts",
   "index.ts",
+  "projection-client.ts",
   "spoken-text.ts",
 ];
 

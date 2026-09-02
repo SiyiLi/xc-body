@@ -11,16 +11,19 @@ caddy_image=${2:-}
 source_commit=${3:-}
 avatar_sha256=${4:-}
 deployment_kind=${5:-}
+public_url=${6:-}
 root=/data/xc-body
+log_dir=/data/xc-body/logs
 deploy_dir=$root/deploy
 runtime_tag=${runtime_image%@*}
 caddy_tag=${caddy_image%@*}
 runtime_repository=${runtime_tag%:*}
 caddy_repository=${caddy_tag%:*}
 
-[[ "$runtime_image" =~ ^docker\.tc\.nvda\.ai/.+@sha256:[0-9a-f]{64}$ ]] \
+image_pattern='^[A-Za-z0-9._:-]+/[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$'
+[[ "$runtime_image" =~ $image_pattern ]] \
   || die "invalid runtime image reference" 64
-[[ "$caddy_image" =~ ^docker\.tc\.nvda\.ai/.+@sha256:[0-9a-f]{64}$ ]] \
+[[ "$caddy_image" =~ $image_pattern ]] \
   || die "invalid Caddy image reference" 64
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid source commit" 64
@@ -30,18 +33,28 @@ case "$deployment_kind" in
   candidate|committed) ;;
   *) die "invalid deployment kind" 64 ;;
 esac
+[[ "$public_url" =~ ^https://[A-Za-z0-9.-]+$ ]] \
+  || die "invalid public URL: HTTPS origin must not include a port" 64
+public_host=${public_url#https://}
 
 exec 9>/tmp/xc-body-deploy.lock
 flock -n 9 || die "another XC Body deployment is running" 75
 test -r "$deploy_dir/gateway.env" \
   || die "missing private gateway environment" 66
 install -d -m 0755 "$root/firmware" "$root/firmware/releases"
+mkdir -p "$log_dir"
 
-echo "[deploy] pulling TC Artifactory images"
+echo "[deploy] pulling configured registry images"
 docker pull "$runtime_image"
 docker pull "$caddy_image"
 docker tag "$runtime_image" "${runtime_image%@*}"
 docker tag "$caddy_image" "${caddy_image%@*}"
+docker run --rm --user 0:0 --entrypoint /bin/sh \
+  -v "$log_dir:/logs" "$runtime_image" \
+  -c 'touch /logs/gateway.log /logs/pending.log &&
+      chown 1000:1000 /logs /logs/gateway.log /logs/pending.log &&
+      chmod 0755 /logs &&
+      chmod 0644 /logs/gateway.log /logs/pending.log'
 
 stage=$(mktemp -d /tmp/xc-body-config.XXXXXX)
 container_id=$(docker create "$runtime_image")
@@ -63,6 +76,8 @@ images_tmp=$deploy_dir/.images.env.$$
 {
   printf 'XC_BODY_RUNTIME_IMAGE=%s\n' "$runtime_image"
   printf 'XC_BODY_CADDY_IMAGE=%s\n' "$caddy_image"
+  printf 'XC_BODY_PUBLIC_URL=%s\n' "$public_url"
+  printf 'XC_BODY_PUBLIC_HOST=%s\n' "$public_host"
 } > "$images_tmp"
 chmod 0600 "$images_tmp"
 mv "$images_tmp" "$deploy_dir/images.env"
@@ -92,16 +107,18 @@ attempt=0
 while [ "$attempt" -lt 90 ]; do
   if docker exec xc-body-pending python3 -c \
     '
+import sys
 import urllib.request as u
 
+base = sys.argv[1]
 urls = (
-    "https://43.143.37.91/xc-body/healthz",
-    "https://43.143.37.91/gateway-mcp/healthz",
+    f"{base}/xc-body/healthz",
+    f"{base}/gateway-mcp/healthz",
 )
 raise SystemExit(
     0 if all(u.urlopen(url, timeout=5).status == 200 for url in urls) else 1
 )
-' \
+' "$public_url" \
     >/dev/null 2>&1; then
     break
   fi

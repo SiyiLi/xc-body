@@ -142,14 +142,15 @@ class ESP32Connection:
         # device's `avatar_set_loaded` reply. Keyed by expected checksum
         # so that overlapping fetches (different sets) can be discriminated.
         self._avatar_set_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        # Device-declared WebSocket protocol version (from the hello
-        # message). Defaults to 1, which matches the firmware's default
-        # (firmware/main/protocols/websocket_protocol.h: ``version_ = 1``)
-        # and the audio framing this gateway emits today (raw Opus
-        # payload). v2/v3 add a BinaryProtocol header that this gateway
-        # does not yet wrap — see Issue follow-up to #70.
-        self.protocol_version: int = 1
-
+        # Audio senders retain the shared TTS lane until firmware has
+        # drained (or explicitly discarded) the last queued frame.
+        self._tts_drain_waiter: tuple[
+            str, asyncio.Future[dict[str, Any]]
+        ] | None = None
+        # Firmware advertises these in its hello message. Older firmware keeps
+        # the established stop-only behavior during a rolling deployment.
+        self.tts_drain_ack = False
+        self.direct_audio_metrics = False
     @property
     def connected(self) -> bool:
         return self._connected
@@ -401,6 +402,7 @@ class ESP32Connection:
         *,
         packet_count: int | None = None,
         transfer_id: str | None = None,
+        drain_id: str | None = None,
     ) -> None:
         """Send a TTS state notification (``start`` / ``stop`` / ...).
 
@@ -424,7 +426,71 @@ class ESP32Connection:
             message["packet_count"] = packet_count
         if transfer_id is not None:
             message["transfer_id"] = transfer_id
+        if drain_id is not None:
+            message["drain_id"] = drain_id
         await self._ws_send(json.dumps(message))
+
+    async def stop_tts_and_wait_for_drain(
+        self,
+        *,
+        transfer_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Stop playback and await the matching firmware drain."""
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        if self._tts_drain_waiter is not None:
+            raise RuntimeError("TTS drain already pending")
+
+        drain_id = uuid.uuid4().hex
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._tts_drain_waiter = (drain_id, future)
+        try:
+            await self.send_tts_state(
+                "stop",
+                transfer_id=transfer_id,
+                drain_id=drain_id,
+            )
+            result = await asyncio.wait_for(future, timeout=RESPONSE_TIMEOUT)
+            if result.get("ok") is not True:
+                raise RuntimeError("Firmware TTS drain did not complete")
+            return result
+        except asyncio.CancelledError:
+            await self._fence_after_drain_failure()
+            raise
+        except Exception:
+            await self._fence_after_drain_failure()
+            raise
+        finally:
+            if self._tts_drain_waiter == (drain_id, future):
+                self._tts_drain_waiter = None
+
+    async def _fence_after_drain_failure(self) -> None:
+        """Make an unconfirmed playback session unavailable to new audio."""
+        self.disconnect()
+        try:
+            await self._ws.close(code=1011, reason="TTS drain incomplete")
+        except Exception:
+            logger.warning("Failed to close ESP32 after incomplete TTS drain")
+
+    def handle_tts_drained(self, payload: dict[str, Any]) -> None:
+        """Resolve the waiter for one firmware-confirmed playback drain."""
+        drain_id = payload.get("drain_id")
+        if not isinstance(drain_id, str) or not drain_id:
+            logger.warning("Malformed TTS drain notification: %s", payload)
+            return
+        waiter = self._tts_drain_waiter
+        if waiter is not None and waiter[0] == drain_id and not waiter[1].done():
+            if not isinstance(payload.get("ok"), bool):
+                waiter[1].set_exception(
+                    RuntimeError("Malformed TTS drain notification")
+                )
+                return
+            self._tts_drain_waiter = None
+            waiter[1].set_result(payload)
+        else:
+            logger.warning("Unmatched TTS drain notification: id=%s", drain_id)
 
     async def send_listen_state(
         self,
@@ -479,6 +545,28 @@ class ESP32Connection:
             if not future.done():
                 future.set_exception(ConnectionError("ESP32 disconnected"))
         self._avatar_set_waiters.clear()
+        if self._tts_drain_waiter is not None:
+            _drain_id, future = self._tts_drain_waiter
+            if not future.done():
+                future.set_exception(ConnectionError("ESP32 disconnected"))
+            self._tts_drain_waiter = None
+
+
+async def stop_tts_after_drain(
+    connection: Any,
+    *,
+    transfer_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Use a confirmed drain when the connected firmware supports it."""
+    if not getattr(connection, "tts_drain_ack", False):
+        if transfer_id is None:
+            await connection.send_tts_state("stop")
+        else:
+            await connection.send_tts_state("stop", transfer_id=transfer_id)
+        return None
+    return await connection.stop_tts_and_wait_for_drain(
+        transfer_id=transfer_id,
+    )
 
 
 class ESP32Manager:
@@ -687,10 +775,7 @@ class ESP32Manager:
                     # Binary = audio frame. Forward to the audio_stream
                     # module which buffers it for STT capture (Issue
                     # #91) when a recording slot is open, or discards
-                    # it otherwise. Only protocol v1 is supported on
-                    # the inbound side today; the orchestrator gates
-                    # listen() on protocol_version=1 so v2/v3 frames
-                    # cannot reach this point with recording active.
+                    # it otherwise. XC Body uses raw Opus protocol v1.
                     await handle_audio_frame(message, session_id)
                     continue
 
@@ -710,26 +795,22 @@ class ESP32Manager:
                         await ws.close()
                         return
 
-                    # Capture the device's WebSocket protocol version
-                    # so callers (e.g. the TTS pipeline) can decide
-                    # whether their wire format is compatible. The
-                    # firmware accepts raw Opus only on v1; v2/v3 wrap
-                    # the payload in a BinaryProtocol header.
-                    raw_version = data.get("version", 1)
-                    try:
-                        connection.protocol_version = int(raw_version)
-                    except (TypeError, ValueError):
-                        connection.protocol_version = 1
-                    if connection.protocol_version != 1:
+                    connection.tts_drain_ack = (
+                        features.get("tts_drain_ack") is True
+                    )
+                    connection.direct_audio_metrics = (
+                        features.get("direct_audio_metrics") is True
+                    )
+
+                    raw_version = data.get("version")
+                    if type(raw_version) is not int or raw_version != 1:
                         logger.warning(
-                            "ESP32 negotiated WebSocket protocol "
-                            "version=%s; the gateway emits raw Opus "
-                            "binary frames matching v1 only. TTS "
-                            "calls (say) will be blocked at the "
-                            "orchestrator until v2/v3 BinaryProtocol "
-                            "header wrapping is implemented",
-                            connection.protocol_version,
+                            "ESP32 protocol version=%r rejected; "
+                            "XC Body requires v1",
+                            raw_version,
                         )
+                        await ws.close()
+                        return
 
                     # Send hello response
                     resp = HelloResponse(session_id=session_id)
@@ -769,6 +850,9 @@ class ESP32Manager:
                         "prepared_audio_metrics=%s",
                         json.dumps(data, separators=(",", ":"), sort_keys=True),
                     )
+
+                elif msg_type == "tts" and data.get("state") == "drained":
+                    connection.handle_tts_drained(data)
 
                 elif msg_type == "stackchan-event":
                     await self._emit_stackchan_event(data)
