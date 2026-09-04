@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "type": "curve",
+      "duration_ms": 650,
+      "start": [0, 43],
+      "via": [[-1, 46], [-4, 53]],
+      "end": [-5, 56]
+    },
+    {"type": "pause", "duration_ms": 420},
+    {
+      "type": "curve",
+      "duration_ms": 760,
+      "start": [-5, 56],
+      "via": [[-4, 53], [-1, 46]],
+      "end": [0, 43]
+    }
+  ]
+}

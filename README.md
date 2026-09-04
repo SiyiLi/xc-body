@@ -36,8 +36,8 @@ turning it off should make the room feel a little emptier.
 - Milestone 4 direct conversation and appliance UX have physical acceptance.
   Exact candidate identifiers and the real-user acceptance record are in the
   milestone document.
-- Milestone 5 is active. It gives direct answers one of six deterministic
-  expressions; `agree` uses a restrained nod. `Neutral` is the fallback base
+- Milestone 5 is active. It gives direct answers one of seven deterministic
+  expressions; `agree` uses a restrained nod. `Idle` is the fallback base
   presence, combining the idle pose with sparse ambient life and local touch
   reactions. The fixed direct projection selects the expression while
   deterministic XC Body code owns physical execution. A USB-only calibration
@@ -66,7 +66,8 @@ uses the protected local key file.
 
 The CoreS3 USB channel reports status, updates the saved gateway configuration,
 queues verified firmware updates, streams logs, and requests a normal
-application reboot. It never returns the saved bearer token.
+application reboot. Milestone 5 also uses it to preview and persist bounded
+expression recipes. It never returns the saved bearer token.
 
 ```sh
 scripts/stackchan_usb.py status
@@ -77,6 +78,11 @@ scripts/stackchan_usb.py update \
   --manifest https://<public-host>/firmware/manifest.json
 scripts/stackchan_usb.py reboot
 scripts/stackchan_usb.py monitor --seconds 30
+scripts/stackchan_usb.py expression-preview agree \
+  firmware/main/boards/stackchan/expression-recipes/agree.json
+scripts/stackchan_usb.py expression-save agree \
+  firmware/main/boards/stackchan/expression-recipes/agree.json
+scripts/stackchan_usb.py expression-show agree
 ```
 
 Flashing firmware requires separate explicit permission.

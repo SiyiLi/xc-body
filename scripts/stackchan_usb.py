@@ -22,6 +22,15 @@ RESPONSE_PREFIX = b"XC_BODY_RESPONSE "
 DEFAULT_TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 MAX_MANIFEST_BYTES = 64 * 1024
+EXPRESSION_NAMES = (
+    "agree",
+    "pleased",
+    "curious",
+    "concerned",
+    "surprised",
+    "embarrassed",
+    "mischievous",
+)
 
 
 class UsbControlError(RuntimeError):
@@ -242,6 +251,25 @@ def _configure_request(args: argparse.Namespace) -> dict[str, object]:
     return request
 
 
+def _load_expression_recipe(path: str) -> dict[str, object]:
+    try:
+        with open(path, encoding="utf-8") as source:
+            recipe = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise UsbControlError(f"cannot read expression recipe: {error}") from error
+    if not isinstance(recipe, dict):
+        raise UsbControlError("expression recipe must be a JSON object")
+    return recipe
+
+
+def _expression_recipe_request(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "command": args.command.replace("-", "_"),
+        "name": args.name,
+        "recipe": _load_expression_recipe(args.recipe),
+    }
+
+
 def _monitor(path: str, seconds: float) -> None:
     descriptor, previous = _open_port(path)
     try:
@@ -305,6 +333,22 @@ def _parser() -> argparse.ArgumentParser:
         help="queue a verified XC Body firmware release",
     )
     update.add_argument("--manifest", required=True, type=_https_url)
+    for command in ("expression-preview", "expression-save"):
+        expression = commands.add_parser(
+            command,
+            help=(
+                "preview a transient expression recipe"
+                if command.endswith("preview")
+                else "persist an approved expression recipe"
+            ),
+        )
+        expression.add_argument("name", choices=EXPRESSION_NAMES)
+        expression.add_argument("recipe", help="curve/pause recipe JSON file")
+    expression_show = commands.add_parser(
+        "expression-show",
+        help="show one stored expression recipe",
+    )
+    expression_show.add_argument("name", choices=EXPRESSION_NAMES)
     monitor = commands.add_parser("monitor", help="stream firmware logs")
     monitor.add_argument(
         "--seconds",
@@ -331,6 +375,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         elif args.command == "update":
             request = _firmware_from_manifest(args.manifest, args.timeout)
+        elif args.command in {"expression-preview", "expression-save"}:
+            request = _expression_recipe_request(args)
+        elif args.command == "expression-show":
+            request = {
+                "command": args.command.replace("-", "_"),
+                "name": args.name,
+            }
         else:
             request = {"command": args.command}
         response = _send_request(path, request, args.timeout)

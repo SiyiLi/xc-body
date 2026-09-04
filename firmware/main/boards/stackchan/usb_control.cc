@@ -1,6 +1,8 @@
 #include "usb_control.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -24,10 +26,200 @@ constexpr size_t kMaxRequestBytes = 1024;
 constexpr uint32_t kTaskStackSize = 6144;
 constexpr UBaseType_t kTaskPriority = tskIDLE_PRIORITY + 1;
 const char* const kTag = "StackChanUsb";
+StackChanExpressionPreviewer* expression_previewer = nullptr;
+constexpr char kExpressionSettingsNamespace[] = "expressions";
+constexpr int kIdleYaw = 0;
+constexpr int kIdlePitch = 43;
+constexpr int kMinCurveDurationMs = 100;
+constexpr int kMaxStepDurationMs = 5000;
+constexpr uint32_t kMaxRecipeDurationMs = 20000;
 
 bool IsString(const cJSON* value) {
     return value != nullptr && cJSON_IsString(value) &&
         value->valuestring != nullptr;
+}
+
+bool IsInteger(const cJSON* value) {
+    return cJSON_IsNumber(value) &&
+        value->valuedouble == static_cast<double>(value->valueint);
+}
+
+bool IsExpressionName(const char* name) {
+    if (name == nullptr) {
+        return false;
+    }
+    for (const char* candidate : kStackChanExpressionNames) {
+        if (std::strcmp(name, candidate) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ParseExpressionPoint(
+        const cJSON* value,
+        StackChanExpressionPoint& point) {
+    if (!cJSON_IsArray(value) || cJSON_GetArraySize(value) != 2) {
+        return false;
+    }
+    const cJSON* yaw = cJSON_GetArrayItem(value, 0);
+    const cJSON* pitch = cJSON_GetArrayItem(value, 1);
+    if (!IsInteger(yaw) || !IsInteger(pitch)) {
+        return false;
+    }
+    point = {yaw->valueint, pitch->valueint};
+    return true;
+}
+
+bool ParseExpressionRecipe(
+        const cJSON* value,
+        StackChanExpressionRecipe& recipe) {
+    if (!cJSON_IsObject(value)) {
+        return false;
+    }
+    const cJSON* schema =
+        cJSON_GetObjectItemCaseSensitive(value, "schema_version");
+    const cJSON* steps = cJSON_GetObjectItemCaseSensitive(value, "steps");
+    if (!IsInteger(schema) || schema->valueint != 1 ||
+        !cJSON_IsArray(steps)) {
+        return false;
+    }
+    int count = cJSON_GetArraySize(steps);
+    if (count <= 0 ||
+        count > static_cast<int>(kStackChanExpressionMaxSteps)) {
+        return false;
+    }
+    recipe.schema_version = schema->valueint;
+    recipe.step_count = static_cast<size_t>(count);
+    for (int index = 0; index < count; ++index) {
+        const cJSON* item = cJSON_GetArrayItem(steps, index);
+        if (!cJSON_IsObject(item)) {
+            return false;
+        }
+        const cJSON* type =
+            cJSON_GetObjectItemCaseSensitive(item, "type");
+        const cJSON* duration =
+            cJSON_GetObjectItemCaseSensitive(item, "duration_ms");
+        if (!IsString(type) || !IsInteger(duration)) {
+            return false;
+        }
+        auto& step = recipe.steps[index];
+        step.duration_ms = duration->valueint;
+        if (std::strcmp(type->valuestring, "pause") == 0) {
+            step.type = StackChanExpressionStepType::PAUSE;
+            continue;
+        }
+        if (std::strcmp(type->valuestring, "curve") != 0) {
+            return false;
+        }
+        step.type = StackChanExpressionStepType::CURVE;
+        const cJSON* start =
+            cJSON_GetObjectItemCaseSensitive(item, "start");
+        const cJSON* via = cJSON_GetObjectItemCaseSensitive(item, "via");
+        const cJSON* end = cJSON_GetObjectItemCaseSensitive(item, "end");
+        if (!cJSON_IsArray(via) || cJSON_GetArraySize(via) != 2 ||
+            !ParseExpressionPoint(start, step.points[0]) ||
+            !ParseExpressionPoint(
+                cJSON_GetArrayItem(via, 0), step.points[1]) ||
+            !ParseExpressionPoint(
+                cJSON_GetArrayItem(via, 1), step.points[2]) ||
+            !ParseExpressionPoint(end, step.points[3])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ValidateExpressionRecipe(
+        const StackChanExpressionRecipe& recipe,
+        std::string& error) {
+    StackChanExpressionPoint previous = {kIdleYaw, kIdlePitch};
+    uint32_t total_ms = 0;
+    bool previous_was_pause = false;
+    for (size_t index = 0; index < recipe.step_count; ++index) {
+        const auto& step = recipe.steps[index];
+        if (step.type == StackChanExpressionStepType::PAUSE) {
+            if (index == 0 || index + 1 == recipe.step_count ||
+                previous_was_pause || step.duration_ms <= 0 ||
+                step.duration_ms > kMaxStepDurationMs) {
+                error = "pause must be bounded and between curves";
+                return false;
+            }
+            total_ms += static_cast<uint32_t>(step.duration_ms);
+            previous_was_pause = true;
+            continue;
+        }
+        if (step.duration_ms < kMinCurveDurationMs ||
+            step.duration_ms > kMaxStepDurationMs) {
+            error = "curve duration must be between 100 and 5000 ms";
+            return false;
+        }
+        for (const auto& point : step.points) {
+            if (point.yaw < -90 || point.yaw > 90 ||
+                point.pitch < 5 || point.pitch > 85) {
+                error = "curve point exceeds servo limits";
+                return false;
+            }
+        }
+        if (step.points[0].yaw != previous.yaw ||
+            step.points[0].pitch != previous.pitch) {
+            error = "curve does not continue from the previous endpoint";
+            return false;
+        }
+        previous = step.points[3];
+        total_ms += static_cast<uint32_t>(step.duration_ms);
+        previous_was_pause = false;
+    }
+    if (previous.yaw != kIdleYaw || previous.pitch != kIdlePitch) {
+        error = "recipe must return to the idle pose";
+        return false;
+    }
+    if (total_ms > kMaxRecipeDurationMs) {
+        error = "recipe exceeds the 20 second movement budget";
+        return false;
+    }
+    return true;
+}
+
+void AddExpressionPoint(cJSON* array, const StackChanExpressionPoint& point) {
+    cJSON* encoded = cJSON_CreateArray();
+    cJSON_AddItemToArray(encoded, cJSON_CreateNumber(point.yaw));
+    cJSON_AddItemToArray(encoded, cJSON_CreateNumber(point.pitch));
+    cJSON_AddItemToArray(array, encoded);
+}
+
+cJSON* EncodeExpressionRecipe(const StackChanExpressionRecipe& recipe) {
+    cJSON* encoded = cJSON_CreateObject();
+    cJSON_AddNumberToObject(
+        encoded, "schema_version", recipe.schema_version);
+    cJSON* steps = cJSON_AddArrayToObject(encoded, "steps");
+    for (size_t index = 0; index < recipe.step_count; ++index) {
+        const auto& step = recipe.steps[index];
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(
+            item,
+            "type",
+            step.type == StackChanExpressionStepType::CURVE
+                ? "curve" : "pause");
+        cJSON_AddNumberToObject(item, "duration_ms", step.duration_ms);
+        if (step.type == StackChanExpressionStepType::CURVE) {
+            cJSON* start = cJSON_AddArrayToObject(item, "start");
+            cJSON_AddItemToArray(
+                start, cJSON_CreateNumber(step.points[0].yaw));
+            cJSON_AddItemToArray(
+                start, cJSON_CreateNumber(step.points[0].pitch));
+            cJSON* via = cJSON_AddArrayToObject(item, "via");
+            AddExpressionPoint(via, step.points[1]);
+            AddExpressionPoint(via, step.points[2]);
+            cJSON* end = cJSON_AddArrayToObject(item, "end");
+            cJSON_AddItemToArray(
+                end, cJSON_CreateNumber(step.points[3].yaw));
+            cJSON_AddItemToArray(
+                end, cJSON_CreateNumber(step.points[3].pitch));
+        }
+        cJSON_AddItemToArray(steps, item);
+    }
+    return encoded;
 }
 
 bool HasGatewayScheme(const std::string& value) {
@@ -286,6 +478,83 @@ void SetAutomaticOta(const cJSON* request) {
     SendResponse(response);
 }
 
+void HandleExpressionRequest(const cJSON* request, const char* command) {
+    const cJSON* name = cJSON_GetObjectItemCaseSensitive(request, "name");
+    if (!IsString(name) || !IsExpressionName(name->valuestring)) {
+        SendError(command, "unknown expression");
+        return;
+    }
+
+    std::string error;
+    if (std::strcmp(command, "expression_show") == 0) {
+        Settings settings(kExpressionSettingsNamespace, false);
+        std::string encoded = settings.GetString(name->valuestring);
+        if (encoded.empty()) {
+            SendError(command, "expression is not calibrated");
+            return;
+        }
+        cJSON* stored = cJSON_Parse(encoded.c_str());
+        StackChanExpressionRecipe recipe;
+        bool valid = ParseExpressionRecipe(stored, recipe) &&
+            ValidateExpressionRecipe(recipe, error);
+        cJSON_Delete(stored);
+        if (!valid) {
+            SendError(command, "stored expression recipe is invalid");
+            return;
+        }
+        auto response = NewResponse(command, true);
+        cJSON_AddStringToObject(response, "name", name->valuestring);
+        cJSON_AddItemToObject(
+            response, "recipe", EncodeExpressionRecipe(recipe));
+        SendResponse(response);
+        return;
+    }
+
+    const cJSON* value =
+        cJSON_GetObjectItemCaseSensitive(request, "recipe");
+    StackChanExpressionRecipe recipe;
+    if (!ParseExpressionRecipe(value, recipe)) {
+        SendError(command, "recipe must use schema 1 curve/pause steps");
+        return;
+    }
+    if (!ValidateExpressionRecipe(recipe, error)) {
+        SendError(command, error.c_str());
+        return;
+    }
+    if (std::strcmp(command, "expression_preview") == 0) {
+        if (expression_previewer == nullptr ||
+            !expression_previewer->PreviewExpression(
+                name->valuestring, recipe, error)) {
+            SendError(
+                command,
+                error.empty() ? "expression preview is unavailable"
+                              : error.c_str());
+            return;
+        }
+    } else {
+        cJSON* stored = EncodeExpressionRecipe(recipe);
+        char* encoded = cJSON_PrintUnformatted(stored);
+        cJSON_Delete(stored);
+        if (encoded == nullptr) {
+            SendError(command, "could not encode expression recipe");
+            return;
+        }
+        Settings settings(kExpressionSettingsNamespace, true);
+        settings.SetString(name->valuestring, encoded);
+        cJSON_free(encoded);
+    }
+    auto response = NewResponse(command, true);
+    cJSON_AddStringToObject(response, "name", name->valuestring);
+    cJSON_AddItemToObject(
+        response, "recipe", EncodeExpressionRecipe(recipe));
+    if (std::strcmp(command, "expression_preview") == 0) {
+        cJSON_AddBoolToObject(response, "started", true);
+    } else {
+        cJSON_AddStringToObject(response, "persistence", "nvs");
+    }
+    SendResponse(response);
+}
+
 void HandleRequest(const char* json) {
     cJSON* request = cJSON_Parse(json);
     if (request == nullptr || !cJSON_IsObject(request)) {
@@ -312,6 +581,11 @@ void HandleRequest(const char* json) {
     } else if (std::strcmp(
                    command->valuestring, "automatic_ota") == 0) {
         SetAutomaticOta(request);
+    } else if (
+        std::strcmp(command->valuestring, "expression_preview") == 0 ||
+        std::strcmp(command->valuestring, "expression_save") == 0 ||
+        std::strcmp(command->valuestring, "expression_show") == 0) {
+        HandleExpressionRequest(request, command->valuestring);
     } else {
         SendError(command->valuestring, "unsupported command");
     }
@@ -356,7 +630,8 @@ void UsbControlTask(void*) {
 
 }  // namespace
 
-void StartStackChanUsbControl() {
+void StartStackChanUsbControl(StackChanExpressionPreviewer* expressions) {
+    expression_previewer = expressions;
     BaseType_t created = xTaskCreate(
         UsbControlTask,
         "stackchan_usb",

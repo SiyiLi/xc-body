@@ -16,7 +16,9 @@ from stackchan.avatar_assets import (
     PREVIEW_FILENAME,
     PREVIEW_HEIGHT,
     PREVIEW_WIDTH,
+    SEMANTIC_FACE_BOUNDS,
     TOTAL_BYTES,
+    WIDTH,
     AvatarAssetValidationError,
     count_different_pixels,
     generate_avatar_set,
@@ -28,6 +30,17 @@ from stackchan.avatar_assets import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPRESSION_ASSETS = (
+    "idle",
+    "agree",
+    "pleased",
+    "curious",
+    "concerned",
+    "surprised",
+    "embarrassed",
+    "mischievous",
+)
+
 
 class AvatarAssetTests(unittest.TestCase):
     @classmethod
@@ -84,6 +97,14 @@ class AvatarAssetTests(unittest.TestCase):
         payload, manifest, preview = generate_avatar_set()
 
         self.assertEqual(payload, self.payload)
+        self.assertEqual(
+            (
+                ROOT
+                / "firmware/main/boards/stackchan/assets"
+                / PAYLOAD_FILENAME
+            ).read_bytes(),
+            payload,
+        )
         self.assertEqual(manifest_json(manifest), manifest_json(self.manifest))
         self.assertEqual(preview, self.preview)
 
@@ -102,14 +123,44 @@ class AvatarAssetTests(unittest.TestCase):
                         difference, MIN_FACE_DIFFERENCE_PIXELS
                     )
 
-    def test_eye_and_mouth_frames_are_complete_nonblank_faces(self):
+    def test_eye_and_mouth_frames_are_complete_semantic_faces(self):
         for name, frame in zip(FRAME_ORDER[6:], self.frames[6:]):
             pixels = [pixel[0] for pixel in struct.iter_unpack("<H", frame)]
             background = pixels[0]
             artwork_pixels = sum(pixel != background for pixel in pixels)
             with self.subTest(frame=name):
                 self.assertGreaterEqual(artwork_pixels, MIN_ARTWORK_PIXELS)
-                self.assertGreater(len(set(pixels)), 5)
+
+    def test_semantic_faces_contain_no_portrait_artwork(self):
+        left, top, right, bottom = SEMANTIC_FACE_BOUNDS
+        left *= 2
+        top *= 2
+        right = (right + 1) * 2 - 1
+        bottom = (bottom + 1) * 2 - 1
+
+        for name, frame in zip(FRAME_ORDER, self.frames):
+            pixels = [pixel[0] for pixel in struct.iter_unpack("<H", frame)]
+            background = pixels[0]
+            outside = [
+                index
+                for index, pixel in enumerate(pixels)
+                if pixel != background
+                and not (
+                    left <= index % WIDTH <= right
+                    and top <= index // WIDTH <= bottom
+                )
+            ]
+            with self.subTest(frame=name):
+                self.assertEqual(outside, [])
+
+    def test_expression_gifs_are_packaged_at_native_screen_size(self):
+        assets = ROOT / "firmware/main/boards/stackchan/assets"
+        for name in EXPRESSION_ASSETS:
+            path = assets / f"expression-{name}.gif"
+            encoded = path.read_bytes()
+            with self.subTest(expression=name):
+                self.assertIn(encoded[:6], (b"GIF87a", b"GIF89a"))
+                self.assertEqual(struct.unpack("<HH", encoded[6:10]), (320, 240))
 
     def test_manifest_hashes_validate_and_tampering_fails(self):
         validate_avatar_set(self.payload, self.manifest)

@@ -214,7 +214,7 @@ elseif(CONFIG_BOARD_TYPE_STACKCHAN)
         "${STACKCHAN_AVATAR_ASSET}")
     file(SHA256 "${STACKCHAN_AVATAR_ASSET}" STACKCHAN_AVATAR_SHA256)
     if(NOT STACKCHAN_AVATAR_SHA256 STREQUAL
-       "daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7")
+       "06bed0ebc0c860643704ed0aafa4f57c48638eba6699fca902c04a0df61a1a8b")
         message(FATAL_ERROR "StackChan reviewed avatar checksum mismatch")
     endif()
     set(DEFAULT_ASSETS_EXTRA_FILES

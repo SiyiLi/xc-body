@@ -6,7 +6,7 @@ Give each direct answer one restrained, content-appropriate physical
 expression. An expression combines a deterministic face animation and head
 movement. It may represent an emotion or a conversational gesture such as a
 nod. The model selects only its name; XC Body owns every physical detail and
-safe return. When no expression is appropriate, neutral becomes the robot's
+safe return. When no expression is appropriate, idle becomes the robot's
 sparse ambient life and local sense of touch.
 
 ## Current Status
@@ -15,12 +15,20 @@ Milestone 5 became active on 2026-09-02 after Milestone 4 received real-user
 physical acceptance. The initial expression vocabulary and physical recipes
 still require implementation, calibration, and real-user acceptance.
 
-The expression-aware direct path is the primary goal. Neutral ambient presence
+Milestone 5 first-party gateway, firmware, and plugin releases use the `0.3.x`
+version line. Their patch versions continue to advance independently from the
+versions deployed on each surface.
+
+The expression-aware direct path is the primary goal. Idle ambient presence
 follows in small slices and must not delay or complicate that path.
 
 ## Initial Vocabulary
 
-Start with six expressions that reuse the six reviewed face assets:
+Start with seven expressions. Their visual system is a new face-only semantic
+design: simple facial marks over an otherwise empty screen, without the
+current portrait, head, hair, hat, neck, or body illustration. The first
+`curious` POC establishes the asset format and directional behavior while
+Elise's final visual design remains pending.
 
 | Expression | Face basis | Intended use |
 | --- | --- | --- |
@@ -30,27 +38,33 @@ Start with six expressions that reuse the six reviewed face assets:
 | `concerned` | sad | bad news, caution, and empathy |
 | `surprised` | surprised | genuinely unexpected information |
 | `embarrassed` | embarrassed | mistakes and mild self-consciousness |
+| `mischievous` | monocle | playful cunning and knowing humor |
 
 Each expression needs one reviewed head recipe and exact safe return. The model
-cannot choose angles, speeds, holds, intensity, or animation frames. `Neutral`
-is the fallback presence rather than a seventh expression. Add a new expression
+cannot choose angles, speeds, holds, intensity, or animation frames. `Idle`
+is the fallback presence rather than an eighth expression. Add a new expression
 only when real use exposes a missing distinction.
 
 ## USB Expression Calibration
 
 Each motor recipe needs fast physical iteration before it becomes production
 calibration. Extend the existing CoreS3 USB maintenance channel with local
-preview, save, show, and reset operations. The intended preview shape is:
+preview, save, and show operations. The intended preview shape is:
 
 ```sh
-scripts/stackchan_usb.py expression-preview agree \
-  --move <yaw>,<pitch>,<speed>,<hold-ms> \
-  --move <yaw>,<pitch>,<speed>,<hold-ms>
+scripts/stackchan_usb.py expression-preview agree agree.json
 ```
 
-- One invocation previews one named expression and its candidate steps.
-- Firmware and CLI validate the bounded step count, servo ranges, speed, hold
-  duration, and total duration before movement.
+- One invocation previews one named expression and its candidate JSON recipe.
+- A recipe is an ordered sequence of `curve` and `pause` steps. A curve is one
+  cubic Bezier motion with a fixed smooth time envelope; its two `via` points
+  shape the path without becoming intermediate stops. A pause holds the last
+  curve endpoint for its declared duration.
+- Preview plays the authored face animation with the candidate head recipe, so
+  their combined timing is judged on the robot without exposing drawing
+  primitives through USB.
+- Firmware validates schema version, bounded step count and duration, servo
+  ranges, curve continuity, and exact idle start and return before movement.
 - Preview uses the same face mapping, body-operation ownership, motor runner,
   interruption behavior, and safe return as the production expression.
 - A busy robot rejects preview rather than interleaving it with conversation,
@@ -59,11 +73,11 @@ scripts/stackchan_usb.py expression-preview agree \
   validates and stores that exact recipe in NVS for the named expression.
 - Production expression playback reads the stored motor recipe. Face mapping,
   expression names, and execution rules remain fixed in firmware.
-- Show returns the canonical stored recipe and its schema version. Reset removes
-  one stored recipe and makes that expression unavailable until recalibrated.
+- Show returns the canonical stored recipe and its schema version. Saving a new
+  approved recipe replaces the prior calibration for that expression.
 - Stored calibration survives reboot and routine OTA, which preserve NVS.
 - Missing, malformed, or incompatible calibration fails before movement and
-  falls back to neutral presence for the direct turn.
+  falls back to idle presence for the direct turn.
 
 USB is the calibration boundary, not a new production control surface. The
 gateway, OpenClaw, and projection never receive raw motor parameters.
@@ -83,11 +97,11 @@ needs an expression selection, then returns one strict result:
   preserved when it is already voice-friendly.
 - `speech` may be `null` when OpenClaw explicitly requests expression without
   audio.
-- `expression` is one of the six fixed expressions or `neutral`.
-- Clear semantic fit is required for a non-neutral expression. Ambiguity
-  defaults to `neutral`.
+- `expression` is one of the seven fixed expressions or `idle`.
+- Clear semantic fit is required for a non-idle expression. Ambiguity
+  defaults to `idle`.
 - Invalid output receives the existing bounded retry, then falls back to
-  neutral expression and safe speech behavior.
+  idle presence and safe speech behavior.
 - No rationale, confidence, movement parameters, or open-ended labels cross
   this boundary.
 
@@ -102,10 +116,10 @@ For a direct turn, a selected expression replaces the existing fixed attention
 behavior. Speech preparation may overlap the deterministic expression,
 preserving the current attention-and-preparation overlap. Head motion settles
 before playback so servo noise cannot contaminate speech. The selected face may
-remain through playback, then the recipe restores neutral presence.
+remain through playback, then the recipe restores idle presence.
 
-A `neutral` selection requires no semantic gesture. It keeps or restores the
-reviewed idle face and safe centered posture before playback.
+A selected `idle` presence requires no semantic gesture. It keeps or restores
+the reviewed idle face and safe centered posture before playback.
 
 One exclusive body operation owns the complete expression-through-playback
 interval, and the expression runs exactly once for the turn.
@@ -115,13 +129,13 @@ open the audio path. Background offers retain their accepted
 `knock -> wait -> tell` behavior and prepared-Opus path. Milestone 5 does not
 add expression selection to them.
 
-## Neutral Ambient Life and Senses
+## Idle Ambient Life and Senses
 
-Neutral is the robot's base presence rather than another expression. Once the
-six expression recipes are stable, small deterministic behaviors may make that
-presence feel alive between interactions:
+Idle is the robot's base presence rather than another expression. Once the
+seven expression recipes are stable, small deterministic behaviors may make
+that presence feel alive between interactions:
 
-- sparse gaze shifts or subtle neutral posture changes;
+- sparse gaze shifts or subtle idle posture changes;
 - brief local face-and-head reactions to touch;
 - strict frequency and motion budgets, with rest as the normal state; and
 - immediate suspension during conversation, pending offers, settings,
@@ -142,18 +156,18 @@ melodramatic, repetitive, distracting, or unsafe.
 
 These are engineering references, not independent acceptance criteria.
 
-- Each of the six expressions maps to one deterministic, calibrated recipe.
-- `Neutral` uses the reviewed idle face and safe centered posture.
+- Each of the seven expressions maps to one deterministic, calibrated recipe.
+- `Idle` uses the reviewed idle face and safe centered posture.
 - USB preview rejects unsafe or malformed steps before movement.
 - USB preview uses production ownership and returns safely after success,
   failure, cancellation, or disconnect.
 - A saved recipe survives reboot and is the recipe production playback uses.
-- USB show reports the exact stored recipe; reset makes it unavailable.
+- USB show reports the exact stored recipe.
 - Corrupt or incompatible stored calibration cannot move the robot.
 - An explicit OpenClaw answer requesting an expression selects it exactly.
 - An expression-only result performs no audio playback.
 - Unsupported or malformed output cannot invent a motion or expression.
-- Projection failure falls back to `neutral` without duplicating the turn.
+- Projection failure falls back to `idle` without duplicating the turn.
 - Every recipe stays within reviewed servo limits and restores the base view.
 - Direct expression, speech, and pending-offer restoration remain serialized.
 - Ambient behavior respects its activity budget and yields immediately to
