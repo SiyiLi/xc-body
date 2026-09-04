@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from scripts.stackchan_usb import UsbControlError, _firmware_from_manifest
+from scripts.stackchan_usb import (
+    UsbControlError,
+    _expression_recipe_request,
+    _firmware_from_manifest,
+    _parser,
+)
 
 
 class ManifestResponse(io.BytesIO):
@@ -61,6 +68,46 @@ class StackChanUsbManifestTests(unittest.TestCase):
                     "https://example.test/manifest.json",
                     5.0,
                 )
+
+
+class StackChanUsbExpressionTests(unittest.TestCase):
+    def test_builds_expression_recipe_request_from_json(self) -> None:
+        recipe = {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "type": "curve",
+                    "duration_ms": 400,
+                    "start": [0, 43],
+                    "via": [[5, 48], [10, 60]],
+                    "end": [10, 60],
+                },
+                {"type": "pause", "duration_ms": 150},
+                {
+                    "type": "curve",
+                    "duration_ms": 500,
+                    "start": [10, 60],
+                    "via": [[8, 58], [3, 48]],
+                    "end": [0, 43],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agree.json"
+            path.write_text(json.dumps(recipe), encoding="utf-8")
+            args = _parser().parse_args(
+                ["expression-preview", "agree", str(path)]
+            )
+            request = _expression_recipe_request(args)
+
+        self.assertEqual(
+            request,
+            {
+                "command": "expression_preview",
+                "name": "agree",
+                "recipe": recipe,
+            },
+        )
 
 
 if __name__ == "__main__":

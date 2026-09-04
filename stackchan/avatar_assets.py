@@ -41,9 +41,9 @@ MANIFEST_VERSION = "xc-body-avatar-v1"
 PIXEL_FORMAT = "RGB565-LE"
 
 # Large enough to reject cosmetic hash-only differences while allowing compact
-# expression symbols. Generated face pairs currently exceed this lower bound.
+# semantic marks. Generated face pairs currently exceed this lower bound.
 MIN_FACE_DIFFERENCE_PIXELS = 300
-MIN_ARTWORK_PIXELS = 2_000
+MIN_ARTWORK_PIXELS = 500
 
 PREVIEW_COLUMNS = 4
 PREVIEW_ROWS = 4
@@ -69,21 +69,18 @@ PREVIEW_FILENAME = "xc-body-layered-preview.png"
 
 Color = tuple[int, int, int]
 
-_BACKGROUND = (22, 32, 39)
-_COLLAR = (45, 58, 65)
-_SHELL_SHADOW = (174, 190, 198)
-_SHELL = (205, 217, 223)
-_SHELL_LIGHT = (240, 247, 249)
-_OUTLINE = (150, 166, 174)
-_FACE = (244, 249, 250)
-_EYE = (78, 94, 116)
-_EYE_HIGHLIGHT = (255, 255, 255)
-_MOUTH = (101, 117, 126)
-_GREEN = (79, 226, 91)
-_GREEN_SOFT = (116, 239, 126)
-_CHEEK = (255, 151, 171)
-_CHEEK_SOFT = (255, 190, 203)
-_TEAR = (91, 205, 232)
+_BACKGROUND = (15, 18, 24)
+_MARK = (239, 242, 244)
+_ACCENT = (255, 132, 154)
+_CURIOUS_FACE = (
+    Path(__file__).parents[1]
+    / "firmware/main/boards/stackchan/assets/semantic-face-curious.ppm"
+)
+
+# Inclusive design-space bounds for every visible facial mark. Keeping the
+# remainder of the LCD empty is part of the semantic-face contract: no head,
+# shell, hair, hat, neck, or body illustration surrounds the features.
+SEMANTIC_FACE_BOUNDS = (40, 36, 120, 94)
 
 
 class AvatarAssetValidationError(ValueError):
@@ -202,10 +199,10 @@ class _Canvas:
 
     def line(
         self,
-        x0: int,
-        y0: int,
-        x1: int,
-        y1: int,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
         color: Color,
         width: int = 1,
     ) -> None:
@@ -240,6 +237,36 @@ class _Canvas:
                 if distance_squared <= radius * radius:
                     self._raw_pixel(x, y, color)
 
+    def curve(
+        self,
+        start: tuple[int, int],
+        control_1: tuple[int, int],
+        control_2: tuple[int, int],
+        end: tuple[int, int],
+        color: Color,
+        width: int = 1,
+    ) -> None:
+        """Draw one smooth cubic Bézier stroke."""
+
+        previous_x, previous_y = start
+        for step in range(1, 33):
+            position = step / 32
+            inverse = 1 - position
+            x = (
+                inverse**3 * start[0]
+                + 3 * inverse**2 * position * control_1[0]
+                + 3 * inverse * position**2 * control_2[0]
+                + position**3 * end[0]
+            )
+            y = (
+                inverse**3 * start[1]
+                + 3 * inverse**2 * position * control_1[1]
+                + 3 * inverse * position**2 * control_2[1]
+                + position**3 * end[1]
+            )
+            self.line(previous_x, previous_y, x, y, color, width)
+            previous_x, previous_y = x, y
+
     def to_rgb565(self) -> bytes:
         encoded = bytearray(FRAME_BYTES)
         sample_count = SUPERSAMPLE * SUPERSAMPLE
@@ -268,65 +295,8 @@ def _rgb_value(color: Color) -> int:
     red, green, blue = color
     return red << 16 | green << 8 | blue
 
-def _draw_base(canvas: _Canvas) -> None:
-    canvas.polygon(
-        [(45, 119), (49, 97), (111, 97), (115, 119)],
-        _COLLAR,
-    )
-
-    for center in (20, 140):
-        canvas.ellipse(center, 61, 15, 22, _SHELL_LIGHT)
-        canvas.ellipse(center, 61, 11, 17, _SHELL_SHADOW)
-    canvas.line(20, 53, 20, 69, _GREEN_SOFT, 4)
-    canvas.line(140, 53, 140, 69, _GREEN_SOFT, 4)
-
-    canvas.ellipse(80, 11, 13, 11, _SHELL_LIGHT)
-    canvas.ellipse(80, 11, 9, 8, _SHELL_SHADOW)
-
-    canvas.ellipse(80, 59, 58, 47, _SHELL_LIGHT)
-    canvas.ellipse(80, 59, 54, 43, _SHELL)
-    canvas.ellipse(80, 64, 41, 34, _OUTLINE)
-    canvas.ellipse(80, 63, 38, 31, _FACE)
-
-    canvas.polygon(
-        [(28, 30), (44, 33), (42, 69), (36, 83), (27, 94), (22, 70)],
-        _OUTLINE,
-    )
-    canvas.polygon(
-        [(30, 34), (40, 36), (39, 68), (34, 80), (29, 86), (26, 69)],
-        _SHELL_LIGHT,
-    )
-    canvas.polygon(
-        [(132, 30), (116, 33), (118, 69), (124, 83), (133, 94), (138, 70)],
-        _OUTLINE,
-    )
-    canvas.polygon(
-        [(130, 34), (120, 36), (121, 68), (126, 80), (131, 86), (134, 69)],
-        _SHELL_LIGHT,
-    )
-
-    canvas.line(49, 103, 80, 117, _GREEN, 3)
-    canvas.line(80, 117, 111, 103, _GREEN, 3)
-
-
-def _draw_rune(canvas: _Canvas) -> None:
-    canvas.polygon(
-        [
-            (79, 22),
-            (86, 22),
-            (82, 28),
-            (87, 28),
-            (76, 39),
-            (79, 31),
-            (74, 31),
-        ],
-        _GREEN,
-    )
-
-
 def _open_eye(canvas: _Canvas, cx: int, *, gaze: int = 0) -> None:
-    canvas.ellipse(cx, 59, 9, 12, _EYE)
-    canvas.ellipse(cx - 3 + gaze, 55, 2, 3, _EYE_HIGHLIGHT)
+    canvas.ellipse(cx + gaze, 58, 5, 5, _MARK)
 
 
 def _draw_eyes(canvas: _Canvas, state: str) -> None:
@@ -335,104 +305,79 @@ def _draw_eyes(canvas: _Canvas, state: str) -> None:
         _open_eye(canvas, 100)
     elif state == "half":
         for center in (60, 100):
-            canvas.ellipse(center, 61, 10, 6, _EYE)
-            canvas.ellipse(center - 3, 59, 2, 2, _EYE_HIGHLIGHT)
+            canvas.line(center - 7, 58, center + 7, 58, _MARK, 4)
     elif state == "closed":
         for center in (60, 100):
-            canvas.line(center - 9, 58, center, 62, _EYE, 3)
-            canvas.line(center, 62, center + 9, 58, _EYE, 3)
+            canvas.line(center - 7, 58, center + 7, 58, _MARK, 3)
     elif state == "happy":
         for center in (60, 100):
-            canvas.line(center - 9, 60, center, 53, _EYE, 3)
-            canvas.line(center, 53, center + 9, 60, _EYE, 3)
+            canvas.curve(
+                (center - 8, 60),
+                (center - 4, 52),
+                (center + 4, 52),
+                (center + 8, 60),
+                _MARK,
+                3,
+            )
     elif state == "thinking":
-        _open_eye(canvas, 58, gaze=-1)
-        _open_eye(canvas, 98, gaze=-1)
-        canvas.rectangle(49, 47, 67, 49, _FACE)
+        _open_eye(canvas, 60, gaze=-5)
+        _open_eye(canvas, 100, gaze=-5)
     elif state == "sad":
-        canvas.line(51, 57, 59, 53, _EYE, 3)
-        canvas.line(59, 53, 68, 58, _EYE, 3)
-        canvas.line(92, 58, 101, 53, _EYE, 3)
-        canvas.line(101, 53, 109, 57, _EYE, 3)
+        canvas.line(52, 55, 67, 61, _MARK, 3)
+        canvas.line(93, 61, 108, 55, _MARK, 3)
     elif state == "surprised":
         for center in (60, 100):
-            canvas.ellipse(center, 58, 10, 14, _EYE)
-            canvas.ellipse(center - 3, 53, 2, 3, _EYE_HIGHLIGHT)
+            canvas.ellipse(center, 58, 7, 7, _MARK)
     elif state == "embarrassed":
         for center in (60, 100):
-            canvas.line(center - 9, 62, center, 56, _EYE, 3)
-            canvas.line(center, 56, center + 9, 62, _EYE, 3)
+            canvas.line(center - 7, 56, center + 7, 61, _MARK, 3)
     else:
         raise ValueError(f"unknown eye state: {state}")
 
 
 def _draw_mouth(canvas: _Canvas, state: str) -> None:
     if state == "closed":
-        canvas.line(70, 81, 80, 84, _MOUTH, 3)
-        canvas.line(80, 84, 90, 81, _MOUTH, 3)
+        canvas.curve((72, 83), (77, 84), (83, 84), (88, 83), _MARK, 3)
     elif state == "half":
-        canvas.line(69, 80, 80, 84, _MOUTH, 3)
-        canvas.line(80, 84, 91, 80, _MOUTH, 3)
-        canvas.line(75, 87, 85, 87, _MOUTH, 2)
+        canvas.line(70, 81, 90, 81, _MARK, 3)
+        canvas.line(75, 86, 85, 86, _MARK, 2)
     elif state == "open":
-        canvas.line(69, 80, 80, 83, _MOUTH, 3)
-        canvas.line(80, 83, 91, 80, _MOUTH, 3)
-        canvas.line(73, 86, 80, 88, _MOUTH, 2)
-        canvas.line(80, 88, 87, 86, _MOUTH, 2)
+        canvas.ellipse(80, 84, 7, 6, _MARK)
     elif state == "e":
-        canvas.line(65, 82, 80, 84, _MOUTH, 3)
-        canvas.line(80, 84, 95, 82, _MOUTH, 3)
-        canvas.line(69, 87, 91, 87, _MOUTH, 2)
+        canvas.line(67, 82, 93, 82, _MARK, 4)
     elif state == "u":
-        canvas.line(74, 79, 74, 85, _MOUTH, 3)
-        canvas.line(74, 85, 80, 89, _MOUTH, 3)
-        canvas.line(80, 89, 86, 85, _MOUTH, 3)
-        canvas.line(86, 85, 86, 79, _MOUTH, 3)
+        canvas.line(72, 80, 72, 84, _MARK, 3)
+        canvas.line(72, 84, 80, 89, _MARK, 3)
+        canvas.line(80, 89, 88, 84, _MARK, 3)
+        canvas.line(88, 84, 88, 80, _MARK, 3)
     elif state == "happy":
-        canvas.line(68, 79, 74, 84, _MOUTH, 3)
-        canvas.line(74, 84, 80, 87, _MOUTH, 3)
-        canvas.line(80, 87, 86, 84, _MOUTH, 3)
-        canvas.line(86, 84, 92, 79, _MOUTH, 3)
+        canvas.curve((67, 80), (73, 92), (87, 92), (93, 80), _MARK, 3)
     elif state == "thinking":
-        canvas.line(71, 85, 80, 81, _MOUTH, 3)
-        canvas.line(80, 81, 89, 85, _MOUTH, 3)
+        canvas.curve((78, 84), (82, 82), (88, 83), (92, 85), _MARK, 3)
     elif state == "sad":
-        canvas.line(69, 87, 75, 82, _MOUTH, 3)
-        canvas.line(75, 82, 80, 80, _MOUTH, 3)
-        canvas.line(80, 80, 85, 82, _MOUTH, 3)
-        canvas.line(85, 82, 91, 87, _MOUTH, 3)
+        canvas.curve((68, 88), (73, 78), (87, 78), (92, 88), _MARK, 3)
     elif state == "surprised":
-        canvas.line(75, 82, 85, 82, _MOUTH, 3)
-        canvas.line(77, 87, 83, 87, _MOUTH, 2)
+        canvas.ellipse(80, 84, 5, 7, _MARK)
     elif state == "embarrassed":
-        canvas.line(71, 81, 80, 85, _MOUTH, 3)
-        canvas.line(80, 85, 89, 81, _MOUTH, 3)
+        canvas.curve((70, 83), (74, 88), (78, 88), (82, 83), _MARK, 3)
+        canvas.curve((82, 83), (85, 80), (88, 83), (91, 86), _MARK, 3)
     else:
         raise ValueError(f"unknown mouth state: {state}")
 
 
 def _draw_expression_details(canvas: _Canvas, expression: str) -> None:
-    if expression == "sad":
-        canvas.polygon([(112, 67), (108, 74), (112, 78), (116, 74)], _TEAR)
-        canvas.ellipse(112, 74, 3, 4, _TEAR)
-
-    canvas.ellipse(47, 75, 6, 4, _CHEEK_SOFT)
-    canvas.ellipse(113, 75, 6, 4, _CHEEK_SOFT)
-
-    if expression == "happy":
-        canvas.ellipse(47, 75, 7, 4, _CHEEK)
-        canvas.ellipse(113, 75, 7, 4, _CHEEK)
-    elif expression == "thinking":
-        canvas.ellipse(113, 75, 6, 4, _CHEEK)
-    elif expression == "surprised":
-        canvas.ellipse(47, 75, 4, 3, _CHEEK)
-        canvas.ellipse(113, 75, 4, 3, _CHEEK)
+    if expression == "thinking":
+        canvas.curve((48, 48), (53, 43), (61, 43), (67, 47), _MARK, 2)
+        canvas.curve((89, 46), (96, 42), (104, 43), (110, 48), _MARK, 2)
     elif expression == "embarrassed":
-        canvas.ellipse(47, 75, 8, 5, _CHEEK)
-        canvas.ellipse(113, 75, 8, 5, _CHEEK)
+        for center in (45, 115):
+            canvas.ellipse(center, 76, 3, 2, _ACCENT)
 
 
 def _render_frame(frame_name: str) -> bytes:
+    if frame_name == "face_thinking":
+        return _load_rgb888_ppm(_CURIOUS_FACE)
+
     layer, state = frame_name.split("_", 1)
     expression = "idle"
     eye_state = "open"
@@ -451,12 +396,30 @@ def _render_frame(frame_name: str) -> bytes:
         raise ValueError(f"unknown frame layer: {layer}")
 
     canvas = _Canvas(_BACKGROUND)
-    _draw_base(canvas)
-    _draw_rune(canvas)
     _draw_eyes(canvas, eye_state)
     _draw_mouth(canvas, mouth_state)
     _draw_expression_details(canvas, expression)
     return canvas.to_rgb565()
+
+
+def _load_rgb888_ppm(path: Path) -> bytes:
+    """Load one exact-size P6 artwork source into the device pixel format."""
+
+    try:
+        magic, dimensions, maximum, pixels = path.read_bytes().split(b"\n", 3)
+    except (OSError, ValueError) as exc:
+        raise AvatarAssetValidationError(f"invalid semantic face: {path}") from exc
+    if magic != b"P6" or dimensions != b"320 240" or maximum != b"255":
+        raise AvatarAssetValidationError(f"invalid semantic face header: {path}")
+    if len(pixels) != WIDTH * HEIGHT * 3:
+        raise AvatarAssetValidationError(f"invalid semantic face size: {path}")
+
+    frame = bytearray(FRAME_BYTES)
+    for pixel in range(WIDTH * HEIGHT):
+        source = pixel * 3
+        target = pixel * 2
+        frame[target : target + 2] = rgb565_le(*pixels[source : source + 3])
+    return bytes(frame)
 
 
 def generate_avatar_set() -> tuple[bytes, dict[str, object], bytes]:
@@ -558,7 +521,7 @@ def validate_avatar_set(
             )
         if _artwork_pixel_count(frame) < MIN_ARTWORK_PIXELS:
             raise AvatarAssetValidationError(
-                f"frame {index} does not contain a full nonblank face"
+                f"frame {index} does not contain a semantic face"
             )
         frames.append(frame)
 
@@ -694,7 +657,7 @@ def _draw_label(
                             preview,
                             cursor + glyph_x * 2 + offset_x,
                             top + glyph_y * 2 + offset_y,
-                            _GREEN,
+                            _ACCENT,
                         )
         cursor += 12
 

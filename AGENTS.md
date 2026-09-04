@@ -23,10 +23,10 @@ presence.
 
 Keep Milestone 5 constrained to:
 
-- six named expressions plus neutral ambient presence selected by projection;
+- seven named expressions plus idle ambient presence selected by projection;
 - deterministic face and head recipes with reviewed servo limits;
 - replacement of the direct turn's existing attention behavior only;
-- sparse neutral ambient behavior with strict activity budgets;
+- sparse idle ambient behavior with strict activity budgets;
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
