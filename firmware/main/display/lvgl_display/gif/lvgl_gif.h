@@ -70,6 +70,11 @@ public:
     void SetLoopDelay(uint32_t delay_ms);
 
     /**
+     * Keep playback aligned to the encoded timeline when frame work runs late.
+     */
+    void SetTimelinePlayback(bool enabled);
+
+    /**
      * Get GIF dimensions
      */
     uint16_t width() const;
@@ -101,6 +106,7 @@ private:
     uint32_t loop_delay_ms_;      // Delay between loops in milliseconds
     bool loop_waiting_;           // Whether we're waiting for the next loop
     uint32_t loop_wait_start_;    // Timestamp when loop wait started
+    bool timeline_playback_;      // Consume overdue frames without repainting each
     
     // Frame update callback
     std::function<void()> frame_callback_;

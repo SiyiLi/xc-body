@@ -30,9 +30,9 @@ contract and candidate record.
 
 ## Milestone 5: Expression and Presence
 
-Direct answers gain one of six named expressions. Each expression combines a
+Direct answers gain one of seven named expressions. Each expression combines a
 deterministic face animation and reviewed head movement. The `agree` expression
-uses one restrained nod. `Neutral` is the fallback base presence, not a seventh
+uses one restrained nod. `idle` is the fallback neutral presence, not an eighth
 expression.
 
 Active scope:
@@ -44,7 +44,7 @@ Active scope:
 - expression-only turns when OpenClaw explicitly requests no audio; and
 - a USB-only loop to preview and store robot-specific motor calibration.
 
-After the expression path is stable, neutral presence may add sparse gaze or
+After the expression path is stable, idle presence may add sparse gaze or
 posture changes and local touch reactions. Rest remains normal, activity is
 strictly budgeted, and interaction or low-power state suspends ambient motion.
 These local behaviors create no OpenClaw or Telegram traffic.

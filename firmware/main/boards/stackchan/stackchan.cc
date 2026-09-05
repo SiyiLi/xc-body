@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "cores3_audio_codec.h"
 #include "display/lcd_display.h"
+#include "display/lvgl_display/gif/lvgl_gif.h"
 #include "application.h"
 #include "config.h"
 #include "power_save_timer.h"
@@ -93,6 +94,7 @@ constexpr std::array<const char*, kScreenSaverWeatherIconCount>
         "w-cold.rgb565a8",
         "w-unknown.rgb565a8",
     };
+
 
 struct LvglBinFontDeleter {
     void operator()(lv_font_t* font) const {
@@ -557,7 +559,7 @@ private:
     }
 };
 
-class StackChanBoard : public WifiBoard {
+class StackChanBoard : public WifiBoard, public StackChanExpressionController {
 private:
     // Internal I2C bus (shared by AXP2101 / AW9523 / FT6336 / PY32 / Si12T /
     // audio codec / IMU). Direct on-board ICs only; not exposed through
@@ -604,6 +606,8 @@ private:
     bool appliance_status_visible_ = false;
     esp_timer_handle_t avatar_init_timer_ = nullptr;
     std::string current_avatar_face_ = "idle";
+    lv_img_dsc_t expression_gif_source_ = {};
+    std::unique_ptr<LvglGif> expression_gif_;
 
     lv_obj_t* settings_panel_ = nullptr;
     lv_obj_t* settings_volume_label_ = nullptr;
@@ -828,10 +832,23 @@ private:
         RETURNING_TO_IDLE,
         RECOVERING_TO_IDLE,
     };
+    enum class ExpressionStep : uint8_t {
+        STARTING = 0,
+        CENTERING,
+        RUNNING_CURVE,
+        PAUSING,
+        WAITING_FOR_FACE,
+        RESTORING_FACE,
+        RECOVERING_TO_IDLE,
+    };
     enum class PhysicalBehaviorOwner : uint8_t {
         IDLE = 0,
         REVIEWED,
+        EXPRESSION,
+        RAW,
         TOUCH,
+        MAINTENANCE_RESERVED,
+        MAINTENANCE,
     };
     static constexpr int XC_BODY_BEHAVIOR_YAW_DEG = 12;
     static constexpr int XC_BODY_BEHAVIOR_PITCH_DEG = 50;
@@ -841,6 +858,13 @@ private:
     static constexpr uint64_t XC_BODY_KNOCK_HOLD_US = 10000000ULL;
     static constexpr uint64_t XC_BODY_BEHAVIOR_TIMEOUT_US = 20000000ULL;
     static constexpr uint64_t TOUCH_RECOVERY_TIMEOUT_US = 5000000ULL;
+    static constexpr uint64_t EXPRESSION_STARTUP_TIMEOUT_US = 5000000ULL;
+    static constexpr uint64_t EXPRESSION_FACE_DURATION_US = 2400000ULL;
+    static constexpr uint64_t EXPRESSION_EXECUTION_MARGIN_US = 2000000ULL;
+    static constexpr uint64_t EXPRESSION_RECOVERY_TIMEOUT_US = 5000000ULL;
+    static constexpr uint64_t EXPRESSION_FACE_RESTORE_TIMEOUT_US = 500000ULL;
+    static constexpr uint64_t EXPRESSION_RECOVERY_RETRY_INTERVAL_US =
+        500000ULL;
 
     std::atomic<bool> xc_body_behavior_active_{false};
     std::atomic<PhysicalBehaviorOwner> physical_behavior_owner_{
@@ -850,8 +874,31 @@ private:
     uint64_t xc_body_behavior_started_us_ = 0;
     uint64_t xc_body_behavior_hold_until_us_ = 0;
     uint64_t xc_body_behavior_hold_us_ = XC_BODY_KNOCK_HOLD_US;
+    uint64_t xc_body_behavior_recovery_deadline_us_ = 0;
     const char* xc_body_behavior_success_subtype_ = "knock_complete";
     std::string xc_body_behavior_id_;
+
+    std::atomic<bool> expression_active_{false};
+    std::atomic<bool> expression_abort_requested_{false};
+    std::atomic<ExpressionStep> expression_step_{
+        ExpressionStep::STARTING};
+    std::atomic<bool> expression_preview_result_ready_{false};
+    std::atomic<StackChanExpressionOutcome> expression_preview_result_{
+        StackChanExpressionOutcome::UNAVAILABLE};
+    std::atomic<bool> physical_motion_unavailable_{false};
+    StackChanExpressionRecipe expression_recipe_;
+    size_t expression_step_index_ = 0;
+    uint64_t expression_startup_deadline_us_ = 0;
+    uint64_t expression_execution_deadline_us_ = 0;
+    uint64_t expression_hold_until_us_ = 0;
+    uint64_t expression_recovery_deadline_us_ = 0;
+    uint64_t expression_recovery_retry_at_us_ = 0;
+    uint64_t expression_face_restore_deadline_us_ = 0;
+    StackChanExpressionOutcome expression_recovery_outcome_ =
+        StackChanExpressionOutcome::MOTION_FAILED;
+    StackChanExpressionOutcome expression_finish_outcome_ =
+        StackChanExpressionOutcome::UNAVAILABLE;
+    std::string expression_name_;
 
     std::atomic<TouchEvent> pending_touch_completion_{TouchEvent::IDLE};
     std::atomic<uint64_t> pending_touch_duration_ms_{0};
@@ -965,6 +1012,12 @@ private:
     // Matches the gateway "mid" preset.
     static constexpr int DEFAULT_SPEED_DPS = 120;
     static constexpr uint32_t MOTION_PER_WRITE_TIME_MS = 30;
+    static_assert(
+        MOTION_TICK_MS == kStackChanExpressionSampleIntervalMs,
+        "expression validation must use the driver sample interval");
+    static_assert(
+        MAX_SPEED_DPS == kStackChanExpressionMaxSpeedDps,
+        "expression validation must use the servo speed limit");
     static constexpr uint32_t MOTION_POLL_INTERVAL_MS = 50;
     static constexpr uint32_t AUTO_TORQUE_RELEASE_MIN_MS = 500;
     static constexpr uint32_t AUTO_TORQUE_RELEASE_MAX_MS = 600000;
@@ -1286,6 +1339,15 @@ private:
                                uint32_t duration_ms,
                                bool prefer_linear = false) = 0;
 
+        // Starts one continuous cubic Bezier motion. The caller holds
+        // motion_mutex_, as for StartMove(). Drivers that cannot execute the
+        // authored curve reject it instead of degrading it into rigid moves.
+        virtual bool StartCurve(const StackChanExpressionStep&) {
+            return false;
+        }
+        virtual bool SupportsCurve() const { return false; }
+        virtual bool ConsumeCurveFailure() { return false; }
+
         // Last-known committed angle for each axis.
         virtual float GetYawDeg() const = 0;
         virtual float GetPitchDeg() const = 0;
@@ -1361,6 +1423,8 @@ private:
             pitch_motion_.move_duration_ms = duration_ms;
             pitch_motion_.moving = (pitch_motion_.target_deg != pitch_motion_.current_deg);
             pitch_linear_mode_ = prefer_linear;
+            yaw_curve_mode_ = false;
+            pitch_curve_mode_ = false;
             if (prefer_linear) {
                 yaw_anim_.teleport(static_cast<float>(yaw_motion_.current_deg));
                 yaw_snap_on_rest_ = false;
@@ -1377,6 +1441,55 @@ private:
             StartAxisSpring(pitch_anim_, pitch_snap_on_rest_,
                             pitch_motion_.current_deg, pitch,
                             pitch_motion_.moving, spring_options);
+        }
+
+        bool StartCurve(const StackChanExpressionStep& step) override {
+            if (yaw_motion_.current_deg != step.points[0].yaw ||
+                pitch_motion_.current_deg != step.points[0].pitch) {
+                return false;
+            }
+            uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            curve_step_ = step;
+            curve_failure_ = false;
+            curve_elapsed_ms_ = 0;
+            last_wake_tick_ = xTaskGetTickCount();
+            auto start_axis = [this, now_ms, &step](
+                                  AxisMotion& motion,
+                                  bool& curve_mode,
+                                  bool& linear_mode,
+                                  bool yaw) {
+                motion.request_token = ++next_request_token_;
+                motion.start_deg = yaw
+                    ? step.points[0].yaw : step.points[0].pitch;
+                motion.target_deg = yaw
+                    ? step.points[3].yaw : step.points[3].pitch;
+                motion.move_start_ms = now_ms;
+                motion.move_duration_ms =
+                    static_cast<uint32_t>(step.duration_ms);
+                motion.moving = false;
+                for (size_t index = 1; index < step.points.size(); ++index) {
+                    const int point = yaw
+                        ? step.points[index].yaw : step.points[index].pitch;
+                    motion.moving = motion.moving || point != motion.start_deg;
+                }
+                curve_mode = true;
+                linear_mode = false;
+            };
+            start_axis(
+                yaw_motion_, yaw_curve_mode_, yaw_linear_mode_, true);
+            start_axis(
+                pitch_motion_, pitch_curve_mode_, pitch_linear_mode_, false);
+            return true;
+        }
+
+        bool SupportsCurve() const override { return true; }
+
+        bool ConsumeCurveFailure() override {
+            xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+            const bool failed = curve_failure_;
+            curve_failure_ = false;
+            xSemaphoreGive(motion_mutex_);
+            return failed;
         }
 
         float GetYawDeg() const override {
@@ -1402,9 +1515,30 @@ private:
 
         void Tick() override {
             constexpr TickType_t kInterFrameGap = pdMS_TO_TICKS(10);
-
-            vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
-
+            uint32_t tick_interval_ms = MOTION_TICK_MS;
+            xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+            if ((yaw_curve_mode_ || pitch_curve_mode_) &&
+                curve_elapsed_ms_ <
+                    static_cast<uint32_t>(curve_step_.duration_ms)) {
+                tick_interval_ms =
+                    NextStackChanExpressionSampleElapsedMs(
+                        curve_elapsed_ms_,
+                        static_cast<uint32_t>(curve_step_.duration_ms)) -
+                    curve_elapsed_ms_;
+            }
+            xSemaphoreGive(motion_mutex_);
+            const TickType_t tick_interval = std::max<TickType_t>(
+                1,
+                pdMS_TO_TICKS(
+                    tick_interval_ms + portTICK_PERIOD_MS - 1));
+            const TickType_t tick_now = xTaskGetTickCount();
+            if (last_wake_tick_ == 0) {
+                last_wake_tick_ = tick_now;
+            }
+            if (xTaskDelayUntil(&last_wake_tick_, tick_interval) == pdFALSE) {
+                // Re-anchor missed slots instead of issuing catch-up frames.
+                last_wake_tick_ = xTaskGetTickCount();
+            }
             AxisMotion yaw_local;
             AxisMotion pitch_local;
             int new_yaw_current;
@@ -1413,6 +1547,10 @@ private:
             bool new_pitch_moving;
             bool yaw_linear_mode;
             bool pitch_linear_mode;
+            bool yaw_curve_mode;
+            bool pitch_curve_mode;
+            uint32_t current_curve_elapsed_ms;
+            uint32_t scheduled_curve_elapsed_ms;
             uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
             float dt_s;
             // Spring mode follows real elapsed time so bus ACK latency or
@@ -1434,13 +1572,28 @@ private:
             pitch_local = pitch_motion_;
             yaw_linear_mode = yaw_linear_mode_;
             pitch_linear_mode = pitch_linear_mode_;
+            yaw_curve_mode = yaw_curve_mode_;
+            pitch_curve_mode = pitch_curve_mode_;
+            current_curve_elapsed_ms = curve_elapsed_ms_;
+            scheduled_curve_elapsed_ms = current_curve_elapsed_ms;
+            if (yaw_curve_mode || pitch_curve_mode) {
+                scheduled_curve_elapsed_ms =
+                    NextStackChanExpressionSampleElapsedMs(
+                        current_curve_elapsed_ms,
+                        static_cast<uint32_t>(curve_step_.duration_ms));
+            }
             if (!yaw_local.moving && !pitch_local.moving) {
                 xSemaphoreGive(motion_mutex_);
                 return;
             }
             new_yaw_current = yaw_local.current_deg;
             new_yaw_moving = yaw_local.moving;
-            if (yaw_linear_mode) {
+            if (yaw_curve_mode) {
+                AdvanceAxisCurve(
+                    yaw_local, curve_step_, true,
+                    scheduled_curve_elapsed_ms,
+                    new_yaw_current, new_yaw_moving);
+            } else if (yaw_linear_mode) {
                 AdvanceAxisLinear(yaw_local, now_ms,
                                   new_yaw_current, new_yaw_moving);
             } else {
@@ -1449,7 +1602,12 @@ private:
             }
             new_pitch_current = pitch_local.current_deg;
             new_pitch_moving = pitch_local.moving;
-            if (pitch_linear_mode) {
+            if (pitch_curve_mode) {
+                AdvanceAxisCurve(
+                    pitch_local, curve_step_, false,
+                    scheduled_curve_elapsed_ms,
+                    new_pitch_current, new_pitch_moving);
+            } else if (pitch_linear_mode) {
                 AdvanceAxisLinear(pitch_local, now_ms,
                                   new_pitch_current, new_pitch_moving);
             } else {
@@ -1458,36 +1616,92 @@ private:
             }
             xSemaphoreGive(motion_mutex_);
 
-            // Known carve-out (#161): motion_mutex_ is released here
-            // and re-acquired after the WritePos block. If StartMove
-            // or InvalidateAxisToken (Phase 0' / torque disable) fires
-            // inside this release window, the WritePos calls below
-            // still send a stale interpolation step on the bus. The
-            // post-bus request_token guard below then correctly skips
-            // the current_deg / moving commit, but the physical
-            // intermediate position has already been issued. The
-            // pre-PR move_start_ms guard had the same surface; this PR
-            // does not regress that behavior. Closing the pre-bus gate
-            // is tracked separately under #161.
-            xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
-            if (yaw_local.moving) {
-                int yaw_pos = YawDegToPos(new_yaw_current);
-                int r = scs_bus_.WritePos(SERVO_YAW_ID, yaw_pos, MOTION_PER_WRITE_TIME_MS, 0);
-                if (!ServoWritePosOk(r)) {
-                    ESP_LOGW(TAG, "Motion yaw WritePos failed: r=%d (deg=%d, pos=%d)",
-                             r, new_yaw_current, yaw_pos);
-                }
+            const int yaw_position = yaw_curve_mode
+                ? EvaluateCurvePosition(
+                    curve_step_, true, scheduled_curve_elapsed_ms)
+                : YawDegToPos(new_yaw_current);
+            const int pitch_position = pitch_curve_mode
+                ? EvaluateCurvePosition(
+                    curve_step_, false, scheduled_curve_elapsed_ms)
+                : PitchDegToPos(new_pitch_current);
+            const bool unsafe_curve_command =
+                (yaw_curve_mode && !IsCurvePositionVelocitySafe(
+                    EvaluateCurvePosition(
+                        curve_step_, true, current_curve_elapsed_ms),
+                    yaw_position)) ||
+                (pitch_curve_mode && !IsCurvePositionVelocitySafe(
+                    EvaluateCurvePosition(
+                        curve_step_, false, current_curve_elapsed_ms),
+                    pitch_position));
+            if (unsafe_curve_command) {
+                ESP_LOGE(TAG, "Expression curve exceeded velocity limit");
+                FailCurve(
+                    yaw_local.request_token, pitch_local.request_token);
+                return;
             }
-            vTaskDelay(kInterFrameGap);
-            if (pitch_local.moving) {
-                int pitch_pos = PitchDegToPos(new_pitch_current);
-                int r = scs_bus_.WritePos(SERVO_PITCH_ID, pitch_pos, MOTION_PER_WRITE_TIME_MS, 0);
-                if (!ServoWritePosOk(r)) {
-                    ESP_LOGW(TAG, "Motion pitch WritePos failed: r=%d (deg=%d, pos=%d)",
-                             r, new_pitch_current, pitch_pos);
+
+            bool curve_write_failed = false;
+            xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
+            xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+            const bool request_live =
+                yaw_motion_.request_token == yaw_local.request_token &&
+                pitch_motion_.request_token == pitch_local.request_token;
+            xSemaphoreGive(motion_mutex_);
+            if (!request_live) {
+                xSemaphoreGive(scs_bus_mutex_);
+                return;
+            }
+            if (yaw_curve_mode || pitch_curve_mode) {
+                const int result = scs_bus_.SyncWritePos(
+                    SERVO_YAW_ID,
+                    static_cast<uint16_t>(yaw_position),
+                    SERVO_PITCH_ID,
+                    static_cast<uint16_t>(pitch_position),
+                    MOTION_PER_WRITE_TIME_MS,
+                    0);
+                curve_write_failed = !ServoWritePosOk(result);
+                if (curve_write_failed) {
+                    ESP_LOGW(
+                        TAG,
+                        "Expression synchronized WritePos failed: r=%d",
+                        result);
+                }
+            } else {
+                if (yaw_local.moving) {
+                    int yaw_pos = YawDegToPos(new_yaw_current);
+                    int r = scs_bus_.WritePos(
+                        SERVO_YAW_ID, yaw_pos,
+                        MOTION_PER_WRITE_TIME_MS, 0);
+                    if (!ServoWritePosOk(r)) {
+                        ESP_LOGW(
+                            TAG,
+                            "Motion yaw WritePos failed: "
+                            "r=%d (deg=%d, pos=%d)",
+                            r, new_yaw_current, yaw_pos);
+                    }
+                }
+                vTaskDelay(kInterFrameGap);
+                if (pitch_local.moving) {
+                    int pitch_pos = PitchDegToPos(new_pitch_current);
+                    int r = scs_bus_.WritePos(
+                        SERVO_PITCH_ID, pitch_pos,
+                        MOTION_PER_WRITE_TIME_MS, 0);
+                    if (!ServoWritePosOk(r)) {
+                        ESP_LOGW(
+                            TAG,
+                            "Motion pitch WritePos failed: "
+                            "r=%d (deg=%d, pos=%d)",
+                            r, new_pitch_current, pitch_pos);
+                    }
                 }
             }
             xSemaphoreGive(scs_bus_mutex_);
+
+            if (curve_write_failed) {
+                FailCurve(
+                    yaw_local.request_token, pitch_local.request_token);
+                return;
+            }
 
             xSemaphoreTake(motion_mutex_, portMAX_DELAY);
             if (yaw_motion_.request_token == yaw_local.request_token) {
@@ -1503,6 +1717,12 @@ private:
             if (!new_pitch_moving && pitch_motion_.target_deg == pitch_local.target_deg
                 && pitch_motion_.request_token == pitch_local.request_token) {
                 pitch_motion_.moving = false;
+            }
+            if (yaw_curve_mode && pitch_curve_mode &&
+                yaw_motion_.request_token == yaw_local.request_token &&
+                pitch_motion_.request_token ==
+                    pitch_local.request_token) {
+                curve_elapsed_ms_ = scheduled_curve_elapsed_ms;
             }
             xSemaphoreGive(motion_mutex_);
         }
@@ -1522,6 +1742,44 @@ private:
         }
 
     private:
+        void FailCurve(uint64_t yaw_token, uint64_t pitch_token) {
+            xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+            if (yaw_motion_.request_token == yaw_token &&
+                pitch_motion_.request_token == pitch_token) {
+                yaw_motion_.moving = false;
+                pitch_motion_.moving = false;
+                yaw_curve_mode_ = false;
+                pitch_curve_mode_ = false;
+                curve_failure_ = true;
+            }
+            xSemaphoreGive(motion_mutex_);
+        }
+
+        static int EvaluateCurvePosition(
+                const StackChanExpressionStep& step,
+                bool yaw,
+                uint32_t elapsed_ms) {
+            std::array<int, 4> positions;
+            for (size_t index = 0; index < positions.size(); ++index) {
+                positions[index] = yaw
+                    ? YawDegToPos(step.points[index].yaw)
+                    : PitchDegToPos(step.points[index].pitch);
+            }
+            return EvaluateStackChanExpressionCurve(
+                positions,
+                static_cast<uint32_t>(step.duration_ms),
+                elapsed_ms);
+        }
+
+        static bool IsCurvePositionVelocitySafe(int previous, int next) {
+            return IsStackChanExpressionVelocitySafe(
+                previous * 5,
+                next * 5,
+                MOTION_PER_WRITE_TIME_MS,
+                MAX_SPEED_DPS,
+                16);
+        }
+
         static void StartAxisSpring(
             smooth_ui_toolkit::AnimateValue& axis_anim,
             bool& snap_on_rest,
@@ -1589,6 +1847,23 @@ private:
             }
         }
 
+        static void AdvanceAxisCurve(
+            const AxisMotion& axis_local,
+            const StackChanExpressionStep& step,
+            bool yaw,
+            uint32_t elapsed_ms,
+            int& new_current_deg,
+            bool& new_moving) {
+            if (!axis_local.moving) {
+                return;
+            }
+            new_current_deg = EvaluateStackChanExpressionAxis(
+                step, yaw, elapsed_ms);
+            if (elapsed_ms >= axis_local.move_duration_ms) {
+                new_moving = false;
+            }
+        }
+
         ScsBus& scs_bus_;
         SemaphoreHandle_t& scs_bus_mutex_;
         SemaphoreHandle_t& motion_mutex_;
@@ -1617,6 +1892,12 @@ private:
         bool pitch_snap_on_rest_ = false;
         bool yaw_linear_mode_ = false;
         bool pitch_linear_mode_ = false;
+        bool yaw_curve_mode_ = false;
+        bool pitch_curve_mode_ = false;
+        StackChanExpressionStep curve_step_;
+        uint32_t curve_elapsed_ms_ = 0;
+        bool curve_failure_ = false;
+        TickType_t last_wake_tick_ = 0;
         uint64_t last_tick_us_ = 0;
     };
 
@@ -2524,6 +2805,10 @@ private:
 
     void SetOfferPending(bool pending) {
         offer_pending_.store(pending, std::memory_order_release);
+        if (pending && expression_active_.load(std::memory_order_acquire)) {
+            expression_abort_requested_.store(
+                true, std::memory_order_release);
+        }
         UpdateDisplayMode(
             Application::GetInstance().GetDeviceState(), false);
     }
@@ -2900,7 +3185,8 @@ private:
             bool avatar_visible = avatar_img_ != nullptr &&
                 lv_obj_is_valid(avatar_img_) &&
                 !lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
-            if (appliance_mode && avatar_visible) {
+            if (appliance_mode && avatar_visible &&
+                expression_gif_ == nullptr) {
                 lv_obj_clear_flag(
                     avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_move_foreground(avatar_status_overlay_);
@@ -3054,6 +3340,20 @@ private:
             int64_t touch_duration = now_ms - touch_start_time;
             int touch_end_y = touch_last_y;
             last_release_ms = now_ms;
+
+            const bool settings_gesture = touch_start_y >= 0 &&
+                touch_start_y - touch_end_y > 50;
+            const bool right_ear_gesture =
+                touch_duration < TOUCH_THRESHOLD_MS &&
+                touch_start_y >= EAR_TOUCH_TOP &&
+                touch_start_y <= EAR_TOUCH_BOTTOM &&
+                touch_start_x >= RIGHT_EAR_TOUCH_LEFT;
+            if (expression_active_.load(std::memory_order_acquire) &&
+                (settings_gesture || right_ear_gesture)) {
+                expression_abort_requested_.store(
+                    true, std::memory_order_release);
+                return;
+            }
 
             if (settings_open_.load(std::memory_order_acquire)) {
                 if (touch_start_y >= 0 && touch_end_y - touch_start_y > 50) {
@@ -4285,6 +4585,11 @@ private:
         if (!boot_init_done_.load(std::memory_order_acquire)) {
             return;
         }
+        if (physical_behavior_owner_.load(std::memory_order_acquire) !=
+                PhysicalBehaviorOwner::IDLE) {
+            last_motion_end_valid_ = false;
+            return;
+        }
         // PublishTorqueState() raises this when torque re-engages between
         // ServoTask ticks, so a stale idle timer cannot immediately re-OFF.
         if (idle_timer_reset_pending_.exchange(
@@ -4408,15 +4713,19 @@ private:
     // servo_wobble_active_ but before it dispatches the user-driven
     // target — which would let a stale wobble step overwrite the new
     // command.
-    void WriteHeadAngles(int yaw_deg, int pitch_deg,
+    bool WriteHeadAngles(int yaw_deg, int pitch_deg,
                          uint32_t duration_ms = MOTION_DEFAULT_DURATION_MS,
                          bool prefer_linear = false) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            ESP_LOGW(TAG, "WriteHeadAngles skipped: motion is faulted");
+            return false;
+        }
         if (!servo_ok_ || motion_driver_ == nullptr) {
             ESP_LOGW(TAG, "WriteHeadAngles skipped: servo not initialized");
-            return;
+            return false;
         }
         if (!TakeMotionMutexAfterTorqueEngaged()) {
-            return;
+            return false;
         }
         if (servo_wobble_active_.load()) {
             servo_wobble_active_.store(false);
@@ -4425,12 +4734,17 @@ private:
         motion_driver_->StartMove(yaw_deg, pitch_deg, duration_ms,
                                   prefer_linear);
         xSemaphoreGive(motion_mutex_);
+        return true;
     }
 
-    void WriteHeadAngles(int yaw_deg, int pitch_deg, int speed_dps) {
+    bool WriteHeadAngles(int yaw_deg, int pitch_deg, int speed_dps) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            ESP_LOGW(TAG, "WriteHeadAngles skipped: motion is faulted");
+            return false;
+        }
         if (!servo_ok_ || motion_driver_ == nullptr) {
             ESP_LOGW(TAG, "WriteHeadAngles(speed_dps) skipped: servo not initialized");
-            return;
+            return false;
         }
         int safe_speed = speed_dps;
         if (safe_speed <= 0) {
@@ -4459,31 +4773,72 @@ private:
         uint32_t duration_ms = std::max<uint32_t>(
             MOTION_TICK_MS,
             static_cast<uint32_t>(max_delta) * 1000U / static_cast<uint32_t>(safe_speed));
-        WriteHeadAngles(yaw_deg, pitch_deg, duration_ms);
+        return WriteHeadAngles(yaw_deg, pitch_deg, duration_ms);
     }
 
-    bool PhysicalMotionSettled() {
+    bool WriteHeadCurve(const StackChanExpressionStep& curve) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire) ||
+            !servo_ok_ || motion_driver_ == nullptr ||
+            !motion_driver_->SupportsCurve() ||
+            !TakeMotionMutexAfterTorqueEngaged()) {
+            return false;
+        }
+        if (servo_wobble_active_.load()) {
+            servo_wobble_active_.store(false);
+            servo_wobble_step_.store(0);
+        }
+        bool started = motion_driver_->StartCurve(curve);
+        xSemaphoreGive(motion_mutex_);
+        return started;
+    }
+
+    bool PhysicalMotionInactive() {
         if (!servo_ok_ || motion_driver_ == nullptr) {
             return false;
         }
         xSemaphoreTake(motion_mutex_, portMAX_DELAY);
-        bool settled = !yaw_motion_.moving && !pitch_motion_.moving &&
+        bool inactive = !yaw_motion_.moving && !pitch_motion_.moving;
+        xSemaphoreGive(motion_mutex_);
+        return inactive;
+    }
+
+    bool PhysicalMotionCachedAt(int yaw_deg, int pitch_deg) {
+        if (!servo_ok_ || motion_driver_ == nullptr) {
+            return false;
+        }
+        xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+        bool matches = !yaw_motion_.moving && !pitch_motion_.moving &&
             !yaw_motion_.position_unknown &&
-            !pitch_motion_.position_unknown;
+            !pitch_motion_.position_unknown &&
+            yaw_motion_.current_deg == yaw_deg &&
+            pitch_motion_.current_deg == pitch_deg;
         xSemaphoreGive(motion_mutex_);
-        return settled;
+        return matches;
     }
 
-    bool PhysicalMotionConfirmedAt(int yaw_deg, int pitch_deg) {
-        if (!servo_ok_ || motion_driver_ == nullptr) {
+    bool SynchronizePhysicalMotionPosition(
+            bool cancel_active_motion = false) {
+        if (!servo_ok_ || motion_driver_ == nullptr ||
+            motion_mutex_ == nullptr || scs_bus_mutex_ == nullptr) {
             return false;
         }
         xSemaphoreTake(motion_mutex_, portMAX_DELAY);
-        bool settled = !yaw_motion_.moving && !pitch_motion_.moving;
-        xSemaphoreGive(motion_mutex_);
-        if (!settled) {
+        if ((yaw_motion_.moving || pitch_motion_.moving) &&
+            !cancel_active_motion) {
+            xSemaphoreGive(motion_mutex_);
             return false;
         }
+        if (cancel_active_motion) {
+            yaw_motion_.moving = false;
+            yaw_motion_.position_unknown = true;
+            motion_driver_->InvalidateAxisToken(SERVO_YAW_ID);
+            pitch_motion_.moving = false;
+            pitch_motion_.position_unknown = true;
+            motion_driver_->InvalidateAxisToken(SERVO_PITCH_ID);
+            servo_wobble_active_.store(false, std::memory_order_release);
+            servo_wobble_step_.store(0, std::memory_order_relaxed);
+        }
+        xSemaphoreGive(motion_mutex_);
 
         int yaw_pos = -1;
         int pitch_pos = -1;
@@ -4492,14 +4847,108 @@ private:
         pitch_pos = scs_bus_.ReadPos(SERVO_PITCH_ID);
         xSemaphoreGive(scs_bus_mutex_);
         if (yaw_pos < 0 || pitch_pos < 0) {
+            ESP_LOGW(
+                TAG,
+                "Motion resynchronization read failed: forced=%d "
+                "yaw_raw=%d pitch_raw=%d torque_state=%d",
+                cancel_active_motion ? 1 : 0,
+                yaw_pos, pitch_pos,
+                static_cast<int>(torque_state_.load(
+                    std::memory_order_acquire)));
             return false;
         }
 
+        int yaw_deg = (yaw_pos - 460) * 5 / 16;
+        int pitch_deg = (pitch_pos - 620) * 5 / 16;
+        pitch_deg = std::clamp(
+            pitch_deg, SAFE_PITCH_MIN, SAFE_PITCH_MAX);
+        uint32_t now_ms =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+        if (yaw_motion_.moving || pitch_motion_.moving) {
+            xSemaphoreGive(motion_mutex_);
+            return false;
+        }
+        yaw_motion_.current_deg = yaw_deg;
+        yaw_motion_.start_deg = yaw_deg;
+        yaw_motion_.target_deg = yaw_deg;
+        yaw_motion_.move_start_ms = now_ms;
+        yaw_motion_.position_unknown = false;
+        motion_driver_->InvalidateAxisToken(SERVO_YAW_ID);
+        pitch_motion_.current_deg = pitch_deg;
+        pitch_motion_.start_deg = pitch_deg;
+        pitch_motion_.target_deg = pitch_deg;
+        pitch_motion_.move_start_ms = now_ms;
+        pitch_motion_.position_unknown = false;
+        motion_driver_->InvalidateAxisToken(SERVO_PITCH_ID);
+        xSemaphoreGive(motion_mutex_);
+        return true;
+    }
+
+    bool StartMeasuredIdleRecovery() {
+        if (!SynchronizePhysicalMotionPosition(true)) {
+            ESP_LOGW(
+                TAG,
+                "Idle recovery not commanded: pose measurement failed");
+            return false;
+        }
+        return WriteHeadAngles(
+            XC_BODY_IDLE_YAW_DEG,
+            XC_BODY_IDLE_PITCH_DEG,
+            XC_BODY_BEHAVIOR_SPEED_DPS);
+    }
+
+    bool PhysicalMotionConfirmedAt(
+            int yaw_deg,
+            int pitch_deg,
+            const char* diagnostic_context = nullptr) {
+        if (!servo_ok_ || motion_driver_ == nullptr) {
+            if (diagnostic_context != nullptr) {
+                ESP_LOGW(
+                    TAG,
+                    "Expression pose unavailable: context=%s servo_ok=%d",
+                    diagnostic_context, servo_ok_ ? 1 : 0);
+            }
+            return false;
+        }
+        xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+        bool settled = !yaw_motion_.moving && !pitch_motion_.moving;
+        xSemaphoreGive(motion_mutex_);
+        int yaw_pos = -1;
+        int pitch_pos = -1;
+        if (settled) {
+            xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
+            yaw_pos = scs_bus_.ReadPos(SERVO_YAW_ID);
+            pitch_pos = scs_bus_.ReadPos(SERVO_PITCH_ID);
+            xSemaphoreGive(scs_bus_mutex_);
+        }
         constexpr int kPositionTolerance = 8;
-        return std::abs(yaw_pos - YawDegToPos(yaw_deg)) <=
-                   kPositionTolerance &&
-            std::abs(pitch_pos - PitchDegToPos(pitch_deg)) <=
-                   kPositionTolerance;
+        const int expected_yaw_pos = YawDegToPos(yaw_deg);
+        const int expected_pitch_pos = PitchDegToPos(pitch_deg);
+        const bool confirmed = settled && yaw_pos >= 0 && pitch_pos >= 0 &&
+            std::abs(yaw_pos - expected_yaw_pos) <= kPositionTolerance &&
+            std::abs(pitch_pos - expected_pitch_pos) <= kPositionTolerance;
+        if (!confirmed && diagnostic_context != nullptr) {
+            ESP_LOGW(
+                TAG,
+                "Expression pose check failed: context=%s settled=%d "
+                "target_raw=(%d,%d) actual_raw=(%d,%d) torque_state=%d",
+                diagnostic_context, settled ? 1 : 0,
+                expected_yaw_pos, expected_pitch_pos, yaw_pos, pitch_pos,
+                static_cast<int>(torque_state_.load(
+                    std::memory_order_acquire)));
+        }
+        return confirmed;
+    }
+
+    bool ExpressionEnvironmentIdle() {
+        return Application::GetInstance().GetDeviceState() ==
+                kDeviceStateIdle &&
+            !Application::GetInstance().AcceptsIncomingAudio() &&
+            !offer_pending_.load(std::memory_order_acquire) &&
+            !settings_open_.load(std::memory_order_acquire) &&
+            !avatar_fetch_in_progress_.load(std::memory_order_acquire) &&
+            PhysicalMotionInactive();
     }
 
     void StartXcBodyBehavior(
@@ -4510,7 +4959,8 @@ private:
             throw std::invalid_argument(
                 "behavior_id must contain 1 to 128 characters");
         }
-        if (!servo_ok_ || motion_driver_ == nullptr) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire) ||
+            !servo_ok_ || motion_driver_ == nullptr) {
             throw std::runtime_error("head motion is unavailable");
         }
         PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
@@ -4536,12 +4986,19 @@ private:
             throw std::runtime_error("thinking avatar is unavailable");
         }
 
-        WriteHeadAngles(
-            XC_BODY_BEHAVIOR_YAW_DEG,
-            XC_BODY_BEHAVIOR_PITCH_DEG,
-            XC_BODY_BEHAVIOR_SPEED_DPS);
+        if (!WriteHeadAngles(
+                XC_BODY_BEHAVIOR_YAW_DEG,
+                XC_BODY_BEHAVIOR_PITCH_DEG,
+                XC_BODY_BEHAVIOR_SPEED_DPS)) {
+            SetAvatarExpressionIfActive("idle");
+            xc_body_behavior_active_.store(false, std::memory_order_release);
+            physical_behavior_owner_.store(
+                PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+            throw std::runtime_error("head motion is unavailable");
+        }
         xc_body_behavior_step_.store(
-            ReviewedBehaviorStep::MOVING_TO_POSE, std::memory_order_release);
+            ReviewedBehaviorStep::MOVING_TO_POSE,
+            std::memory_order_release);
     }
 
     void StartXcBodyKnock(const std::string& behavior_id) {
@@ -4579,10 +5036,9 @@ private:
         if (step != ReviewedBehaviorStep::RECOVERING_TO_IDLE &&
             now_us - xc_body_behavior_started_us_ >=
                 XC_BODY_BEHAVIOR_TIMEOUT_US) {
-            WriteHeadAngles(
-                XC_BODY_IDLE_YAW_DEG,
-                XC_BODY_IDLE_PITCH_DEG,
-                XC_BODY_BEHAVIOR_SPEED_DPS);
+            StartMeasuredIdleRecovery();
+            xc_body_behavior_recovery_deadline_us_ =
+                now_us + EXPRESSION_RECOVERY_TIMEOUT_US;
             xc_body_behavior_step_.store(
                 ReviewedBehaviorStep::RECOVERING_TO_IDLE,
                 std::memory_order_release);
@@ -4635,12 +5091,371 @@ private:
                         XC_BODY_IDLE_YAW_DEG,
                         XC_BODY_IDLE_PITCH_DEG)) {
                     FinishXcBodyBehavior("behavior_failed", now_us);
+                } else if (now_us >=
+                        xc_body_behavior_recovery_deadline_us_) {
+                    physical_motion_unavailable_.store(
+                        true, std::memory_order_release);
+                    FinishXcBodyBehavior("behavior_failed", now_us);
                 }
                 break;
         }
     }
 
+    void FinishExpression(
+            StackChanExpressionOutcome outcome,
+            uint64_t now_us) {
+        if (!expression_active_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        const ExpressionStep step = expression_step_.load(
+            std::memory_order_acquire);
+        if (step != ExpressionStep::RESTORING_FACE) {
+            expression_finish_outcome_ = outcome;
+            expression_face_restore_deadline_us_ =
+                now_us + EXPRESSION_FACE_RESTORE_TIMEOUT_US;
+            expression_step_.store(
+                ExpressionStep::RESTORING_FACE,
+                std::memory_order_release);
+        }
+        const bool face_restored = SetAvatarExpression("idle", true);
+        if (!face_restored) {
+            if (now_us < expression_face_restore_deadline_us_) {
+                return;
+            }
+            StopExpressionAnimation();
+            if (expression_finish_outcome_ !=
+                    StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
+                expression_finish_outcome_ =
+                    StackChanExpressionOutcome::UNAVAILABLE;
+            }
+        }
+        if (!expression_active_.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        if (blink_desired_.load(std::memory_order_acquire)) {
+            StartBlinkTimer();
+        }
+        expression_abort_requested_.store(false, std::memory_order_release);
+        if (expression_finish_outcome_ ==
+                StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
+            physical_motion_unavailable_.store(
+                true, std::memory_order_release);
+        }
+        ESP_LOGI(
+            TAG,
+            "Expression terminal: name=%s outcome=%s face_restored=%d",
+            expression_name_.c_str(),
+            StackChanExpressionOutcomeName(expression_finish_outcome_),
+            face_restored ? 1 : 0);
+        expression_preview_result_.store(
+            expression_finish_outcome_, std::memory_order_relaxed);
+        physical_behavior_owner_.store(
+            PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+        expression_preview_result_ready_.store(
+            true, std::memory_order_release);
+        Application::GetInstance().ResumeDeferredAudioPlayback();
+    }
+
+    void BeginExpressionRecovery(
+            StackChanExpressionOutcome outcome,
+            uint64_t now_us,
+            const char* reason) {
+        expression_recovery_outcome_ = outcome;
+        // Do not leave the final GIF frame visible during motor recovery.
+        const bool face_restored = SetAvatarExpression("idle", true);
+        ESP_LOGW(
+            TAG,
+            "Expression recovery started: name=%s reason=%s outcome=%s "
+            "step_index=%u face_restored=%d",
+            expression_name_.c_str(), reason,
+            StackChanExpressionOutcomeName(outcome),
+            static_cast<unsigned>(expression_step_index_),
+            face_restored ? 1 : 0);
+        if (PhysicalMotionConfirmedAt(
+                kStackChanExpressionIdleYaw,
+                kStackChanExpressionIdlePitch,
+                "recovery entry")) {
+            FinishExpression(outcome, now_us);
+            return;
+        }
+        expression_recovery_deadline_us_ =
+            now_us + EXPRESSION_RECOVERY_TIMEOUT_US;
+        expression_recovery_retry_at_us_ =
+            now_us + EXPRESSION_RECOVERY_RETRY_INTERVAL_US;
+        StartMeasuredIdleRecovery();
+        expression_step_.store(
+            ExpressionStep::RECOVERING_TO_IDLE,
+            std::memory_order_release);
+    }
+
+    void StartAuthoredExpression(uint64_t now_us) {
+        StopBlinkTimer();
+        if (!StartExpressionAnimation(expression_name_)) {
+            FinishExpression(
+                StackChanExpressionOutcome::MOTION_FAILED, now_us);
+            return;
+        }
+        HandleScreenSaverUserInteraction();
+        display_->UpdateStatusBar(true);
+        if (!WriteHeadCurve(expression_recipe_.steps[0])) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "first_curve_start_failed");
+            return;
+        }
+        expression_step_index_ = 0;
+        const uint64_t motion_duration_us =
+            static_cast<uint64_t>(StackChanExpressionRecipeDurationMs(
+                expression_recipe_)) * 1000ULL;
+        expression_execution_deadline_us_ =
+            static_cast<uint64_t>(esp_timer_get_time()) +
+            std::max(motion_duration_us, EXPRESSION_FACE_DURATION_US) +
+            EXPRESSION_EXECUTION_MARGIN_US;
+        expression_step_.store(
+            ExpressionStep::RUNNING_CURVE,
+            std::memory_order_release);
+    }
+
+    void StartNextExpressionStep(uint64_t now_us) {
+        ++expression_step_index_;
+        if (expression_step_index_ >= expression_recipe_.step_count) {
+            if (ExpressionAnimationComplete()) {
+                FinishExpression(
+                    StackChanExpressionOutcome::COMPLETED, now_us);
+            } else {
+                expression_step_.store(
+                    ExpressionStep::WAITING_FOR_FACE,
+                    std::memory_order_release);
+            }
+            return;
+        }
+        const auto& next = expression_recipe_.steps[expression_step_index_];
+        if (next.type == StackChanExpressionStepType::PAUSE) {
+            expression_hold_until_us_ = now_us +
+                static_cast<uint64_t>(next.duration_ms) * 1000ULL;
+            expression_step_.store(
+                ExpressionStep::PAUSING, std::memory_order_release);
+            return;
+        }
+        if (!WriteHeadCurve(next)) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "curve_start_failed");
+            return;
+        }
+        expression_step_.store(
+            ExpressionStep::RUNNING_CURVE, std::memory_order_release);
+    }
+
+    StackChanExpressionOutcome StartExpression(
+            const std::string& name,
+            const StackChanExpressionRecipe& recipe) {
+        std::string error;
+        if (!IsStackChanExpressionName(name) ||
+            !ValidateStackChanExpressionRecipe(recipe, error)) {
+            return StackChanExpressionOutcome::INVALID_RECIPE;
+        }
+        if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            return StackChanExpressionOutcome::UNAVAILABLE;
+        }
+        if (!servo_ok_ || motion_driver_ == nullptr) {
+            return StackChanExpressionOutcome::UNAVAILABLE;
+        }
+        if (!motion_driver_->SupportsCurve()) {
+            return StackChanExpressionOutcome::UNSUPPORTED_DRIVER;
+        }
+
+        PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
+        if (!physical_behavior_owner_.compare_exchange_strong(
+                expected,
+                PhysicalBehaviorOwner::EXPRESSION,
+                std::memory_order_acq_rel)) {
+            return StackChanExpressionOutcome::BUSY;
+        }
+        if (!ExpressionEnvironmentIdle()) {
+            physical_behavior_owner_.store(
+                PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+            Application::GetInstance().ResumeDeferredAudioPlayback();
+            return StackChanExpressionOutcome::BUSY;
+        }
+
+        power_save_timer_->WakeUp();
+        expression_recipe_ = recipe;
+        expression_step_index_ = 0;
+        expression_name_ = name;
+        expression_abort_requested_.store(false, std::memory_order_relaxed);
+        expression_preview_result_ready_.store(
+            false, std::memory_order_relaxed);
+        const uint64_t now_us = esp_timer_get_time();
+        expression_startup_deadline_us_ =
+            now_us + EXPRESSION_STARTUP_TIMEOUT_US;
+        expression_step_.store(
+            ExpressionStep::STARTING, std::memory_order_relaxed);
+        expression_active_.store(true, std::memory_order_release);
+
+        // Close the admission/callback handoff: a state transition that
+        // raced the first check either made the environment busy or set the
+        // abort flag after expression_active_ became visible.
+        if (!ExpressionEnvironmentIdle() ||
+            expression_abort_requested_.load(std::memory_order_acquire)) {
+            expression_active_.store(false, std::memory_order_release);
+            expression_abort_requested_.store(false, std::memory_order_release);
+            physical_behavior_owner_.store(
+                PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+            Application::GetInstance().ResumeDeferredAudioPlayback();
+            return StackChanExpressionOutcome::BUSY;
+        }
+        RequestMouthSequenceCancel();
+        return StackChanExpressionOutcome::STARTED;
+    }
+
+    void AdvanceExpression() {
+        if (!expression_active_.load(std::memory_order_acquire)) {
+            return;
+        }
+        const uint64_t now_us = esp_timer_get_time();
+        ExpressionStep step = expression_step_.load(
+            std::memory_order_acquire);
+        if (step != ExpressionStep::STARTING &&
+            step != ExpressionStep::RESTORING_FACE &&
+            step != ExpressionStep::RECOVERING_TO_IDLE &&
+            expression_abort_requested_.load(std::memory_order_acquire)) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::INTERRUPTED,
+                now_us,
+                "abort_requested");
+            return;
+        }
+        if (step == ExpressionStep::RUNNING_CURVE &&
+            motion_driver_->ConsumeCurveFailure()) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "curve_driver_failed");
+            return;
+        }
+        if (step != ExpressionStep::STARTING &&
+            step != ExpressionStep::CENTERING &&
+            step != ExpressionStep::RESTORING_FACE &&
+            step != ExpressionStep::RECOVERING_TO_IDLE &&
+            now_us >= expression_execution_deadline_us_) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "execution_deadline");
+            return;
+        }
+
+        switch (step) {
+            case ExpressionStep::STARTING:
+                if (expression_abort_requested_.load(
+                        std::memory_order_acquire)) {
+                    BeginExpressionRecovery(
+                        StackChanExpressionOutcome::INTERRUPTED,
+                        now_us,
+                        "startup_abort_requested");
+                } else if (PhysicalMotionCachedAt(
+                               kStackChanExpressionIdleYaw,
+                               kStackChanExpressionIdlePitch) &&
+                           PhysicalMotionConfirmedAt(
+                               kStackChanExpressionIdleYaw,
+                               kStackChanExpressionIdlePitch)) {
+                    StartAuthoredExpression(now_us);
+                } else if (!SynchronizePhysicalMotionPosition() ||
+                           !WriteHeadAngles(
+                               kStackChanExpressionIdleYaw,
+                               kStackChanExpressionIdlePitch,
+                               XC_BODY_BEHAVIOR_SPEED_DPS)) {
+                    BeginExpressionRecovery(
+                        StackChanExpressionOutcome::MOTION_FAILED,
+                        now_us,
+                        "startup_center_failed");
+                } else {
+                    expression_step_.store(
+                        ExpressionStep::CENTERING,
+                        std::memory_order_release);
+                }
+                break;
+            case ExpressionStep::CENTERING:
+                if (PhysicalMotionCachedAt(
+                        kStackChanExpressionIdleYaw,
+                        kStackChanExpressionIdlePitch) &&
+                    PhysicalMotionConfirmedAt(
+                        kStackChanExpressionIdleYaw,
+                        kStackChanExpressionIdlePitch)) {
+                    StartAuthoredExpression(now_us);
+                } else if (now_us >= expression_startup_deadline_us_) {
+                    BeginExpressionRecovery(
+                        StackChanExpressionOutcome::MOTION_FAILED,
+                        now_us,
+                        "startup_deadline");
+                }
+                break;
+            case ExpressionStep::RUNNING_CURVE: {
+                const auto& curve =
+                    expression_recipe_.steps[expression_step_index_];
+                const auto& end = curve.points[3];
+                const bool final_curve = expression_step_index_ + 1 >=
+                    expression_recipe_.step_count;
+                if (PhysicalMotionInactive() &&
+                    (!final_curve ||
+                     PhysicalMotionConfirmedAt(end.yaw, end.pitch))) {
+                    StartNextExpressionStep(now_us);
+                }
+                break;
+            }
+            case ExpressionStep::PAUSING:
+                if (now_us >= expression_hold_until_us_) {
+                    StartNextExpressionStep(now_us);
+                }
+                break;
+            case ExpressionStep::WAITING_FOR_FACE:
+                if (ExpressionAnimationComplete()) {
+                    FinishExpression(
+                        StackChanExpressionOutcome::COMPLETED, now_us);
+                }
+                break;
+            case ExpressionStep::RESTORING_FACE:
+                FinishExpression(expression_finish_outcome_, now_us);
+                break;
+            case ExpressionStep::RECOVERING_TO_IDLE: {
+                const bool recovery_deadline_reached =
+                    now_us >= expression_recovery_deadline_us_;
+                const bool recovery_retry_due =
+                    !recovery_deadline_reached &&
+                    now_us >= expression_recovery_retry_at_us_ &&
+                    PhysicalMotionInactive();
+                const char* diagnostic_context = recovery_deadline_reached
+                    ? "safe return deadline"
+                    : recovery_retry_due ? "idle return retry" : nullptr;
+                if (PhysicalMotionConfirmedAt(
+                        kStackChanExpressionIdleYaw,
+                        kStackChanExpressionIdlePitch,
+                        diagnostic_context)) {
+                    FinishExpression(expression_recovery_outcome_, now_us);
+                } else if (recovery_deadline_reached) {
+                    FinishExpression(
+                        StackChanExpressionOutcome::SAFE_RETURN_FAILED,
+                        now_us);
+                } else if (recovery_retry_due) {
+                    StartMeasuredIdleRecovery();
+                    expression_recovery_retry_at_us_ = now_us +
+                        EXPRESSION_RECOVERY_RETRY_INTERVAL_US;
+                }
+                break;
+            }
+        }
+    }
+
     bool StageTouchReaction(TouchEvent event, uint64_t duration_ms) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire) ||
+            Application::GetInstance().GetDeviceState() !=
+                kDeviceStateIdle) {
+            return false;
+        }
         PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
         if (!physical_behavior_owner_.compare_exchange_strong(
                 expected,
@@ -4657,6 +5472,15 @@ private:
         pending_touch_recovering_.store(false, std::memory_order_relaxed);
         pending_touch_recovery_deadline_us_.store(0, std::memory_order_relaxed);
         pending_touch_completion_.store(event, std::memory_order_release);
+        if (Application::GetInstance().GetDeviceState() !=
+                kDeviceStateIdle) {
+            pending_touch_completion_.store(
+                TouchEvent::IDLE, std::memory_order_release);
+            physical_behavior_owner_.store(
+                PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+            Application::GetInstance().ResumeDeferredAudioPlayback();
+            return false;
+        }
         return true;
     }
 
@@ -4679,10 +5503,7 @@ private:
                         true, std::memory_order_acq_rel)) {
                     ESP_LOGW(TAG,
                              "touch reaction did not settle; recovering to idle");
-                    WriteHeadAngles(
-                        XC_BODY_IDLE_YAW_DEG,
-                        XC_BODY_IDLE_PITCH_DEG,
-                        XC_BODY_BEHAVIOR_SPEED_DPS);
+                    StartMeasuredIdleRecovery();
                     pending_touch_recovery_deadline_us_.store(
                         now_us + TOUCH_RECOVERY_TIMEOUT_US,
                         std::memory_order_relaxed);
@@ -4693,12 +5514,16 @@ private:
                     return;
                 }
                 ESP_LOGE(TAG, "touch reaction recovery failed");
+                servo_wobble_active_.store(false, std::memory_order_release);
+                servo_wobble_step_.store(0, std::memory_order_relaxed);
+                physical_motion_unavailable_.store(
+                    true, std::memory_order_release);
                 pending_touch_completion_.store(
                     TouchEvent::IDLE, std::memory_order_release);
+                SetAvatarExpressionIfActive("idle");
                 physical_behavior_owner_.store(
                     PhysicalBehaviorOwner::IDLE, std::memory_order_release);
-                SetAvatarExpressionIfActive("idle");
-                Application::GetInstance().ResumePreparedAudioPlayback();
+                Application::GetInstance().ResumeDeferredAudioPlayback();
                 Application::GetInstance().SendStackChanEvent(
                     "behavior",
                     "behavior_failed",
@@ -4712,10 +5537,10 @@ private:
         pending_touch_completion_.store(
             TouchEvent::IDLE, std::memory_order_release);
         pending_touch_recovering_.store(false, std::memory_order_relaxed);
+        SetAvatarExpressionIfActive("idle");
         physical_behavior_owner_.store(
             PhysicalBehaviorOwner::IDLE, std::memory_order_release);
-        SetAvatarExpressionIfActive("idle");
-        Application::GetInstance().ResumePreparedAudioPlayback();
+        Application::GetInstance().ResumeDeferredAudioPlayback();
     }
 
     // Servo wobble: yaw -A -> +A -> -A -> 0. Each step is dispatched only
@@ -4734,6 +5559,11 @@ private:
         if (!servo_ok_ || motion_driver_ == nullptr) {
             return;
         }
+        if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            servo_wobble_active_.store(false, std::memory_order_release);
+            servo_wobble_step_.store(0, std::memory_order_relaxed);
+            return;
+        }
         if (!servo_wobble_active_.load(std::memory_order_acquire)) {
             return;
         }
@@ -4741,6 +5571,12 @@ private:
             return;
         }
         if (!servo_wobble_active_.load()) {
+            xSemaphoreGive(motion_mutex_);
+            return;
+        }
+        if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            servo_wobble_active_.store(false, std::memory_order_release);
+            servo_wobble_step_.store(0, std::memory_order_relaxed);
             xSemaphoreGive(motion_mutex_);
             return;
         }
@@ -4782,7 +5618,8 @@ private:
     }
 
     void StartServoWobble() {
-        if (!servo_ok_ || motion_driver_ == nullptr) {
+        if (physical_motion_unavailable_.load(std::memory_order_acquire) ||
+            !servo_ok_ || motion_driver_ == nullptr) {
             ESP_LOGW(TAG, "Servo wobble skipped: servo not initialized");
             return;
         }
@@ -4821,6 +5658,7 @@ private:
         while (true) {
             if (!servo_ok_ || motion_driver_ == nullptr) {
                 MaybeAdvanceXcBodyBehavior();
+                AdvanceExpression();
                 MaybeCompleteTouchReaction();
                 vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
                 continue;
@@ -4828,6 +5666,7 @@ private:
             motion_driver_->Tick();
             ServoWobbleStepAdvance();
             MaybeAdvanceXcBodyBehavior();
+            AdvanceExpression();
             MaybeCompleteTouchReaction();
             MaybeAutoReleaseTorque();
             taskYIELD();
@@ -5228,7 +6067,12 @@ private:
     // Returns false if the requested image is unavailable (e.g. AvatarSet
     // loaded in matrix mode but the index triple is out of range, or the
     // avatar lv_obj cannot be created yet because the screen tree isn't up).
-    bool RenderAvatarLocked() {
+    bool RenderAvatarLocked(bool expression_owned = false) {
+        if (!expression_owned &&
+            physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            return false;
+        }
         const lv_image_dsc_t* dsc = nullptr;
         if (avatar_set_.is_loaded() &&
             avatar_set_.mode() == AvatarSet::Mode::kMatrix) {
@@ -5250,13 +6094,89 @@ private:
         }
         if (dsc == nullptr) return false;
         if (!EnsureAvatarObject()) return false;
-        lv_image_set_src(avatar_img_, dsc);
+        if (expression_gif_ != nullptr) {
+            StopExpressionAnimationLocked(dsc);
+        } else {
+            lv_image_set_src(avatar_img_, dsc);
+        }
         const int scale = dsc->header.w == 320 && dsc->header.h == 240
             ? 256 : 512;
         lv_image_set_scale(avatar_img_, scale);
         display_->PlaceBehindStatusBarLocked(avatar_img_);
         UpdateAvatarStatusOverlayLocked(dsc);
         return true;
+    }
+
+    bool StartExpressionAnimation(const std::string& name) {
+        if (display_ == nullptr || !IsStackChanExpressionName(name)) {
+            return false;
+        }
+        std::string asset = "expression-" + name + ".gif";
+        void* data = nullptr;
+        size_t size = 0;
+        if (!Assets::GetInstance().GetAssetData(
+                asset, data, size)) {
+            ESP_LOGE(TAG, "Expression asset is missing: %s", asset.c_str());
+            return false;
+        }
+
+        DisplayLockGuard lock(display_);
+        if (!EnsureAvatarObject()) {
+            return false;
+        }
+        if (expression_gif_ != nullptr) {
+            StopExpressionAnimationLocked(nullptr);
+        }
+        expression_gif_source_ = {};
+        expression_gif_source_.data = static_cast<const uint8_t*>(data);
+        expression_gif_source_.data_size = size;
+        expression_gif_ = std::make_unique<LvglGif>(&expression_gif_source_);
+        if (!expression_gif_->IsLoaded()) {
+            expression_gif_.reset();
+            return false;
+        }
+        expression_gif_->SetLoopCount(1);
+        expression_gif_->SetTimelinePlayback(true);
+        expression_gif_->SetFrameCallback([this]() {
+            lv_image_set_src(avatar_img_, expression_gif_->image_dsc());
+        });
+        lv_image_set_src(avatar_img_, expression_gif_->image_dsc());
+        lv_image_set_scale(avatar_img_, 256);
+        lv_obj_clear_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
+        display_->PlaceBehindStatusBarLocked(avatar_img_);
+        if (avatar_status_overlay_ != nullptr) {
+            lv_obj_add_flag(avatar_status_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
+        current_avatar_face_ = name;
+        expression_gif_->Start();
+        return true;
+    }
+
+    bool ExpressionAnimationComplete() {
+        if (display_ == nullptr) {
+            return false;
+        }
+        DisplayLockGuard lock(display_);
+        return expression_gif_ != nullptr && !expression_gif_->IsPlaying();
+    }
+
+    void StopExpressionAnimationLocked(const lv_img_dsc_t* replacement) {
+        if (expression_gif_ == nullptr) {
+            return;
+        }
+        if (avatar_img_ != nullptr) {
+            lv_image_set_src(avatar_img_, replacement);
+        }
+        expression_gif_->Stop();
+        expression_gif_.reset();
+    }
+
+    void StopExpressionAnimation() {
+        if (display_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(display_);
+        StopExpressionAnimationLocked(nullptr);
     }
 
     // ---- Avatar fetch pending machinery (intent doc invariant #6) -------
@@ -5397,12 +6317,14 @@ private:
 
     // Apply the requested face to avatar_img_. Returns false if the face is
     // unknown or the avatar object cannot be created yet.
-    bool SetAvatarExpressionLocked(const char* face) {
+    bool SetAvatarExpressionLocked(
+            const char* face,
+            bool expression_owned = false) {
         const int idx = FaceNameToIndex(face);
         if (idx < 0) return false;
         current_face_index_ = idx;
         active_layer_ = ActiveLayer::FACE;
-        if (!RenderAvatarLocked()) return false;
+        if (!RenderAvatarLocked(expression_owned)) return false;
         current_avatar_face_ = face;
         return true;
     }
@@ -5413,22 +6335,42 @@ private:
     // Also handles the "resume from off" path: if the previous face was
     // "off" (avatar layer hidden), the layer is unhidden here, and if blink
     // was enabled before SetAvatarOff() ran it is restored automatically.
-    bool SetAvatarExpression(const char* face) {
+    bool SetAvatarExpression(
+            const char* face,
+            bool expression_owned = false) {
         if (display_ == nullptr) {
             ESP_LOGW(TAG, "SetAvatarExpression('%s') ignored: display_ not ready", face);
             return false;
         }
-        // Avatar set fetch in progress — record the request and return
-        // success. ApplyPendingAvatarAfterFetch() will replay the latest
-        // captured face when the fetch completes.
-        if (DeferAvatarFaceIfFetching(face)) {
-            return true;
+        if (!expression_owned &&
+            physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            return false;
+        }
+        // Expression completion requires an immediate render; ordinary
+        // avatar requests retain the existing deferred-fetch behavior.
+        if (avatar_fetch_in_progress_.load(std::memory_order_acquire)) {
+            if (expression_owned) {
+                return false;
+            }
+            if (DeferAvatarFaceIfFetching(face)) {
+                return true;
+            }
         }
         bool was_off = (current_avatar_face_ == "off");
         bool entering_avatar_view = false;
         bool ok;
         {
             DisplayLockGuard lock(display_);
+            if (!expression_owned &&
+                physical_behavior_owner_.load(std::memory_order_acquire) ==
+                    PhysicalBehaviorOwner::EXPRESSION) {
+                return false;
+            }
+            if (expression_owned &&
+                avatar_fetch_in_progress_.load(std::memory_order_acquire)) {
+                return false;
+            }
             entering_avatar_view = avatar_img_ == nullptr ||
                 lv_obj_has_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
             if (avatar_img_ != nullptr) {
@@ -5436,7 +6378,7 @@ private:
                 // layer. Cheap no-op when the flag is already clear.
                 lv_obj_clear_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
             }
-            ok = SetAvatarExpressionLocked(face);
+            ok = SetAvatarExpressionLocked(face, expression_owned);
         }
         if (!ok) {
             ESP_LOGW(TAG, "SetAvatarExpression('%s') deferred (face unknown or screen not ready)", face);
@@ -5469,6 +6411,10 @@ private:
             ESP_LOGW(TAG, "SetAvatarOff() ignored: display_ not ready");
             return false;
         }
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            return false;
+        }
         if (DeferAvatarOffIfFetching()) {
             return true;
         }
@@ -5484,6 +6430,13 @@ private:
         StopBlinkTimer();
         {
             DisplayLockGuard lock(display_);
+            if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                    PhysicalBehaviorOwner::EXPRESSION) {
+                return false;
+            }
+            if (expression_gif_ != nullptr) {
+                StopExpressionAnimationLocked(nullptr);
+            }
             if (avatar_img_ != nullptr) {
                 lv_obj_add_flag(avatar_img_, LV_OBJ_FLAG_HIDDEN);
             }
@@ -5584,10 +6537,20 @@ private:
         return RenderAvatarLocked();
     }
 
+    bool SetMouthShapeLocked(int index) {
+        current_mouth_index_ = index;
+        active_layer_ = ActiveLayer::MOUTH;
+        return RenderAvatarLocked();
+    }
+
     // Public mouth setter: wraps lock + look-up.
     bool SetMouthShape(const char* shape) {
         if (display_ == nullptr) {
             ESP_LOGW(TAG, "SetMouthShape('%s') ignored: display_ not ready", shape);
+            return false;
+        }
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
             return false;
         }
         const int idx = MouthShapeToIndex(shape);
@@ -5600,9 +6563,32 @@ private:
             return true;
         }
         DisplayLockGuard lock(display_);
-        current_mouth_index_ = idx;
-        active_layer_ = ActiveLayer::MOUTH;
-        return RenderAvatarLocked();
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            return false;
+        }
+        return SetMouthShapeLocked(idx);
+    }
+
+    bool SetMouthSequenceShape(
+            const char* shape,
+            uint32_t generation) {
+        if (display_ == nullptr) {
+            return false;
+        }
+        const int index = MouthShapeToIndex(shape);
+        if (index < 0) {
+            return false;
+        }
+        DisplayLockGuard lock(display_);
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION ||
+            mouth_seq_cancel_requested_.load(std::memory_order_acquire) ||
+            mouth_seq_generation_.load(std::memory_order_acquire) !=
+                generation) {
+            return false;
+        }
+        return SetMouthShapeLocked(index);
     }
 
     // Step callback for the four-phase blink sequence. Each invocation
@@ -5992,6 +6978,11 @@ private:
     // nothing is queued.
     MouthSequenceEnqueueResult EnqueueMouthSequence(const std::string& steps_json) {
         MouthSequenceEnqueueResult r{false, std::string(), 0, 0};
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            r.error = "expression is active";
+            return r;
+        }
 
         cJSON* root = cJSON_Parse(steps_json.c_str());
         if (root == nullptr) {
@@ -6068,6 +7059,12 @@ private:
         // and SetMouthShape() calls (per-step generation re-check in
         // MouthSequenceTaskLoop).
         if (xSemaphoreTake(mouth_seq_lock_, portMAX_DELAY) == pdTRUE) {
+            if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                    PhysicalBehaviorOwner::EXPRESSION) {
+                xSemaphoreGive(mouth_seq_lock_);
+                r.error = "expression is active";
+                return r;
+            }
             mouth_seq_pending_ = std::move(parsed);
             if (mouth_seq_active_.load(std::memory_order_acquire)) {
                 mouth_seq_cancel_requested_.store(true, std::memory_order_release);
@@ -6132,7 +7129,7 @@ private:
                     mouth_seq_generation_.load(std::memory_order_acquire) != my_generation) {
                     break;
                 }
-                SetMouthShape(step.shape.c_str());
+                SetMouthSequenceShape(step.shape.c_str(), my_generation);
                 // Sleep in small slices so cancel is observed quickly.
                 uint32_t remaining = step.duration_ms;
                 while (remaining > 0 &&
@@ -6522,6 +7519,18 @@ private:
                                    std::numeric_limits<int>::min(),
                                    std::numeric_limits<int>::max())}),
             [this](const PropertyList& properties) -> ReturnValue {
+                if (physical_motion_unavailable_.load(
+                        std::memory_order_acquire)) {
+                    throw std::runtime_error("head motion is unavailable");
+                }
+                PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
+                if (!physical_behavior_owner_.compare_exchange_strong(
+                        expected,
+                        PhysicalBehaviorOwner::RAW,
+                        std::memory_order_acq_rel)) {
+                    throw std::runtime_error(
+                        "another physical behavior is active");
+                }
                 int yaw = properties["yaw"].value<int>();
                 int pitch = properties["pitch"].value<int>();
                 int speed_dps = properties["speed_dps"].value<int>();
@@ -6553,10 +7562,17 @@ private:
                 }
                 int yaw_pos = YawDegToPos(yaw);
                 int pitch_pos = PitchDegToPos(pitch);
+                bool motion_started;
                 if (speed_dps > 0) {
-                    WriteHeadAngles(yaw, pitch, speed_dps);
+                    motion_started = WriteHeadAngles(yaw, pitch, speed_dps);
                 } else {
-                    WriteHeadAngles(yaw, pitch);
+                    motion_started = WriteHeadAngles(yaw, pitch);
+                }
+                physical_behavior_owner_.store(
+                    PhysicalBehaviorOwner::IDLE,
+                    std::memory_order_release);
+                if (!motion_started) {
+                    throw std::runtime_error("head motion is unavailable");
                 }
                 bool yaw_motion_started = false;
                 bool pitch_motion_started = false;
@@ -6732,8 +7748,25 @@ private:
             [this](const PropertyList& properties) -> ReturnValue {
                 bool yaw_enabled = properties["yaw_enabled"].value<bool>();
                 bool pitch_enabled = properties["pitch_enabled"].value<bool>();
+                if (physical_motion_unavailable_.load(
+                        std::memory_order_acquire) &&
+                    (yaw_enabled || pitch_enabled)) {
+                    throw std::runtime_error("head motion is unavailable");
+                }
+                PhysicalBehaviorOwner expected =
+                    PhysicalBehaviorOwner::IDLE;
+                if (!physical_behavior_owner_.compare_exchange_strong(
+                        expected,
+                        PhysicalBehaviorOwner::RAW,
+                        std::memory_order_acq_rel)) {
+                    throw std::runtime_error(
+                        "another physical behavior is active");
+                }
                 ServoTorqueResult torque_result = InternalSetServoTorque(
                     yaw_enabled, pitch_enabled, ReleaseReason::kManual);
+                physical_behavior_owner_.store(
+                    PhysicalBehaviorOwner::IDLE,
+                    std::memory_order_release);
 
                 cJSON* root = cJSON_CreateObject();
                 cJSON_AddBoolToObject(root, "yaw_enabled", yaw_enabled);
@@ -6835,11 +7868,27 @@ private:
             "self.robot.gpio_test",
             "Diagnostic: toggle GPIO6 (servo TX pin) HIGH/LOW 5 times at 100ms intervals to verify physical signal output. Restores UART pins after.",
             PropertyList(),
-            [](const PropertyList& properties) -> ReturnValue {
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (!servo_ok_ || scs_bus_mutex_ == nullptr) {
+                    throw std::runtime_error("servo bus is unavailable");
+                }
+                if (physical_motion_unavailable_.load(
+                        std::memory_order_acquire)) {
+                    throw std::runtime_error("head motion is unavailable");
+                }
+                PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
+                if (!physical_behavior_owner_.compare_exchange_strong(
+                        expected,
+                        PhysicalBehaviorOwner::RAW,
+                        std::memory_order_acq_rel)) {
+                    throw std::runtime_error(
+                        "another physical behavior is active");
+                }
                 cJSON* root = cJSON_CreateObject();
 
                 gpio_num_t pin = static_cast<gpio_num_t>(SERVO_TX_PIN);
 
+                xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
                 esp_err_t err_dir = gpio_set_direction(pin, GPIO_MODE_OUTPUT);
                 cJSON_AddStringToObject(root, "set_direction", esp_err_to_name(err_dir));
                 cJSON_AddNumberToObject(root, "pin", SERVO_TX_PIN);
@@ -6861,6 +7910,10 @@ private:
                 // Restore UART pin assignment after raw GPIO toggling
                 esp_err_t err_restore = uart_set_pin(SERVO_UART_NUM, SERVO_TX_PIN, SERVO_RX_PIN,
                                                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+                xSemaphoreGive(scs_bus_mutex_);
+                physical_behavior_owner_.store(
+                    PhysicalBehaviorOwner::IDLE,
+                    std::memory_order_release);
                 cJSON_AddStringToObject(root, "uart_pin_restore", esp_err_to_name(err_restore));
 
                 char* str = cJSON_PrintUnformatted(root);
@@ -6877,6 +7930,18 @@ private:
             "Diagnostic: send raw 8 bytes (FF FF 01 04 03 E8 00 00) directly via uart_write_bytes. Returns sent byte count and rx buffer length before/after.",
             PropertyList(),
             [this](const PropertyList& properties) -> ReturnValue {
+                if (physical_motion_unavailable_.load(
+                        std::memory_order_acquire)) {
+                    throw std::runtime_error("head motion is unavailable");
+                }
+                PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
+                if (!physical_behavior_owner_.compare_exchange_strong(
+                        expected,
+                        PhysicalBehaviorOwner::RAW,
+                        std::memory_order_acq_rel)) {
+                    throw std::runtime_error(
+                        "another physical behavior is active");
+                }
                 cJSON* root = cJSON_CreateObject();
 
                 size_t buf_before = 0;
@@ -6903,6 +7968,9 @@ private:
 
                     xSemaphoreGive(scs_bus_mutex_);
                 }
+                physical_behavior_owner_.store(
+                    PhysicalBehaviorOwner::IDLE,
+                    std::memory_order_release);
                 cJSON_AddStringToObject(root, "buf_before_status", esp_err_to_name(err_b));
                 cJSON_AddNumberToObject(root, "buf_before", buf_before);
 
@@ -8170,7 +9238,71 @@ public:
         // InitializeAvatar();
         InitializeMouthSequenceTask();
         RegisterMcpTools();
-        StartStackChanUsbControl();
+        StartStackChanUsbControl(this);
+    }
+
+    StackChanExpressionOutcome StartExpressionPreview(
+            const std::string& name,
+            const StackChanExpressionRecipe& recipe) override {
+        return StartExpression(name, recipe);
+    }
+
+    bool AbortExpressionPreview() override {
+        if (!expression_active_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        expression_abort_requested_.store(true, std::memory_order_release);
+        return true;
+    }
+
+    bool TakeExpressionPreviewResult(
+            StackChanExpressionOutcome& outcome) override {
+        if (!expression_preview_result_ready_.exchange(
+                false, std::memory_order_acq_rel)) {
+            return false;
+        }
+        outcome = expression_preview_result_.load(std::memory_order_relaxed);
+        return true;
+    }
+
+    bool BeginFirmwareMaintenance() override {
+        PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::IDLE;
+        if (physical_behavior_owner_.compare_exchange_strong(
+                expected,
+                PhysicalBehaviorOwner::MAINTENANCE_RESERVED,
+                std::memory_order_acq_rel)) {
+            if (!servo_ok_ || motion_driver_ == nullptr ||
+                PhysicalMotionInactive()) {
+                return true;
+            }
+            physical_behavior_owner_.store(
+                PhysicalBehaviorOwner::IDLE, std::memory_order_release);
+            return false;
+        }
+        return false;
+    }
+
+    bool ConsumeFirmwareMaintenance() override {
+        PhysicalBehaviorOwner expected =
+            PhysicalBehaviorOwner::MAINTENANCE_RESERVED;
+        return physical_behavior_owner_.compare_exchange_strong(
+            expected,
+            PhysicalBehaviorOwner::MAINTENANCE,
+            std::memory_order_acq_rel);
+    }
+
+    void EndFirmwareMaintenance() override {
+        PhysicalBehaviorOwner expected = PhysicalBehaviorOwner::MAINTENANCE;
+        if (!physical_behavior_owner_.compare_exchange_strong(
+                expected,
+                PhysicalBehaviorOwner::IDLE,
+                std::memory_order_acq_rel)) {
+            expected = PhysicalBehaviorOwner::MAINTENANCE_RESERVED;
+            physical_behavior_owner_.compare_exchange_strong(
+                expected,
+                PhysicalBehaviorOwner::IDLE,
+                std::memory_order_acq_rel);
+        }
     }
 
     void SetNetworkEventCallback(NetworkEventCallback callback) override {
@@ -8193,6 +9325,16 @@ public:
     }
 
     void OnDeviceStateChanged(DeviceState state) override {
+        if (state != kDeviceStateIdle &&
+            expression_active_.load(std::memory_order_acquire)) {
+            expression_abort_requested_.store(
+                true, std::memory_order_release);
+        }
+        if (state != kDeviceStateIdle &&
+            physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::TOUCH) {
+            pending_touch_ready_us_.store(0, std::memory_order_release);
+        }
         if (state == kDeviceStateIdle) {
             PrepareScreenSaver();
         }
@@ -8265,9 +9407,11 @@ public:
         StopTtsLipSync();
     }
 
-    virtual bool IsTouchReactionActive() const override {
-        return physical_behavior_owner_.load(std::memory_order_acquire) ==
-            PhysicalBehaviorOwner::TOUCH;
+    bool ShouldDeferAudioPlayback() const override {
+        const auto owner =
+            physical_behavior_owner_.load(std::memory_order_acquire);
+        return owner == PhysicalBehaviorOwner::EXPRESSION ||
+            owner == PhysicalBehaviorOwner::TOUCH;
     }
 
     // Phase 4.5 avatar (saiverse-stackchan-addon): handle the gateway's
@@ -8333,6 +9477,12 @@ public:
         if (avatar_fetch_in_progress_.exchange(true, std::memory_order_acq_rel)) {
             ESP_LOGW(TAG, "OnAvatarSetFetch: another fetch already in progress");
             SendAvatarSetLoadedError(req_checksum, "fetch_in_progress");
+            return;
+        }
+        if (physical_behavior_owner_.load(std::memory_order_acquire) ==
+                PhysicalBehaviorOwner::EXPRESSION) {
+            avatar_fetch_in_progress_.store(false, std::memory_order_release);
+            SendAvatarSetLoadedError(req_checksum, "expression_active");
             return;
         }
         EnsureAvatarPendingLock();

@@ -131,7 +131,7 @@ public:
         const char* subtype,
         uint64_t duration_ms,
         const char* behavior_id = nullptr);
-    void ResumePreparedAudioPlayback();
+    void ResumeDeferredAudioPlayback();
 
     // Phase 4.5 avatar: thread-safe generic WS text frame send.
     // Wraps Protocol::SendText through the main-task Schedule for the
@@ -169,7 +169,6 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
-    std::atomic<bool> firmware_upgrade_in_progress_{false};
     std::mutex prepared_audio_transfer_mutex_;
     std::string prepared_audio_transfer_id_;
 
@@ -207,6 +206,7 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
+    void RestartSystem();
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

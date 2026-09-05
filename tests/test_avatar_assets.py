@@ -28,6 +28,16 @@ from stackchan.avatar_assets import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPRESSION_ASSETS = (
+    "agree",
+    "pleased",
+    "curious",
+    "concerned",
+    "surprised",
+    "embarrassed",
+    "mischievous",
+)
+
 
 class AvatarAssetTests(unittest.TestCase):
     @classmethod
@@ -84,6 +94,14 @@ class AvatarAssetTests(unittest.TestCase):
         payload, manifest, preview = generate_avatar_set()
 
         self.assertEqual(payload, self.payload)
+        self.assertEqual(
+            (
+                ROOT
+                / "firmware/main/boards/stackchan/assets"
+                / PAYLOAD_FILENAME
+            ).read_bytes(),
+            payload,
+        )
         self.assertEqual(manifest_json(manifest), manifest_json(self.manifest))
         self.assertEqual(preview, self.preview)
 
@@ -110,6 +128,21 @@ class AvatarAssetTests(unittest.TestCase):
             with self.subTest(frame=name):
                 self.assertGreaterEqual(artwork_pixels, MIN_ARTWORK_PIXELS)
                 self.assertGreater(len(set(pixels)), 5)
+
+    def test_expression_gifs_are_packaged_at_native_screen_size(self):
+        assets = ROOT / "firmware/main/boards/stackchan/assets"
+        for name in EXPRESSION_ASSETS:
+            path = assets / f"expression-{name}.gif"
+            encoded = path.read_bytes()
+            with self.subTest(expression=name):
+                self.assertIn(encoded[:6], (b"GIF87a", b"GIF89a"))
+                self.assertEqual(struct.unpack("<HH", encoded[6:10]), (320, 240))
+                frame_delays = encoded.split(b"\x21\xf9\x04")[1:]
+                duration_ms = sum(
+                    int.from_bytes(block[1:3], "little") * 10
+                    for block in frame_delays
+                )
+                self.assertEqual(duration_ms, 2_400)
 
     def test_manifest_hashes_validate_and_tampering_fails(self):
         validate_avatar_set(self.payload, self.manifest)

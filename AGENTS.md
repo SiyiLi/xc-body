@@ -23,10 +23,10 @@ presence.
 
 Keep Milestone 5 constrained to:
 
-- six named expressions plus neutral ambient presence selected by projection;
+- seven named expressions plus idle ambient presence selected by projection;
 - deterministic face and head recipes with reviewed servo limits;
 - replacement of the direct turn's existing attention behavior only;
-- sparse neutral ambient behavior with strict activity budgets;
+- sparse idle ambient behavior with strict activity budgets;
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
@@ -80,10 +80,10 @@ configuration that has not been inspected.
 - Before committing firmware runtime changes, inspect the published OTA
   manifest and bump `PROJECT_VER` from its firmware version. Never derive the
   next firmware version from checked-in source.
-- Keep every first-party release on the same major/minor version line across
-  firmware, gateway, and the OpenClaw plugin. Their patch versions advance
-  independently from their deployed versions. External dependency and protocol
-  schema versions are not part of this rule.
+- Bump only the first-party release artifact changed by the commit. Do not
+  change untouched firmware, gateway, or OpenClaw plugin versions solely to
+  align release metadata; derive each changed version from its own published
+  or deployed artifact.
 - Keep secrets and personal assets out of Git.
 - Preserve unrelated user changes.
 - Do not modify `xc-buddy` from this repository.
@@ -101,6 +101,9 @@ configuration that has not been inspected.
 - Keep Markdown prose at 80 columns or fewer. URLs, commands, and diagrams may
   exceed the limit when wrapping would reduce clarity.
 - Run the repository line-length check before reporting success.
+- Do not build firmware during review or surgical-fix iterations. Build only
+  during an explicitly authorized flash or OTA workflow, unless the user
+  separately requests a build.
 - Every implementation change must identify the active milestone behavior it
   advances.
 - Prefer fake-device or contract tests before touching hardware.

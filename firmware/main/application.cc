@@ -21,7 +21,7 @@
 
 namespace {
 
-constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(5);
+constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(8);
 
 ListeningProfile ParseListenProfile(const cJSON* root) {
     auto profile = cJSON_GetObjectItem(root, "profile");
@@ -80,8 +80,13 @@ bool Application::SetDeviceState(DeviceState state) {
     return state_machine_.TransitionTo(state);
 }
 
-void Application::ResumePreparedAudioPlayback() {
-    if (audio_service_.ReleasePreparedAudioPlayback()) {
+void Application::ResumeDeferredAudioPlayback() {
+    if (GetDeviceState() != kDeviceStateSpeaking) {
+        return;
+    }
+    bool released = audio_service_.ReleasePreparedAudioPlayback();
+    released = audio_service_.ReleaseDirectAudioPlayback() || released;
+    if (released) {
         Board::GetInstance().OnTtsStart();
     }
 }
@@ -396,6 +401,10 @@ void Application::CheckAssetsVersion() {
     std::string download_url = settings.GetString("download_url");
 
     if (!download_url.empty()) {
+        if (!board.BeginFirmwareMaintenance()) {
+            ESP_LOGW(TAG, "Assets update rejected during active maintenance");
+            return;
+        }
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
         Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
@@ -414,6 +423,7 @@ void Application::CheckAssetsVersion() {
             });
         });
 
+        board.EndFirmwareMaintenance();
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -462,6 +472,14 @@ void Application::CheckNewVersion() {
     }
 
     if (ota_->HasNewVersion()) {
+        auto& board = Board::GetInstance();
+        if (!board.BeginFirmwareMaintenance()) {
+            ESP_LOGW(
+                TAG,
+                "Automatic firmware upgrade rejected while physical "
+                "behavior is active");
+            return;
+        }
         UpgradeFirmware(
             ota_->GetFirmwareUrl(),
             ota_->GetFirmwareVersion(),
@@ -481,14 +499,11 @@ void Application::CheckNewVersion() {
         return;
     }
 
-    bool expected = false;
-    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
-            expected, true)) {
-        ESP_LOGW(TAG, "Another XC Body update is already in progress");
+    auto& board = Board::GetInstance();
+    if (!board.BeginFirmwareMaintenance()) {
+        ESP_LOGW(TAG, "Assets update rejected during active maintenance");
         return;
     }
-
-    auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     Alert(
         Lang::Strings::OTA_UPGRADE,
@@ -513,7 +528,7 @@ void Application::CheckNewVersion() {
             // to that same blocked task leaves the screen frozen at 0%.
             display->SetChatMessage("system", buffer);
         });
-    firmware_upgrade_in_progress_.store(false);
+    board.EndFirmwareMaintenance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
     if (!success) {
         ESP_LOGW(
@@ -619,7 +634,8 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "play") == 0) {
                 Schedule([this, &board]() {
-                    bool defer_playback = board.IsTouchReactionActive();
+                    bool defer_playback =
+                        board.ShouldDeferAudioPlayback();
                     if (!audio_service_.CommitPreparedAudio(defer_playback)) {
                         ESP_LOGE(TAG, "Prepared audio transfer incomplete");
                         SetDeviceState(kDeviceStateIdle);
@@ -627,8 +643,8 @@ void Application::InitializeProtocol() {
                     }
                     if (!defer_playback) {
                         board.OnTtsStart();
-                    } else if (!board.IsTouchReactionActive()) {
-                        ResumePreparedAudioPlayback();
+                    } else if (!board.ShouldDeferAudioPlayback()) {
+                        ResumeDeferredAudioPlayback();
                     }
                 });
             } else if (strcmp(state->valuestring, "start") == 0) {
@@ -640,7 +656,9 @@ void Application::InitializeProtocol() {
                     // Phase 4 audio (Issue #76): drive avatar mouth animation
                     // for the lifetime of this TTS utterance. Default no-op
                     // for boards without a mouth display.
-                    board.OnTtsStart();
+                    if (!board.ShouldDeferAudioPlayback()) {
+                        ResumeDeferredAudioPlayback();
+                    }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
@@ -878,9 +896,16 @@ void Application::InitializeProtocol() {
                 ESP_LOGI(TAG, "System command: %s", command->valuestring);
                 if (strcmp(command->valuestring, "reboot") == 0) {
                     // Do a reboot if user requests a OTA update
-                    Schedule([this]() {
-                        Reboot();
-                    });
+                    if (!board.BeginFirmwareMaintenance()) {
+                        ESP_LOGW(
+                            TAG,
+                            "Reboot rejected while physical behavior is "
+                            "active");
+                    } else {
+                        Schedule([this]() {
+                            Reboot();
+                        });
+                    }
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
@@ -1391,7 +1416,7 @@ ListeningMode Application::GetDefaultListeningMode() const {
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
 }
 
-void Application::Reboot() {
+void Application::RestartSystem() {
     ESP_LOGI(TAG, "Rebooting...");
     // Disconnect the audio channel
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
@@ -1404,19 +1429,27 @@ void Application::Reboot() {
     esp_restart();
 }
 
+void Application::Reboot() {
+    auto& board = Board::GetInstance();
+    if (!board.ConsumeFirmwareMaintenance()) {
+        ESP_LOGW(TAG, "Reboot rejected without a maintenance reservation");
+        return;
+    }
+    RestartSystem();
+}
+
 bool Application::UpgradeFirmware(
     const std::string& url,
     const std::string& version,
     const std::string& expected_sha256,
     size_t expected_size) {
-    bool expected = false;
-    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
-            expected, true)) {
-        ESP_LOGW(TAG, "Firmware upgrade already in progress");
+    auto& board = Board::GetInstance();
+    if (!board.ConsumeFirmwareMaintenance()) {
+        ESP_LOGW(
+            TAG,
+            "Firmware upgrade rejected without a maintenance reservation");
         return false;
     }
-
-    auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto previous_state = GetDeviceState();
 
@@ -1461,7 +1494,6 @@ bool Application::UpgradeFirmware(
         });
 
     if (!upgrade_success) {
-        firmware_upgrade_in_progress_.store(false);
         // Upgrade failed, restart audio service and continue running
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
@@ -1472,13 +1504,14 @@ bool Application::UpgradeFirmware(
             previous_state == kDeviceStateActivating
                 ? kDeviceStateActivating
                 : kDeviceStateIdle);
+        board.EndFirmwareMaintenance();
         return false;
     } else {
         // Upgrade success, reboot immediately
         ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
         display->SetChatMessage("system", "Upgrade successful, rebooting...");
         vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause to show message
-        Reboot();
+        RestartSystem();
         return true;
     }
 }

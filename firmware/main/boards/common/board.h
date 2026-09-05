@@ -83,6 +83,11 @@ public:
     virtual std::string GetSystemInfoJson();
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     virtual bool CanPowerSaveWithTransport() { return false; }
+    // Admission reserves the physical owner before a caller acknowledges.
+    // The scheduled maintenance operation must consume that reservation.
+    virtual bool BeginFirmwareMaintenance() { return true; }
+    virtual bool ConsumeFirmwareMaintenance() { return true; }
+    virtual void EndFirmwareMaintenance() {}
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
     // Phase 4 audio (Issue #76): TTS playback hooks. Default no-op so non-
@@ -91,7 +96,7 @@ public:
     virtual void OnTtsStart() {}
     virtual void OnTtsAudioFrame() {}
     virtual void OnTtsStop() {}
-    virtual bool IsTouchReactionActive() const { return false; }
+    virtual bool ShouldDeferAudioPlayback() const { return false; }
     virtual void OnAssetsUpdated() {}
     virtual void OnDeviceStateChanged(DeviceState state) { (void)state; }
 

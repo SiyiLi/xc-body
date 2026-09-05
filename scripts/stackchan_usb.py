@@ -22,6 +22,12 @@ RESPONSE_PREFIX = b"XC_BODY_RESPONSE "
 DEFAULT_TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 MAX_MANIFEST_BYTES = 64 * 1024
+EXPRESSION_STARTUP_SECONDS = 5.0
+EXPRESSION_FACE_SECONDS = 2.4
+EXPRESSION_EXECUTION_MARGIN_SECONDS = 2.0
+EXPRESSION_RECOVERY_SECONDS = 5.0
+EXPRESSION_RESPONSE_MARGIN_SECONDS = 1.5
+EXPRESSION_CANCEL_TIMEOUT_SECONDS = 6.5
 
 
 class UsbControlError(RuntimeError):
@@ -98,33 +104,118 @@ def _decode_response(line: bytes) -> dict[str, object] | None:
     return response
 
 
+def _write_request(
+    descriptor: int,
+    request: dict[str, object],
+    timeout: float,
+) -> None:
+    encoded = json.dumps(request, separators=(",", ":")).encode()
+    _write_all(descriptor, REQUEST_PREFIX + encoded + b"\n", timeout)
+
+
+def _receive_response(
+    descriptor: int,
+    expected_command: str,
+    deadline: float,
+    buffered: bytearray,
+) -> dict[str, object]:
+    while True:
+        while b"\n" in buffered:
+            line_end = buffered.index(b"\n")
+            line = bytes(buffered[:line_end]).rstrip(b"\r")
+            del buffered[: line_end + 1]
+            response = _decode_response(line)
+            if response is not None and response.get("command") == expected_command:
+                return response
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise UsbControlError("timed out waiting for firmware")
+        readable, _, _ = select.select([descriptor], [], [], remaining)
+        if not readable:
+            continue
+        chunk = os.read(descriptor, 4096)
+        if chunk:
+            buffered.extend(chunk)
+
+
 def _send_request(
     path: str,
     request: dict[str, object],
     timeout: float,
 ) -> dict[str, object]:
+    command = request.get("command")
+    if not isinstance(command, str):
+        raise UsbControlError("USB command is invalid")
     descriptor, previous = _open_port(path)
     try:
-        encoded = json.dumps(request, separators=(",", ":")).encode()
-        _write_all(descriptor, REQUEST_PREFIX + encoded + b"\n", timeout)
-        deadline = time.monotonic() + timeout
-        buffered = b""
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise UsbControlError("timed out waiting for firmware")
-            readable, _, _ = select.select([descriptor], [], [], remaining)
-            if not readable:
+        _write_request(descriptor, request, timeout)
+        return _receive_response(
+            descriptor,
+            command,
+            time.monotonic() + timeout,
+            bytearray(),
+        )
+    finally:
+        _close_port(descriptor, previous)
+
+
+def _expression_preview_timeout(
+    recipe: dict[str, object],
+    requested_timeout: float,
+) -> float:
+    duration_ms = 0
+    steps = recipe.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
                 continue
-            chunk = os.read(descriptor, 4096)
-            if not chunk:
-                continue
-            buffered += chunk
-            while b"\n" in buffered:
-                line, buffered = buffered.split(b"\n", 1)
-                response = _decode_response(line.rstrip(b"\r"))
-                if response is not None:
-                    return response
+            duration = step.get("duration_ms")
+            if isinstance(duration, int) and not isinstance(duration, bool):
+                duration_ms += max(0, duration)
+            elif isinstance(duration, float) and duration.is_integer():
+                duration_ms += max(0, int(duration))
+    required = (
+        EXPRESSION_STARTUP_SECONDS
+        + max(duration_ms / 1000, EXPRESSION_FACE_SECONDS)
+        + EXPRESSION_EXECUTION_MARGIN_SECONDS
+        + EXPRESSION_RECOVERY_SECONDS
+        + EXPRESSION_RESPONSE_MARGIN_SECONDS
+    )
+    return max(requested_timeout, required)
+
+
+def _send_expression_preview(
+    path: str,
+    request: dict[str, object],
+    timeout: float,
+) -> dict[str, object]:
+    descriptor, previous = _open_port(path)
+    buffered = bytearray()
+    try:
+        try:
+            _write_request(descriptor, request, timeout)
+            return _receive_response(
+                descriptor,
+                "expression_preview",
+                time.monotonic() + timeout,
+                buffered,
+            )
+        except KeyboardInterrupt:
+            try:
+                _write_request(
+                    descriptor,
+                    {"command": "expression_abort"},
+                    1.0,
+                )
+                _receive_response(
+                    descriptor,
+                    "expression_preview",
+                    time.monotonic() + EXPRESSION_CANCEL_TIMEOUT_SECONDS,
+                    buffered,
+                )
+            except (OSError, UsbControlError):
+                pass
+            raise
     finally:
         _close_port(descriptor, previous)
 
@@ -242,6 +333,25 @@ def _configure_request(args: argparse.Namespace) -> dict[str, object]:
     return request
 
 
+def _load_expression_recipe(path: str) -> dict[str, object]:
+    try:
+        with open(path, encoding="utf-8") as source:
+            recipe = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise UsbControlError(f"cannot read expression recipe: {error}") from error
+    if not isinstance(recipe, dict):
+        raise UsbControlError("expression recipe must be a JSON object")
+    return recipe
+
+
+def _expression_recipe_request(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "command": args.command.replace("-", "_"),
+        "name": args.name,
+        "recipe": _load_expression_recipe(args.recipe),
+    }
+
+
 def _monitor(path: str, seconds: float) -> None:
     descriptor, previous = _open_port(path)
     try:
@@ -305,6 +415,27 @@ def _parser() -> argparse.ArgumentParser:
         help="queue a verified XC Body firmware release",
     )
     update.add_argument("--manifest", required=True, type=_https_url)
+    for command in ("expression-preview", "expression-save"):
+        expression = commands.add_parser(
+            command,
+            help=(
+                "preview a transient expression recipe"
+                if command.endswith("preview")
+                else "persist an approved expression recipe"
+            ),
+        )
+        expression.add_argument("name")
+        expression.add_argument("recipe", help="curve/pause recipe JSON file")
+    expression_show = commands.add_parser(
+        "expression-show",
+        help="show one stored expression recipe",
+    )
+    expression_show.add_argument("name")
+    expression_reset = commands.add_parser(
+        "expression-reset",
+        help="remove one stored expression recipe",
+    )
+    expression_reset.add_argument("name")
     monitor = commands.add_parser("monitor", help="stream firmware logs")
     monitor.add_argument(
         "--seconds",
@@ -331,9 +462,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         elif args.command == "update":
             request = _firmware_from_manifest(args.manifest, args.timeout)
+        elif args.command in {"expression-preview", "expression-save"}:
+            request = _expression_recipe_request(args)
+        elif args.command in {"expression-show", "expression-reset"}:
+            request = {
+                "command": args.command.replace("-", "_"),
+                "name": args.name,
+            }
         else:
             request = {"command": args.command}
-        response = _send_request(path, request, args.timeout)
+        if args.command == "expression-preview":
+            preview_timeout = _expression_preview_timeout(
+                request["recipe"], args.timeout
+            )
+            response = _send_expression_preview(
+                path, request, preview_timeout
+            )
+        else:
+            response = _send_request(path, request, args.timeout)
         print(json.dumps(response, indent=2, sort_keys=True))
         return 0 if response.get("ok") is True else 1
     except (OSError, UsbControlError) as error:

@@ -49,6 +49,10 @@
 #define MAX_TIMESTAMPS_IN_QUEUE 3
 
 constexpr size_t kDirectAudioPrerollFrames = 4;
+// Holds paced direct audio through the five-second physical recovery budget
+// plus one second of scheduling and preroll margin.
+constexpr size_t kDeferredDirectAudioPackets =
+    6000 / OPUS_FRAME_DURATION_MS + kDirectAudioPrerollFrames;
 
 struct DirectAudioMetrics {
     size_t accepted_frames = 0;
@@ -178,6 +182,7 @@ public:
     void AbortPreparedAudio();
     bool IsPreparedAudioPending();
     void BeginDirectAudio();
+    bool ReleaseDirectAudioPlayback();
     void FinishDirectAudio();
     bool IsDirectAudioActive();
     DirectAudioMetrics GetDirectAudioMetrics();
@@ -236,6 +241,8 @@ private:
     bool prepared_audio_output_in_flight_ = false;
     uint32_t prepared_audio_generation_ = 0;
     bool direct_audio_active_ = false;
+    bool direct_audio_playback_blocked_ = false;
+    bool direct_audio_deferred_backlog_ = false;
     bool direct_audio_terminal_ = false;
     bool direct_audio_input_finished_ = false;
     bool direct_audio_playback_started_ = false;

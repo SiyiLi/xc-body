@@ -138,6 +138,10 @@ void McpServer::AddUserOnlyTools() {
     AddUserOnlyTool("self.reboot", "Reboot the system",
         PropertyList(),
         [this](const PropertyList& properties) -> ReturnValue {
+            auto& board = Board::GetInstance();
+            if (!board.BeginFirmwareMaintenance()) {
+                return false;
+            }
             auto& app = Application::GetInstance();
             app.Schedule([&app]() {
                 ESP_LOGW(TAG, "User requested reboot");
@@ -161,6 +165,10 @@ void McpServer::AddUserOnlyTools() {
             auto version = properties["version"].value<std::string>();
             auto sha256 = properties["sha256"].value<std::string>();
             auto size = properties["size"].value<int>();
+            auto& board = Board::GetInstance();
+            if (!board.BeginFirmwareMaintenance()) {
+                return false;
+            }
             ESP_LOGI(TAG, "User requested verified XC Body firmware upgrade");
             
             auto& app = Application::GetInstance();

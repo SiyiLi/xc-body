@@ -41,6 +41,24 @@ add_executable(listening_profile_test
     ../main/listening_profile.cc
 )
 
+add_executable(expression_recipe_test
+    test_expression_recipe.cc
+    ../main/boards/stackchan/expression_recipe.cc
+)
+
+target_compile_definitions(expression_recipe_test
+    PRIVATE STACKCHAN_EXPRESSION_HOST_TEST
+)
+
+target_include_directories(expression_recipe_test
+    PRIVATE
+        ../main/boards/stackchan
+)
+
+target_link_libraries(expression_recipe_test
+    PRIVATE GTest::gtest_main
+)
+
 target_include_directories(listening_profile_test
     PRIVATE
         ../main
@@ -53,3 +71,4 @@ target_link_libraries(listening_profile_test
 include(GoogleTest)
 gtest_discover_tests(mdns_candidate_extract_test)
 gtest_discover_tests(listening_profile_test)
+gtest_discover_tests(expression_recipe_test)

@@ -6,7 +6,8 @@
 
 LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
     : gif_(nullptr), timer_(nullptr), last_call_(0), playing_(false), loaded_(false),
-      loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0) {
+      loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0),
+      timeline_playback_(false) {
     if (!img_dsc || !img_dsc->data) {
         ESP_LOGE(TAG, "Invalid image descriptor");
         return;
@@ -151,6 +152,10 @@ void LvglGif::SetLoopDelay(uint32_t delay_ms) {
     ESP_LOGD(TAG, "Loop delay set to %lu ms", delay_ms);
 }
 
+void LvglGif::SetTimelinePlayback(bool enabled) {
+    timeline_playback_ = enabled;
+}
+
 uint16_t LvglGif::width() const {
     if (!loaded_ || !gif_) {
         return 0;
@@ -186,48 +191,69 @@ void LvglGif::NextFrame() {
         ESP_LOGD(TAG, "Loop delay completed, continuing GIF");
     }
 
-    // Check if enough time has passed for the next frame
+    // Check if enough time has passed for the next frame.
+    uint32_t delay_ms = gif_->gce.delay * 10;
     uint32_t elapsed = lv_tick_elaps(last_call_);
-    if (elapsed < gif_->gce.delay * 10) {
+    if (elapsed < delay_ms) {
         return;
     }
 
-    last_call_ = lv_tick_get();
+    if (timeline_playback_) {
+        last_call_ += delay_ms;
+    } else {
+        last_call_ = lv_tick_get();
+    }
 
-    // Save file position before getting next frame to detect loop
-    uint32_t pos_before = gif_->f_rw_p;
-
-    // Get next frame
-    int has_next = gd_get_frame(gif_);
-    if (has_next == 0) {
-        // Animation truly finished (non-infinite loop)
-        playing_ = false;
-        if (timer_) {
-            lv_timer_pause(timer_);
+    bool frame_rendered = false;
+    while (true) {
+        // Save file position before getting next frame to detect loop.
+        uint32_t pos_before = gif_->f_rw_p;
+        int has_next = gd_get_frame(gif_);
+        if (has_next <= 0) {
+            if (frame_rendered && frame_callback_) {
+                frame_callback_();
+            }
+            playing_ = false;
+            if (timer_) {
+                lv_timer_pause(timer_);
+            }
+            if (has_next < 0) {
+                ESP_LOGE(TAG, "GIF animation decode failed");
+            } else {
+                ESP_LOGD(TAG, "GIF animation completed");
+            }
+            return;
         }
-        ESP_LOGD(TAG, "GIF animation completed");
-        return;
-    }
 
-    // Detect loop by checking if file position jumped back (rewound to start)
-    // This works for looping GIFs regardless of when loop_count is set
-    if (loop_delay_ms_ > 0 && gif_->f_rw_p < pos_before) {
-        // File position decreased, meaning GIF looped back to beginning
-        // Start waiting before rendering this frame
-        loop_waiting_ = true;
-        loop_wait_start_ = lv_tick_get();
-        ESP_LOGD(TAG, "GIF completed one cycle, waiting %lu ms before next loop", loop_delay_ms_);
-        return;
-    }
-
-    // Render current frame
-    if (gif_->canvas) {
-        gd_render_frame(gif_, gif_->canvas);
-        
-        // Call frame callback if set
-        if (frame_callback_) {
-            frame_callback_();
+        // Detect a rewind before rendering the first frame of the next loop.
+        if (loop_delay_ms_ > 0 && gif_->f_rw_p < pos_before) {
+            if (frame_rendered && frame_callback_) {
+                frame_callback_();
+            }
+            loop_waiting_ = true;
+            loop_wait_start_ = lv_tick_get();
+            ESP_LOGD(TAG, "GIF completed one cycle, waiting %lu ms before next loop", loop_delay_ms_);
+            return;
         }
+
+        if (gif_->canvas) {
+            gd_render_frame(gif_, gif_->canvas);
+            frame_rendered = true;
+        }
+        if (!timeline_playback_) {
+            break;
+        }
+
+        delay_ms = gif_->gce.delay * 10;
+        elapsed = lv_tick_elaps(last_call_);
+        if (elapsed < delay_ms) {
+            break;
+        }
+        last_call_ += delay_ms;
+    }
+
+    if (frame_rendered && frame_callback_) {
+        frame_callback_();
     }
 }
 

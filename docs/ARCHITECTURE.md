@@ -105,7 +105,10 @@ without consuming the interaction. Display dimming and sleep remain separate
 
 The USB channel reports status, updates the saved gateway URL and token, queues
 verified firmware metadata, streams logs, and requests an application reboot.
-It has no network listener and never returns the saved token.
+It also parses expression calibration requests and holds one pending preview
+response while the board-owned runner executes autonomously. It has no network
+listener and never returns the saved token. No production expression command
+is exposed during calibration.
 
 ## Runtime Flows
 
