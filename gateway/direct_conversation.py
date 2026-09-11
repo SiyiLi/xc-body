@@ -513,7 +513,7 @@ async def speak_direct_answer(
         if isinstance(exc, DirectConversationError):
             metrics.update(exc.metrics)
         raise DirectConversationError(
-            "direct answer playback failed",
+            f"direct answer playback failed: {exc}",
             metrics=metrics,
         ) from exc
     return {**pcm.metrics(), **body_metrics}

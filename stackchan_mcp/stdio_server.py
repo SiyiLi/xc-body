@@ -896,7 +896,12 @@ async def _dispatch_mcp_tool(
             TextContent(
                 type="text",
                 text=json.dumps(
-                    {"error": "No ESP32 device connected. Please check the device."}
+                    {
+                        "ok": False,
+                        "error": (
+                            "No ESP32 device connected. Please check the device."
+                        ),
+                    }
                 ),
             )
         ]
@@ -916,7 +921,9 @@ async def _dispatch_mcp_tool(
             return [
                 TextContent(
                     type="text",
-                    text=json.dumps({"error": "unknown expression"}),
+                    text=json.dumps(
+                        {"ok": False, "error": "unknown expression"}
+                    ),
                 )
             ]
         result, error = await gateway.esp32.perform_xc_body_expression(
@@ -927,7 +934,10 @@ async def _dispatch_mcp_tool(
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {"error": error.get("message", str(error))}
+                        {
+                            "ok": False,
+                            "error": error.get("message", str(error)),
+                        }
                     ),
                 )
             ]

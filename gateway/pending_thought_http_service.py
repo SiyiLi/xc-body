@@ -386,7 +386,11 @@ def build_app(
             status = "body_unavailable"
             if isinstance(exc, DirectConversationError):
                 body_metrics = exc.metrics
-            logger.warning("direct answer failed (%s)", type(exc).__name__)
+            logger.warning(
+                "direct answer failed (%s): %s",
+                type(exc).__name__,
+                exc,
+            )
             response = JSONResponse(
                 {"ok": False, "error": "body_unavailable"},
                 status_code=503,

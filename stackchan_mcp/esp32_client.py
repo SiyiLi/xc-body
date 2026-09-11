@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 RESPONSE_TIMEOUT = 10.0
 WEBSOCKET_PING_INTERVAL_S = 20
 WEBSOCKET_PING_TIMEOUT_S = 20
-XC_BODY_BEHAVIOR_TIMEOUT_S = 22.0
+XC_BODY_BEHAVIOR_TIMEOUT_S = 30.0
 
 ToolCall = tuple[str, dict[str, Any]]
 ToolCallResult = tuple[Any, dict[str, Any] | None]
@@ -1150,24 +1150,59 @@ class ESP32Manager:
                     arguments,
                 )
                 if error:
+                    logger.warning(
+                        "XC Body behavior rejected: behavior_id=%s "
+                        "tool=%s code=%s reason=%s",
+                        behavior_id,
+                        device_tool,
+                        error.get("code"),
+                        error.get("message"),
+                    )
                     return None, error
                 event = await asyncio.wait_for(
                     waiter, timeout=XC_BODY_BEHAVIOR_TIMEOUT_S
                 )
             except asyncio.TimeoutError:
+                logger.warning(
+                    "XC Body behavior timed out: behavior_id=%s tool=%s "
+                    "timeout_s=%.1f",
+                    behavior_id,
+                    device_tool,
+                    XC_BODY_BEHAVIOR_TIMEOUT_S,
+                )
                 return None, {
                     "code": -32000,
                     "message": "robot behavior did not complete",
                 }
             except ConnectionError as exc:
+                logger.warning(
+                    "XC Body behavior connection lost: behavior_id=%s "
+                    "tool=%s reason=%s",
+                    behavior_id,
+                    device_tool,
+                    exc,
+                )
                 return None, {"code": -32000, "message": str(exc)}
             finally:
                 self._behavior_waiters.pop(key, None)
 
         if event.get("subtype") != success_subtype:
+            detail = event.get("detail")
+            logger.warning(
+                "XC Body behavior failed: behavior_id=%s tool=%s "
+                "subtype=%s duration_ms=%s detail=%s",
+                behavior_id,
+                device_tool,
+                event.get("subtype"),
+                event.get("duration_ms"),
+                detail,
+            )
+            message = "robot behavior failed"
+            if isinstance(detail, str) and detail:
+                message += f": {detail}"
             return None, {
                 "code": -32000,
-                "message": "robot behavior failed",
+                "message": message,
             }
         return {
             "ok": True,

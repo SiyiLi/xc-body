@@ -1570,12 +1570,14 @@ void Application::SendStackChanEvent(
     const char* event_type,
     const char* subtype,
     uint64_t duration_ms,
-    const char* behavior_id) {
+    const char* behavior_id,
+    const char* detail) {
     std::string event_type_str = event_type ? event_type : "";
     std::string subtype_str = subtype ? subtype : "";
     std::string behavior_id_str = behavior_id ? behavior_id : "";
+    std::string detail_str = detail ? detail : "";
     Schedule([this, event_type_str, subtype_str, duration_ms,
-              behavior_id_str]() {
+              behavior_id_str, detail_str]() {
         if (!protocol_ || !protocol_->IsTransportConnected()) {
             return;
         }
@@ -1593,6 +1595,9 @@ void Application::SendStackChanEvent(
         if (!behavior_id_str.empty()) {
             cJSON_AddStringToObject(
                 root, "behavior_id", behavior_id_str.c_str());
+        }
+        if (!detail_str.empty()) {
+            cJSON_AddStringToObject(root, "detail", detail_str.c_str());
         }
 
         char* str = cJSON_PrintUnformatted(root);

@@ -687,6 +687,23 @@ private:
         MAINTENANCE_RESERVED,
         MAINTENANCE,
     };
+
+    static const char* PhysicalBehaviorOwnerName(
+            PhysicalBehaviorOwner owner) {
+        switch (owner) {
+            case PhysicalBehaviorOwner::IDLE:
+                return "idle";
+            case PhysicalBehaviorOwner::EXPRESSION:
+                return "expression";
+            case PhysicalBehaviorOwner::RAW:
+                return "raw";
+            case PhysicalBehaviorOwner::MAINTENANCE_RESERVED:
+                return "maintenance_reserved";
+            case PhysicalBehaviorOwner::MAINTENANCE:
+                return "maintenance";
+        }
+        return "unknown";
+    }
     static constexpr int XC_BODY_IDLE_YAW_DEG = 0;
     static constexpr int XC_BODY_IDLE_PITCH_DEG = 43;
     static constexpr int XC_BODY_BEHAVIOR_SPEED_DPS = 30;
@@ -731,6 +748,7 @@ private:
         ExpressionInvocation::PREVIEW};
     std::string expression_name_;
     std::string expression_behavior_id_;
+    std::string expression_failure_reason_;
     const char* expression_behavior_success_subtype_ = nullptr;
     uint64_t expression_started_us_ = 0;
 
@@ -4760,28 +4778,62 @@ private:
         return confirmed;
     }
 
-    bool ExpressionAdmissionIdle(bool preview) {
-        return Application::GetInstance().GetDeviceState() ==
-                kDeviceStateIdle &&
-            !Application::GetInstance().AcceptsIncomingAudio() &&
-            (!preview ||
-             !offer_pending_.load(std::memory_order_acquire)) &&
-            !settings_open_.load(std::memory_order_acquire) &&
-            PhysicalMotionInactive();
-    }
-
-    bool ExpressionEnvironmentOwned(bool preview) {
+    bool ExpressionEnvironmentReady(
+            bool preview,
+            bool allow_production_handoff,
+            const char* phase,
+            std::string* rejection_detail) {
         const DeviceState state =
             Application::GetInstance().GetDeviceState();
-        const bool production = !preview;
-        return (state == kDeviceStateIdle ||
-                (production && state == kDeviceStateSpeaking)) &&
-            (!Application::GetInstance().AcceptsIncomingAudio() ||
-             production) &&
-            (!preview ||
-             !offer_pending_.load(std::memory_order_acquire)) &&
-            !settings_open_.load(std::memory_order_acquire) &&
-            PhysicalMotionInactive();
+        const bool production_handoff =
+            allow_production_handoff && !preview;
+        const bool incoming_audio =
+            Application::GetInstance().AcceptsIncomingAudio();
+        const bool offer_pending =
+            offer_pending_.load(std::memory_order_acquire);
+        const bool settings_open =
+            settings_open_.load(std::memory_order_acquire);
+        const bool motion_inactive = PhysicalMotionInactive();
+        const auto owner =
+            physical_behavior_owner_.load(std::memory_order_acquire);
+        const bool ready =
+            (state == kDeviceStateIdle ||
+             (production_handoff && state == kDeviceStateSpeaking)) &&
+            (!incoming_audio || production_handoff) &&
+            (!preview || !offer_pending) && !settings_open &&
+            motion_inactive;
+        if (!ready && rejection_detail != nullptr) {
+            char detail[224];
+            snprintf(
+                detail,
+                sizeof(detail),
+                "phase=%s state=%s incoming_audio=%d "
+                "offer_pending=%d settings_open=%d motion_inactive=%d "
+                "owner=%s",
+                phase,
+                DeviceStateMachine::GetStateName(state),
+                incoming_audio ? 1 : 0,
+                offer_pending ? 1 : 0,
+                settings_open ? 1 : 0,
+                motion_inactive ? 1 : 0,
+                PhysicalBehaviorOwnerName(owner));
+            *rejection_detail = detail;
+        }
+        return ready;
+    }
+
+    bool ExpressionAdmissionIdle(
+            bool preview,
+            std::string* rejection_detail = nullptr) {
+        return ExpressionEnvironmentReady(
+            preview, false, "initial", rejection_detail);
+    }
+
+    bool ExpressionEnvironmentOwned(
+            bool preview,
+            std::string* rejection_detail = nullptr) {
+        return ExpressionEnvironmentReady(
+            preview, true, "environment_recheck", rejection_detail);
     }
 
     void StartXcBodyExpression(
@@ -4801,15 +4853,21 @@ private:
             throw std::runtime_error(
                 "expression is not calibrated");
         }
+        std::string rejection_detail;
         const auto outcome = StartExpression(
             name,
             recipe,
             ExpressionInvocation::BEHAVIOR,
             behavior_id,
-            success_subtype);
+            success_subtype,
+            &rejection_detail);
         if (outcome != StackChanExpressionOutcome::STARTED) {
-            throw std::runtime_error(
-                StackChanExpressionOutcomeName(outcome));
+            std::string message = StackChanExpressionOutcomeName(outcome);
+            if (!rejection_detail.empty()) {
+                message += ": ";
+                message += rejection_detail;
+            }
+            throw std::runtime_error(message);
         }
     }
 
@@ -4856,6 +4914,10 @@ private:
                 return;
             }
             HideFace();
+            if (!expression_failure_reason_.empty()) {
+                expression_failure_reason_ += ":";
+            }
+            expression_failure_reason_ += "face_restore_deadline";
             if (expression_finish_outcome_ !=
                     StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
                 expression_finish_outcome_ =
@@ -4891,11 +4953,23 @@ private:
                     StackChanExpressionOutcome::COMPLETED
                 ? expression_behavior_success_subtype_
                 : "behavior_failed";
+            std::string detail;
+            if (expression_finish_outcome_ !=
+                    StackChanExpressionOutcome::COMPLETED) {
+                detail = "outcome=";
+                detail += StackChanExpressionOutcomeName(
+                    expression_finish_outcome_);
+                if (!expression_failure_reason_.empty()) {
+                    detail += " reason=";
+                    detail += expression_failure_reason_;
+                }
+            }
             Application::GetInstance().SendStackChanEvent(
                 "behavior",
                 subtype,
                 (now_us - expression_started_us_) / 1000ULL,
-                expression_behavior_id_.c_str());
+                expression_behavior_id_.c_str(),
+                detail.c_str());
         }
         Application::GetInstance().ResumeDeferredAudioPlayback();
     }
@@ -4905,6 +4979,7 @@ private:
             uint64_t now_us,
             const char* reason) {
         expression_recovery_outcome_ = outcome;
+        expression_failure_reason_ = reason ? reason : "";
         // Do not leave the final GIF frame visible during motor recovery.
         const bool face_restored = ShowIdleFace();
         ESP_LOGW(
@@ -4934,6 +5009,7 @@ private:
 
     void StartAuthoredExpression(uint64_t now_us) {
         if (!StartExpressionAnimation(expression_recipe_.animation)) {
+            expression_failure_reason_ = "animation_start_failed";
             FinishExpression(
                 StackChanExpressionOutcome::MOTION_FAILED, now_us);
             return;
@@ -4997,24 +5073,37 @@ private:
             const StackChanExpressionRecipe& recipe,
             ExpressionInvocation invocation,
             const std::string& behavior_id = "",
-            const char* success_subtype = nullptr) {
+            const char* success_subtype = nullptr,
+            std::string* rejection_detail = nullptr) {
         std::string error;
         if (!IsStackChanExpressionRecipeName(name) ||
             !ValidateStackChanExpressionRecipe(recipe, error)) {
+            if (rejection_detail != nullptr) {
+                *rejection_detail = error;
+            }
             return StackChanExpressionOutcome::INVALID_RECIPE;
         }
         if (physical_motion_unavailable_.load(std::memory_order_acquire)) {
+            if (rejection_detail != nullptr) {
+                *rejection_detail = "motion_fault_latched=1";
+            }
             return StackChanExpressionOutcome::UNAVAILABLE;
         }
         if (!servo_ok_ || motion_driver_ == nullptr) {
+            if (rejection_detail != nullptr) {
+                *rejection_detail = "servo_ready=0";
+            }
             return StackChanExpressionOutcome::UNAVAILABLE;
         }
         if (!motion_driver_->SupportsCurve()) {
+            if (rejection_detail != nullptr) {
+                *rejection_detail = "curve_supported=0";
+            }
             return StackChanExpressionOutcome::UNSUPPORTED_DRIVER;
         }
 
         const bool preview = invocation == ExpressionInvocation::PREVIEW;
-        if (!ExpressionAdmissionIdle(preview)) {
+        if (!ExpressionAdmissionIdle(preview, rejection_detail)) {
             return StackChanExpressionOutcome::BUSY;
         }
 
@@ -5023,9 +5112,13 @@ private:
                 expected,
                 PhysicalBehaviorOwner::EXPRESSION,
                 std::memory_order_acq_rel)) {
+            if (rejection_detail != nullptr) {
+                *rejection_detail = "phase=owner_claim owner=";
+                *rejection_detail += PhysicalBehaviorOwnerName(expected);
+            }
             return StackChanExpressionOutcome::BUSY;
         }
-        if (!ExpressionEnvironmentOwned(preview)) {
+        if (!ExpressionEnvironmentOwned(preview, rejection_detail)) {
             physical_behavior_owner_.store(
                 PhysicalBehaviorOwner::IDLE, std::memory_order_release);
             Application::GetInstance().ResumeDeferredAudioPlayback();
@@ -5036,6 +5129,7 @@ private:
         expression_recipe_ = recipe;
         expression_step_index_ = 0;
         expression_name_ = name;
+        expression_failure_reason_.clear();
         expression_invocation_.store(
             invocation, std::memory_order_relaxed);
         expression_behavior_id_ = behavior_id;
@@ -5056,8 +5150,13 @@ private:
         // Close the admission/callback handoff: a state transition that
         // raced the first check either made the environment busy or set the
         // abort flag after expression_active_ became visible.
-        if (!ExpressionEnvironmentOwned(preview) ||
+        if (!ExpressionEnvironmentOwned(preview, rejection_detail) ||
             expression_abort_requested_.load(std::memory_order_acquire)) {
+            if (rejection_detail != nullptr &&
+                expression_abort_requested_.load(
+                    std::memory_order_acquire)) {
+                *rejection_detail = "phase=handoff abort_requested=1";
+            }
             expression_active_.store(false, std::memory_order_release);
             expression_abort_requested_.store(false, std::memory_order_release);
             physical_behavior_owner_.store(
@@ -5193,6 +5292,10 @@ private:
                         diagnostic_context)) {
                     FinishExpression(expression_recovery_outcome_, now_us);
                 } else if (recovery_deadline_reached) {
+                    if (!expression_failure_reason_.empty()) {
+                        expression_failure_reason_ += ":";
+                    }
+                    expression_failure_reason_ += "recovery_deadline";
                     FinishExpression(
                         StackChanExpressionOutcome::SAFE_RETURN_FAILED,
                         now_us);

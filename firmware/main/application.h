@@ -129,7 +129,8 @@ public:
         const char* event_type,
         const char* subtype,
         uint64_t duration_ms,
-        const char* behavior_id = nullptr);
+        const char* behavior_id = nullptr,
+        const char* detail = nullptr);
     void ResumeDeferredAudioPlayback();
 
     void SetAecMode(AecMode mode);
