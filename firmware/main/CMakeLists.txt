@@ -207,7 +207,6 @@ elseif(CONFIG_BOARD_TYPE_STACKCHAN)
     set(BOARD_TYPE "stackchan")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
-    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
     set(DEFAULT_ASSETS_EXTRA_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan/assets")
 elseif(CONFIG_BOARD_TYPE_M5STACK_CORE_TAB5)

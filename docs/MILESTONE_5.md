@@ -87,9 +87,14 @@ motion driver and physical owner remain the only execution path.
 
 ## Display Behavior
 
+- The application view owns the expression and application status bar. The
+  configuration and OTA view owns the generic system content and status row.
+  Switching views hides the complete inactive pair; their layers never mix.
+- XC Body does not construct generic emoji widgets. Application faces come
+  only from expression assets, and a missing asset leaves the face area blank.
 - Configuration, activation, maintenance, and upgrading never show a face.
 - The first idle face is installed only after the device reaches `Idle`, so the
-  generic `待命` content cannot flash above it at normal boot.
+  face area remains blank during normal boot.
 - After 60 seconds, the existing clock and weather screen may cover idle.
   The first LCD touch, right-side touch, or head touch only dismisses that
   screen and restores idle presence; a later interaction performs its normal

@@ -174,13 +174,16 @@ void Application::Initialize() {
                 display->SetStatus(Lang::Strings::DETECTING_MODULE);
                 break;
             case NetworkEvent::ModemErrorNoSim:
-                Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_PIN);
+                Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR,
+                      Lang::Sounds::OGG_ERR_PIN);
                 break;
             case NetworkEvent::ModemErrorRegDenied:
-                Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_REG);
+                Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR,
+                      Lang::Sounds::OGG_ERR_REG);
                 break;
             case NetworkEvent::ModemErrorInitFailed:
-                Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR, "triangle_exclamation", Lang::Sounds::OGG_EXCLAMATION);
+                Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR,
+                      Lang::Sounds::OGG_EXCLAMATION);
                 break;
             case NetworkEvent::ModemErrorTimeout:
                 display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
@@ -220,7 +223,8 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+            Alert(Lang::Strings::ERROR, last_error_message_.c_str(),
+                  Lang::Sounds::OGG_EXCLAMATION);
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -402,7 +406,8 @@ void Application::CheckAssetsVersion() {
         }
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
-        Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
+        Alert(Lang::Strings::LOADING_ASSETS, message,
+              Lang::Sounds::OGG_UPGRADE);
         
         // Wait for the audio service to be idle for 3 seconds
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -423,7 +428,9 @@ void Application::CheckAssetsVersion() {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
         if (!success) {
-            Alert(Lang::Strings::ERROR, Lang::Strings::DOWNLOAD_ASSETS_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+            Alert(Lang::Strings::ERROR,
+                  Lang::Strings::DOWNLOAD_ASSETS_FAILED,
+                  Lang::Sounds::OGG_EXCLAMATION);
             vTaskDelay(pdMS_TO_TICKS(2000));
             SetDeviceState(kDeviceStateActivating);
             return;
@@ -436,7 +443,6 @@ void Application::CheckAssetsVersion() {
         board.OnAssetsUpdated();
     }
     display->SetChatMessage("system", "");
-    display->SetEmotion("microchip_ai");
 }
 
 void Application::CheckNewVersion() {
@@ -503,7 +509,6 @@ void Application::CheckNewVersion() {
     Alert(
         Lang::Strings::OTA_UPGRADE,
         Lang::Strings::LOADING_ASSETS,
-        "cloud_arrow_down",
         Lang::Sounds::OGG_UPGRADE);
     SetDeviceState(kDeviceStateUpgrading);
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -870,13 +875,6 @@ void Application::InitializeProtocol() {
                     display->SetChatMessage("user", message.c_str());
                 });
             }
-        } else if (strcmp(type->valuestring, "llm") == 0) {
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(emotion)) {
-                Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
-                    display->SetEmotion(emotion_str.c_str());
-                });
-            }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
             if (cJSON_IsObject(payload)) {
@@ -905,11 +903,11 @@ void Application::InitializeProtocol() {
         } else if (strcmp(type->valuestring, "alert") == 0) {
             auto status = cJSON_GetObjectItem(root, "status");
             auto message = cJSON_GetObjectItem(root, "message");
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
-                Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::OGG_VIBRATION);
+            if (cJSON_IsString(status) && cJSON_IsString(message)) {
+                Alert(status->valuestring, message->valuestring,
+                      Lang::Sounds::OGG_VIBRATION);
             } else {
-                ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+                ESP_LOGW(TAG, "Alert command requires status and message");
             }
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
@@ -950,7 +948,8 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     }};
 
     // This sentence uses 9KB of SRAM, so we need to wait for it to finish
-    Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_ACTIVATION);
+    Alert(Lang::Strings::ACTIVATION, message.c_str(),
+          Lang::Sounds::OGG_ACTIVATION);
 
     for (const auto& digit : code) {
         auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
@@ -961,11 +960,11 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     }
 }
 
-void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
-    ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
+void Application::Alert(const char* status, const char* message,
+                        const std::string_view& sound) {
+    ESP_LOGW(TAG, "Alert %s: %s", status, message);
     auto display = Board::GetInstance().GetDisplay();
     display->SetStatus(status);
-    display->SetEmotion(emotion);
     display->SetChatMessage("system", message);
     if (!sound.empty()) {
         audio_service_.PlaySound(sound);
@@ -976,7 +975,6 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
         display->SetChatMessage("system", "");
     }
 }
@@ -1293,8 +1291,7 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();  // Clear messages first
-            display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            display->ClearChatMessages();
             audio_service_.EnableRawCapture(false);
             audio_service_.EnableVoiceProcessing(false);
             listening_profile_ = ListeningProfileAfterStop(listening_profile_);
@@ -1302,12 +1299,10 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
 
             // Make sure the selected listening source is running
             bool is_raw_profile = listening_profile_ == kListeningProfileRaw;
@@ -1449,7 +1444,8 @@ bool Application::UpgradeFirmware(
     }
     ESP_LOGI(TAG, "Starting firmware upgrade from URL: %s", upgrade_url.c_str());
 
-    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download", Lang::Sounds::OGG_UPGRADE);
+    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING,
+          Lang::Sounds::OGG_UPGRADE);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     SetDeviceState(kDeviceStateUpgrading);
@@ -1484,7 +1480,8 @@ bool Application::UpgradeFirmware(
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); // Restore power save level
-        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED,
+              Lang::Sounds::OGG_EXCLAMATION);
         vTaskDelay(pdMS_TO_TICKS(3000));
         SetDeviceState(
             previous_state == kDeviceStateActivating

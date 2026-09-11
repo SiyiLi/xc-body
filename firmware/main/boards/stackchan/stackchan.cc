@@ -2981,14 +2981,29 @@ private:
         }
     }
 
+    static bool IsApplicationDisplayState(DeviceState state) {
+        return state == kDeviceStateIdle ||
+            state == kDeviceStateConnecting ||
+            state == kDeviceStateListening ||
+            state == kDeviceStateSpeaking;
+    }
+
+    static bool ApplicationDisplayAllowed(
+            DeviceState state,
+            PhysicalBehaviorOwner owner) {
+        return IsApplicationDisplayState(state) &&
+            owner != PhysicalBehaviorOwner::MAINTENANCE_RESERVED &&
+            owner != PhysicalBehaviorOwner::MAINTENANCE;
+    }
+
     void UpdateDisplayMode(DeviceState state, bool state_changed) {
         if (display_ == nullptr) {
             return;
         }
         bool settings_open = settings_open_.load(std::memory_order_acquire);
-        bool behavior_active =
-            physical_behavior_owner_.load(std::memory_order_acquire) !=
-                PhysicalBehaviorOwner::IDLE;
+        const auto behavior_owner =
+            physical_behavior_owner_.load(std::memory_order_acquire);
+        bool behavior_active = behavior_owner != PhysicalBehaviorOwner::IDLE;
         int64_t now_us = esp_timer_get_time();
         if (state != kDeviceStateIdle || settings_open || behavior_active) {
             screensaver_last_activity_us_.store(
@@ -3001,13 +3016,28 @@ private:
             !offer_pending_.load(std::memory_order_acquire) &&
             last_activity_us > 0 &&
             now_us - last_activity_us >= SCREEN_SAVER_IDLE_TIMEOUT_US;
-        bool appliance_mode = !show_screensaver &&
-            (state == kDeviceStateIdle ||
-             state == kDeviceStateListening ||
-             state == kDeviceStateSpeaking);
+        bool application_view =
+            ApplicationDisplayAllowed(state, behavior_owner);
+        const auto status_bar_mode = !application_view
+            ? LcdDisplay::StatusBarMode::SYSTEM
+            : show_screensaver
+                ? LcdDisplay::StatusBarMode::HIDDEN
+                : LcdDisplay::StatusBarMode::APPLICATION;
 
         DisplayLockGuard lock(display_);
-        display_->SetApplianceStatusStyleLocked(appliance_mode);
+        display_->SetStatusBarModeLocked(status_bar_mode);
+        if (!application_view) {
+            HideFaceLocked();
+        } else if (!expression_active_.load(std::memory_order_acquire) &&
+                   (state_changed || face_image_ == nullptr ||
+                    !lv_obj_is_valid(face_image_) ||
+                    lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN))) {
+            if (state == kDeviceStateIdle) {
+                ShowIdleFaceLocked();
+            } else if (state == kDeviceStateListening) {
+                ShowListeningFaceLocked();
+            }
+        }
         if (state_changed) {
             display_->SetRecordingIndicatorLocked(
                 state == kDeviceStateListening);
@@ -5394,10 +5424,10 @@ private:
     bool FaceDisplayAllowed() const {
         const DeviceState state =
             Application::GetInstance().GetDeviceState();
+        const auto owner =
+            physical_behavior_owner_.load(std::memory_order_acquire);
         return !settings_open_.load(std::memory_order_acquire) &&
-            (state == kDeviceStateIdle ||
-             state == kDeviceStateListening ||
-             state == kDeviceStateSpeaking);
+            ApplicationDisplayAllowed(state, owner);
     }
 
     bool EnsureFaceObjectLocked() {
@@ -5421,7 +5451,8 @@ private:
     bool ShowFaceAssetLocked(
             const std::string& asset,
             int32_t loop_count,
-            bool play) {
+            bool play,
+            bool timeline_playback = true) {
         void* data = nullptr;
         size_t size = 0;
         if (!Assets::GetInstance().GetAssetData(asset, data, size) ||
@@ -5430,17 +5461,24 @@ private:
             return false;
         }
 
-        face_gif_.reset();
-        face_gif_source_ = {};
-        face_gif_source_.data = static_cast<const uint8_t*>(data);
-        face_gif_source_.data_size = size;
-        auto gif = std::make_unique<LvglGif>(&face_gif_source_);
+        lv_img_dsc_t source = {};
+        source.data = static_cast<const uint8_t*>(data);
+        source.data_size = size;
+        auto gif = std::make_unique<LvglGif>(&source);
         if (!gif->IsLoaded()) {
             ESP_LOGW(TAG, "Face GIF could not be decoded: %s", asset.c_str());
             return false;
         }
         gif->SetLoopCount(loop_count);
-        gif->SetTimelinePlayback(true);
+        gif->SetTimelinePlayback(timeline_playback);
+        if (play) {
+            gif->Start();
+        } else {
+            gif->Start();
+            gif->Pause();
+        }
+
+        face_gif_source_ = source;
         face_gif_ = std::move(gif);
         face_gif_->SetFrameCallback([this]() {
             if (face_image_ != nullptr && face_gif_ != nullptr) {
@@ -5452,37 +5490,48 @@ private:
         lv_image_set_scale(face_image_, 256);
         lv_obj_clear_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
         display_->PlaceBehindStatusBarLocked(face_image_);
-        if (play) {
-            face_gif_->Start();
-        } else {
-            face_gif_->Stop();
-            lv_obj_invalidate(face_image_);
-        }
+        lv_obj_invalidate(face_image_);
         return true;
     }
 
     bool ShowFaceAsset(
             const std::string& asset,
             int32_t loop_count,
-            bool play) {
+            bool play,
+            bool timeline_playback = true) {
         if (display_ == nullptr || !FaceDisplayAllowed()) {
             return false;
         }
         DisplayLockGuard lock(display_);
-        return ShowFaceAssetLocked(asset, loop_count, play);
+        return ShowFaceAssetLocked(
+            asset, loop_count, play, timeline_playback);
+    }
+
+    bool ShowIdleFaceLocked() {
+        return ShowFaceAssetLocked("expression-agree.gif", 1, false);
     }
 
     bool ShowIdleFace() {
-        return ShowFaceAsset("expression-agree.gif", 1, false);
+        if (display_ == nullptr || !FaceDisplayAllowed()) {
+            return false;
+        }
+        DisplayLockGuard lock(display_);
+        return ShowIdleFaceLocked();
+    }
+
+    bool ShowListeningFaceLocked() {
+        if (ShowFaceAssetLocked("listening.gif", 0, true)) {
+            return true;
+        }
+        return ShowIdleFaceLocked();
     }
 
     bool ShowListeningFace() {
-        if (ShowFaceAsset("listening.gif", 0, true)) {
-            return true;
+        if (display_ == nullptr || !FaceDisplayAllowed()) {
+            return false;
         }
-        // Listening art is optional. Keep recording usable and fall back to
-        // the static idle presence when the asset has not shipped yet.
-        return ShowIdleFace();
+        DisplayLockGuard lock(display_);
+        return ShowListeningFaceLocked();
     }
 
     bool RestoreFaceForCurrentState() {
@@ -5492,16 +5541,20 @@ private:
             : ShowIdleFace();
     }
 
-    void HideFace() {
-        if (display_ == nullptr) {
-            return;
-        }
-        DisplayLockGuard lock(display_);
+    void HideFaceLocked() {
         face_gif_.reset();
         if (face_image_ != nullptr && lv_obj_is_valid(face_image_)) {
             lv_obj_add_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
         }
         HideScreenSaverLocked();
+    }
+
+    void HideFace() {
+        if (display_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(display_);
+        HideFaceLocked();
     }
 
     bool StartExpressionAnimation(const std::string& animation) {
@@ -7444,7 +7497,6 @@ public:
                 std::memory_order_acq_rel)) {
             if (!servo_ok_ || motion_driver_ == nullptr ||
                 PhysicalMotionInactive()) {
-                HideFace();
                 UpdateDisplayMode(kDeviceStateUpgrading, true);
                 return true;
             }
@@ -7476,10 +7528,8 @@ public:
                 PhysicalBehaviorOwner::IDLE,
                 std::memory_order_acq_rel);
         }
-        if (Application::GetInstance().GetDeviceState() ==
-                kDeviceStateIdle) {
-            ShowIdleFace();
-        }
+        UpdateDisplayMode(
+            Application::GetInstance().GetDeviceState(), true);
     }
 
     void SetNetworkEventCallback(NetworkEventCallback callback) override {
@@ -7517,16 +7567,6 @@ public:
         }
         if (state == kDeviceStateIdle) {
             PrepareScreenSaver();
-            if (!expression_active_.load(std::memory_order_acquire)) {
-                ShowIdleFace();
-            }
-        } else if (state == kDeviceStateListening) {
-            if (!expression_active_.load(std::memory_order_acquire)) {
-                ShowListeningFace();
-            }
-        } else if (state != kDeviceStateListening &&
-                   state != kDeviceStateSpeaking) {
-            HideFace();
         }
         UpdateDisplayMode(state, true);
     }
@@ -7579,7 +7619,10 @@ public:
     }
 
     virtual void OnTtsStart() override {
-        ShowFaceAsset("speaking.gif", 0, true);
+        // Unlike deterministic expression playback, speaking is allowed to
+        // drop late visual frames. Catching up several GIF frames in one LVGL
+        // callback competes with the real-time audio path.
+        ShowFaceAsset("speaking.gif", 0, true, false);
     }
 
     virtual void OnTtsStop() override {

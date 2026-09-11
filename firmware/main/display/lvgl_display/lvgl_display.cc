@@ -124,12 +124,12 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& app = Application::GetInstance();
     auto& board = Board::GetInstance();
     auto codec = board.GetAudioCodec();
-    bool appliance_status_style;
+    bool application_status_bar;
 
     // Update mute icon
     {
         DisplayLockGuard lock(this);
-        appliance_status_style = appliance_status_style_;
+        application_status_bar = application_status_bar_;
         if (mute_label_ == nullptr) {
             return;
         }
@@ -145,7 +145,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     }
 
     // Update time
-    if (!appliance_status_style &&
+    if (!application_status_bar &&
         app.GetDeviceState() == kDeviceStateIdle) {
         if (last_status_update_time_ + std::chrono::seconds(10) <
             std::chrono::system_clock::now()) {
@@ -264,14 +264,8 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
 void LvglDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 }
 
-void LvglDisplay::SetPowerSaveMode(bool on) {
-    if (on) {
-        SetChatMessage("system", "");
-        SetEmotion("sleepy");
-    } else {
-        SetChatMessage("system", "");
-        SetEmotion("neutral");
-    }
+void LvglDisplay::SetPowerSaveMode(bool) {
+    SetChatMessage("system", "");
 }
 
 bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {
