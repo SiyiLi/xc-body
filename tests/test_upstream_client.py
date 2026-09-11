@@ -1,4 +1,3 @@
-import json
 import unittest
 
 from stackchan.upstream_client import (
@@ -43,30 +42,17 @@ class UpstreamClientTests(unittest.TestCase):
         self.assertTrue(result["connected"])
         self.assertEqual(caller.calls, [("get_status", {})])
 
-    def test_avatar_translates_text_result_and_arguments(self):
+    def test_expression_translates_text_result_and_arguments(self):
         caller = RecordingCaller(
-            [{"content": [{"type": "text", "text": "avatar changed"}]}]
+            [{"content": [{"type": "text", "text": "expression played"}]}]
         )
 
-        result = UpstreamStackChanClient(caller).set_avatar("thinking")
+        result = UpstreamStackChanClient(caller).perform_expression("curious")
 
         self.assertTrue(result["ok"])
         self.assertEqual(
             caller.calls,
-            [("set_avatar", {"face": "thinking"})],
-        )
-
-    def test_move_head_translates_json_text_result_and_arguments(self):
-        caller = RecordingCaller(
-            [SdkResult(content=[TextBlock(json.dumps({"success": True}))])]
-        )
-
-        result = UpstreamStackChanClient(caller).move_head(3, 45, 30)
-
-        self.assertTrue(result["success"])
-        self.assertEqual(
-            caller.calls,
-            [("move_head", {"yaw": 3, "pitch": 45, "speed": 30})],
+            [("perform_expression", {"expression": "curious"})],
         )
 
     def test_transport_and_tool_errors_include_operation_context(self):
@@ -78,13 +64,13 @@ class UpstreamClientTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            UpstreamClientError, "set_avatar: session closed"
+            UpstreamClientError, "perform_expression: session closed"
         ):
-            UpstreamStackChanClient(callers[0]).set_avatar("thinking")
+            UpstreamStackChanClient(callers[0]).perform_expression("curious")
         with self.assertRaisesRegex(
-            UpstreamClientError, "move_head: servo rejected"
+            UpstreamClientError, "perform_expression: servo rejected"
         ):
-            UpstreamStackChanClient(callers[1]).move_head(3, 45, 30)
+            UpstreamStackChanClient(callers[1]).perform_expression("curious")
 
     def test_status_without_connection_state_fails_closed(self):
         caller = RecordingCaller([{"content": []}])

@@ -133,11 +133,6 @@ public:
         const char* behavior_id = nullptr);
     void ResumeDeferredAudioPlayback();
 
-    // Phase 4.5 avatar: thread-safe generic WS text frame send.
-    // Wraps Protocol::SendText through the main-task Schedule for the
-    // same thread-safety reasons as SendMcpMessage. Intended for board-
-    // initiated notifications such as avatar_set_loaded.
-    void SendJsonString(const std::string& json_str);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);

@@ -110,11 +110,6 @@ void Application::Initialize() {
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
     };
-    callbacks.on_audio_output = [this]() {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
-            Board::GetInstance().OnTtsAudioFrame();
-        }
-    };
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
@@ -653,9 +648,7 @@ void Application::InitializeProtocol() {
                 Schedule([this, &board]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
-                    // Phase 4 audio (Issue #76): drive avatar mouth animation
-                    // for the lifetime of this TTS utterance. Default no-op
-                    // for boards without a mouth display.
+                    // Release playback and start any board-coupled visual.
                     if (!board.ShouldDeferAudioPlayback()) {
                         ResumeDeferredAudioPlayback();
                     }
@@ -783,15 +776,14 @@ void Application::InitializeProtocol() {
                         SetDeviceState(kDeviceStateIdle);
                         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
                     }
-                    // Phase 4 audio (Issue #76): stop the avatar mouth
-                    // animation unconditionally on tts.stop. A wake-word /
+                    // Stop the board playback visual unconditionally on
+                    // tts.stop. A wake-word /
                     // button interrupt can call AbortSpeaking() and move
                     // the device out of Speaking before the server's
                     // tts.stop arrives, in which case the previous-state
                     // guard above is false but the audio playback has
-                    // ended and the mouth animation must still stop.
-                    // OnTtsStop() is idempotent (no-op for boards without
-                    // an avatar / when lip-sync is already stopped).
+                    // ended and the playback visual must still stop.
+                    // OnTtsStop() is idempotent for boards without one.
                     board.OnTtsStop();
                     if (!requested_drain_id.empty() && protocol_) {
                         cJSON* result = cJSON_CreateObject();
@@ -919,12 +911,6 @@ void Application::InitializeProtocol() {
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
-        } else if (strcmp(type->valuestring, "avatar_set_fetch") == 0) {
-            // Phase 4.5 avatar (saiverse-stackchan-addon): dispatch to the
-            // current board for HTTP fetch + SHA256 verify + AvatarSet adoption.
-            // Non-stackchan boards default to a no-op (Board::OnAvatarSetFetch).
-            // See docs/intent/stackchan_avatar_pipeline.md §C-3 (SAIVerse).
-            board.OnAvatarSetFetch(root);
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
@@ -1301,6 +1287,7 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    board.OnDeviceStateChanged(new_state);
     
     switch (new_state) {
         case kDeviceStateUnknown:
@@ -1388,7 +1375,6 @@ void Application::HandleStateChangedEvent() {
             // Do nothing
             break;
     }
-    board.OnDeviceStateChanged(new_state);
 }
 
 void Application::Schedule(std::function<void()>&& callback) {
@@ -1618,17 +1604,6 @@ void Application::SendStackChanEvent(
             cJSON_free(str);
         }
         cJSON_Delete(root);
-    });
-}
-
-void Application::SendJsonString(const std::string& json_str) {
-    // Thread-safe generic WS text frame send. Used by board-initiated
-    // notifications such as avatar_set_loaded (Phase 4.5 avatar). Mirrors
-    // SendMcpMessage's main-task Schedule pattern for protocol safety.
-    Schedule([this, json_str]() {
-        if (protocol_) {
-            protocol_->SendText(json_str);
-        }
     });
 }
 

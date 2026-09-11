@@ -215,7 +215,7 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
     // The original implementation called websocket_.reset() here, which
     // destroyed the WebSocket connection every time the device exited
     // listening/speaking mode. This made it impossible to control the
-    // device (LEDs, avatar, head movement) outside of an active audio
+    // device (LEDs, face, head movement) outside of an active audio
     // session, since all MCP tools rely on the same WebSocket.
     //
     // By skipping the teardown and directly invoking the closed callback,

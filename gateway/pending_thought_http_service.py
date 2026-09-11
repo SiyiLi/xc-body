@@ -159,15 +159,14 @@ async def _readiness_payload(
 async def _restore_pending_runtime_if_needed(
     session: Any,
     runtime: PendingThoughtRuntime,
-    avatar_path: str,
 ) -> bool:
     if await runtime.is_ready():
         return True
     try:
-        await prepare_pending_runtime(session, runtime, avatar_path)
+        await prepare_pending_runtime(session, runtime)
     except PendingThoughtServiceError:
         return False
-    logger.info("StackChan session restored with the reviewed avatar")
+    logger.info("StackChan device session is ready")
     return True
 
 
@@ -201,12 +200,11 @@ async def _maintain_pending_runtime(
                                     await _restore_pending_runtime_if_needed(
                                         session,
                                         runtime,
-                                        config.avatar_path,
                                     )
                                 )
                                 if not restored:
                                     break
-                                await runtime.reconcile_base_view()
+                                await runtime.reconcile_offer_state()
                                 await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
                         finally:
                             await wait_for_stackchan_event_tasks(session)
@@ -533,11 +531,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        config = load_config(
-            url=args.url,
-            environ=environ,
-            require_avatar=True,
-        )
+        config = load_config(url=args.url, environ=environ)
         downstream_token = load_downstream_token(environ)
         validate_bind_safety(args.host, downstream_token)
         playback_config = load_playback_config(environ)

@@ -176,6 +176,45 @@ class XcBodyBehaviorTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_named_expression_uses_the_shared_behavior_waiter(self) -> None:
+        manager = ESP32Manager()
+        connection = FakeConnection()
+        manager._connection = connection
+
+        task = asyncio.create_task(
+            manager.perform_xc_body_behavior(
+                "semantic:1", "expression", "concerned"
+            )
+        )
+        await self._wait_for_behavior(manager, "semantic:1")
+        await manager._emit_stackchan_event(
+            {
+                "event_type": "behavior",
+                "subtype": "expression_complete",
+                "behavior_id": "semantic:1",
+                "duration_ms": 2400,
+                "ts": 1,
+                "session_id": connection.session_id,
+            }
+        )
+
+        result, error = await task
+        self.assertIsNone(error)
+        self.assertEqual(result["behavior_id"], "semantic:1")
+        self.assertEqual(
+            connection.calls,
+            [
+                (
+                    "self.robot.xc_body_behavior",
+                    {
+                        "behavior_id": "semantic:1",
+                        "kind": "expression",
+                        "expression": "concerned",
+                    },
+                )
+            ],
+        )
+
     @staticmethod
     async def _wait_for_behavior(
         manager: ESP32Manager, behavior_id: str

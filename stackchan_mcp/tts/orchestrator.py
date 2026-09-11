@@ -17,12 +17,10 @@ synthesising audio with no destination.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from .audio_utils import (
@@ -33,7 +31,7 @@ from .audio_utils import (
     resample_pcm16_linear,
 )
 from .base import EngineRegistry, get_registry
-from .emoji_expression import detect_emoji_face, strip_emoji_for_plain_tts
+from .emoji_text import strip_emoji_for_plain_tts
 from ..esp32_client import stop_tts_after_drain
 
 if TYPE_CHECKING:
@@ -45,12 +43,6 @@ if TYPE_CHECKING:
 TTS_START_TRANSITION_DELAY_S = 0.05
 DIRECT_PCM_START_FRAMES = 4
 DIRECT_PCM_BURST_FRAMES = 12
-
-#: Delay after the ``tts.stop`` notification before reasserting an
-#: emoji-selected face. Firmware handles stop by scheduling the idle /
-#: lip-sync reset on its main task, so this short settle delay lets that
-#: queued restore land before the gateway sends the final face update.
-TTS_STOP_FACE_REDISPATCH_SETTLE_DELAY_S = 0.05
 
 logger = logging.getLogger(__name__)
 
@@ -112,39 +104,6 @@ def _validate_direct_audio_integrity(
     return integrity_metrics
 
 
-def _extract_set_avatar_payload(result: Any) -> dict[str, Any] | None:
-    payload = result
-    if isinstance(result, dict) and "content" in result:
-        content = result.get("content") or []
-        if isinstance(content, list) and content:
-            text = (
-                content[0].get("text")
-                if isinstance(content[0], dict)
-                else None
-            )
-            if isinstance(text, str):
-                try:
-                    payload = json.loads(text)
-                except json.JSONDecodeError:
-                    return None
-
-    return payload if isinstance(payload, dict) else None
-
-
-def _set_avatar_payload_error(payload: dict[str, Any]) -> str:
-    raw_error = payload.get("error")
-    if isinstance(raw_error, dict):
-        message = raw_error.get("message")
-        if isinstance(message, str) and message.strip():
-            return message
-    elif isinstance(raw_error, str) and raw_error.strip():
-        return raw_error
-    elif raw_error:
-        return str(raw_error)
-
-    return "set_avatar reported ok=false"
-
-
 def _resolve_default_engine() -> str:
     """Return the default engine name, honouring ``STACKCHAN_TTS_ENGINE``.
 
@@ -157,45 +116,6 @@ def _resolve_default_engine() -> str:
     if env_engine and env_engine.strip():
         return env_engine.strip()
     return DEFAULT_VOICE
-
-
-async def _try_set_avatar_face(
-    gateway: "Gateway",
-    face: str,
-) -> tuple[bool, str | None]:
-    try:
-        result, error = await gateway.esp32.call_tool(
-            "self.display.set_avatar", {"face": face}
-        )
-    except Exception as exc:
-        logger.warning("say(): set_avatar(%s) failed: %s", face, exc)
-        return False, str(exc)
-
-    if error:
-        message = error.get("message", error) if isinstance(error, dict) else error
-        logger.warning("say(): set_avatar(%s) failed: %s", face, message)
-        return False, str(message)
-
-    payload = _extract_set_avatar_payload(result)
-    if payload is not None and payload.get("ok") is False:
-        message = _set_avatar_payload_error(payload)
-        logger.warning(
-            "say(): set_avatar(%s) reported ok=false: %s", face, message
-        )
-        return False, message
-
-    return True, None
-
-
-async def _try_set_avatar_face_with_tts_lock(
-    gateway: "Gateway",
-    face: str,
-) -> tuple[bool, str | None]:
-    tts_lock = getattr(gateway.esp32, "tts_lock", None)
-    lock_ctx = tts_lock if tts_lock is not None else nullcontext()
-
-    async with lock_ctx:
-        return await _try_set_avatar_face(gateway, face)
 
 
 async def synthesize_and_send(
@@ -231,8 +151,7 @@ async def synthesize_and_send(
     Returns:
         Dict describing the synthesis: ``engine``, ``text``,
         ``speaker_id``, ``frame_count``, ``sample_rate``,
-        ``frame_duration_ms``, ``duration_ms``, plus emoji-expression
-        metadata such as ``face`` and ``text_stripped``.
+        ``frame_duration_ms``, ``duration_ms``, and ``text_stripped``.
 
     Raises:
         ValueError: if ``text`` is missing / empty / non-string.
@@ -249,8 +168,6 @@ async def synthesize_and_send(
     text = arguments.get("text", "")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("'text' is required and must be a non-empty string")
-
-    face = detect_emoji_face(text)
 
     # An explicit, non-empty ``voice`` argument always wins. Otherwise the
     # default engine is resolved from STACKCHAN_TTS_ENGINE (falling back to
@@ -300,20 +217,7 @@ async def synthesize_and_send(
         text_stripped = plain_tts_text != text
         tts_text = plain_tts_text
 
-    face_dispatched = False
-    face_error: str | None = None
-    face_redispatched = False
-    face_redispatch_error: str | None = None
-    should_redispatch_face_after_speech = (
-        face is not None and bool(tts_text.strip())
-    )
-
     if not tts_text.strip():
-        if face is not None:
-            face_dispatched, face_error = await _try_set_avatar_face_with_tts_lock(
-                gateway,
-                face,
-            )
         logger.info(
             "say(): engine=%s speaker=%s speech skipped: text empty after "
             "emoji strip",
@@ -328,11 +232,6 @@ async def synthesize_and_send(
             "sample_rate": DEVICE_SAMPLE_RATE,
             "frame_duration_ms": DEVICE_FRAME_DURATION_MS,
             "duration_ms": 0,
-            "face": face,
-            "face_dispatched": face_dispatched,
-            "face_error": face_error,
-            "face_redispatched": face_redispatched,
-            "face_redispatch_error": face_redispatch_error,
             "text_stripped": text_stripped,
             "spoke": False,
             "reason": "text empty after emoji strip",
@@ -368,24 +267,6 @@ async def synthesize_and_send(
             f"Engine '{voice}' produced no PCM data for the given text."
         )
 
-    async def dispatch_face_before_first_frame() -> None:
-        nonlocal face_dispatched, face_error
-        if face is not None:
-            face_dispatched, face_error = await _try_set_avatar_face(
-                gateway,
-                face,
-            )
-
-    async def redispatch_face_after_playback() -> None:
-        nonlocal face_redispatched, face_redispatch_error
-        if face is None:
-            return
-        await asyncio.sleep(TTS_STOP_FACE_REDISPATCH_SETTLE_DELAY_S)
-        face_redispatched, face_redispatch_error = await _try_set_avatar_face(
-            gateway,
-            face,
-        )
-
     # Hand the PCM off to the shared encode-and-push path. Engines that
     # have already resampled to DEVICE_SAMPLE_RATE (the documented
     # TTSEngine contract) need no further conversion here.
@@ -393,14 +274,6 @@ async def synthesize_and_send(
         gateway,
         pcm,
         source_label=f"engine:{voice}",
-        before_first_frame=(
-            dispatch_face_before_first_frame if face is not None else None
-        ),
-        after_playback_complete=(
-            redispatch_face_after_playback
-            if should_redispatch_face_after_speech
-            else None
-        ),
     )
 
     logger.info(
@@ -419,11 +292,6 @@ async def synthesize_and_send(
         "sample_rate": result["sample_rate"],
         "frame_duration_ms": result["frame_duration_ms"],
         "duration_ms": result["duration_ms"],
-        "face": face,
-        "face_dispatched": face_dispatched,
-        "face_error": face_error,
-        "face_redispatched": face_redispatched,
-        "face_redispatch_error": face_redispatch_error,
         "text_stripped": text_stripped,
         "spoke": True,
     }

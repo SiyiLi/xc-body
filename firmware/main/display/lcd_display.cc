@@ -366,10 +366,10 @@ void LcdDisplay::CreateApplianceStatusWidgetsLocked(
     static const int32_t appliance_rows[] = {
         LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST,
     };
-    constexpr int kAvatarOpeningWidth = 64;
+    constexpr int kCenterOpeningWidth = 64;
     constexpr int kApplianceBarHeight = 28;
     constexpr uint32_t kApplianceBarColor = 0x081418;
-    const int side_width = (width_ - kAvatarOpeningWidth) / 2;
+    const int side_width = (width_ - kCenterOpeningWidth) / 2;
 
     appliance_bar_ = lv_obj_create(screen);
     lv_obj_set_size(appliance_bar_, width_, kApplianceBarHeight);

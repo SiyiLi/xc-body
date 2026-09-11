@@ -43,9 +43,9 @@ the app and metadata-bound assets over OTA. Assets use one in-place partition:
 the verified update is non-atomic under power loss, while the app remains
 bootable with static fallback and retries on a later boot.
 
-StackChan's reviewed avatar, idle-screen fonts, and RGB565A8 weather icons are
-packaged in that assets partition. They are not linked into the application
-slots.
+StackChan's expression and speaking GIFs, default touch recipe, idle-screen
+fonts, and RGB565A8 weather icons are packaged in that assets partition. They
+are not linked into the application slots.
 
 For local recovery, flash the StackChan application and generated assets
 together:

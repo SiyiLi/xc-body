@@ -46,15 +46,12 @@ XC_BODY_BEHAVIOR_TIMEOUT_S = 22.0
 ToolCall = tuple[str, dict[str, Any]]
 ToolCallResult = tuple[Any, dict[str, Any] | None]
 
-_SET_AVATAR_TOOL = "self.display.set_avatar"
-
 _TOOL_LANES = {
     "self.robot.": "servo",
     "self.wifi.": "wifi",
     "self.led.": "led",
     "self.port_b.": "port_b",
     "self.port_c.": "port_c",
-    "self.display.": "avatar",
     "self.screen.": "display",
     "self.audio_speaker.": "audio",
     "self.camera.": "camera",
@@ -136,12 +133,6 @@ class ESP32Connection:
         self._connected = True
         self._initialized = False
         self._tools_discovered = False
-        self._avatar_render_sent = False
-        self._active_avatar_checksum = ""
-        # Phase 4.5 avatar: pending load_avatar_set calls waiting for the
-        # device's `avatar_set_loaded` reply. Keyed by expected checksum
-        # so that overlapping fetches (different sets) can be discriminated.
-        self._avatar_set_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         # Audio senders retain the shared TTS lane until firmware has
         # drained (or explicitly discarded) the last queued frame.
         self._tts_drain_waiter: tuple[
@@ -162,10 +153,6 @@ class ESP32Connection:
     @property
     def tools_discovered(self) -> bool:
         return self._tools_discovered
-
-    @property
-    def avatar_render_sent(self) -> bool:
-        return self._avatar_render_sent
 
     def _next_id(self) -> int:
         self._request_id += 1
@@ -267,87 +254,9 @@ class ESP32Connection:
         self, name: str, arguments: dict[str, Any]
     ) -> tuple[Any, dict[str, Any] | None]:
         """Call a tool on ESP32."""
-        if name == _SET_AVATAR_TOOL:
-            self._avatar_render_sent = True
         return await self.send_mcp_request(
             "tools/call", {"name": name, "arguments": arguments}
         )
-
-    async def send_avatar_set_fetch(
-        self,
-        url: str,
-        token: str,
-        mode: str,
-        checksum: str,
-        expected_size: int,
-        timeout: float = 60.0,
-    ) -> dict[str, Any]:
-        """Send avatar_set_fetch notification and wait for avatar_set_loaded.
-
-        Returns the device's reply dict ({ok, checksum, error}). Returns a
-        synthesized {ok: False, error: ...} dict on timeout or send failure.
-        """
-        if not self._connected:
-            return {"ok": False, "checksum": checksum, "error": "not_connected"}
-
-        if self._active_avatar_checksum == checksum:
-            return {
-                "ok": True,
-                "checksum": checksum,
-                "already_loaded": True,
-            }
-        previous = self._avatar_set_waiters.get(checksum)
-        if previous is not None and not previous.done():
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(previous), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                return {"ok": False, "checksum": checksum, "error": "device_timeout"}
-            except asyncio.CancelledError:
-                return {"ok": False, "checksum": checksum, "error": "superseded"}
-        future: asyncio.Future[dict[str, Any]] = (
-            asyncio.get_event_loop().create_future()
-        )
-        self._avatar_set_waiters[checksum] = future
-
-        msg = {
-            "type": "avatar_set_fetch",
-            "url": url,
-            "token": token,
-            "mode": mode,
-            "checksum": checksum,
-            "expected_size": expected_size,
-        }
-        try:
-            await self._ws.send(json.dumps(msg))
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
-            self._avatar_set_waiters.pop(checksum, None)
-            return {"ok": False, "checksum": checksum, "error": "device_timeout"}
-        except asyncio.CancelledError:
-            return {"ok": False, "checksum": checksum, "error": "superseded"}
-        except ConnectionError:
-            self._avatar_set_waiters.pop(checksum, None)
-            return {"ok": False, "checksum": checksum, "error": "disconnected"}
-        except Exception as exc:
-            self._avatar_set_waiters.pop(checksum, None)
-            return {"ok": False, "checksum": checksum, "error": f"send_failed: {exc}"}
-
-    def handle_avatar_set_loaded(self, payload: dict[str, Any]) -> None:
-        """Resolve a pending send_avatar_set_fetch by checksum."""
-        checksum = payload.get("checksum", "")
-        if payload.get("ok") is True:
-            self._active_avatar_checksum = checksum
-        future = self._avatar_set_waiters.pop(checksum, None)
-        if future is not None and not future.done():
-            future.set_result(payload)
-        else:
-            logger.warning(
-                "avatar_set_loaded for unknown checksum=%s (no pending waiter)",
-                checksum,
-            )
 
     def handle_response(self, payload: dict[str, Any]) -> None:
         """Handle an incoming MCP response from ESP32."""
@@ -541,10 +450,6 @@ class ESP32Connection:
             if not future.done():
                 future.set_exception(ConnectionError("ESP32 disconnected"))
         self._pending.clear()
-        for future in self._avatar_set_waiters.values():
-            if not future.done():
-                future.set_exception(ConnectionError("ESP32 disconnected"))
-        self._avatar_set_waiters.clear()
         if self._tts_drain_waiter is not None:
             _drain_id, future = self._tts_drain_waiter
             if not future.done():
@@ -639,7 +544,6 @@ class ESP32Manager:
             "led": asyncio.Lock(),
             "port_b": asyncio.Lock(),
             "port_c": asyncio.Lock(),
-            "avatar": asyncio.Lock(),
             "display": asyncio.Lock(),
             "audio": asyncio.Lock(),
             "camera": asyncio.Lock(),
@@ -837,13 +741,6 @@ class ESP32Manager:
                     # MCP response from ESP32
                     payload = data.get("payload", {})
                     connection.handle_response(payload)
-
-                elif msg_type == "avatar_set_loaded":
-                    # Phase 4.5 avatar (saiverse-stackchan-addon): device
-                    # reports the result of a load_avatar_set fetch (see
-                    # docs/intent/stackchan_avatar_pipeline.md §C-3 in
-                    # the SAIVerse repository).
-                    connection.handle_avatar_set_loaded(data)
 
                 elif msg_type == "prepared_audio_metrics":
                     logger.info(
@@ -1044,7 +941,6 @@ class ESP32Manager:
             if not connection.tools_discovered:
                 logger.error("ESP32 tools discovery failed")
                 return
-            await self._auto_render_idle_avatar(connection, device_id)
             logger.info(
                 "ESP32 ready: device=%s tools=%d",
                 device_id,
@@ -1052,37 +948,6 @@ class ESP32Manager:
             )
         else:
             logger.error("ESP32 MCP initialization failed")
-
-    async def _auto_render_idle_avatar(
-        self, connection: ESP32Connection, device_id: str
-    ) -> None:
-        """Best-effort idle avatar render after a fresh device session init."""
-        if connection.avatar_render_sent:
-            return
-
-        logger.info(
-            "auto-rendering idle avatar (no explicit set_avatar yet): device=%s",
-            device_id,
-        )
-        try:
-            _result, error = await connection.call_tool(
-                _SET_AVATAR_TOOL,
-                {"face": "idle"},
-            )
-        except Exception as exc:
-            logger.warning(
-                "auto-rendering idle avatar failed: device=%s error=%s",
-                device_id,
-                exc,
-            )
-            return
-
-        if error:
-            logger.warning(
-                "auto-rendering idle avatar failed: device=%s error=%s",
-                device_id,
-                error,
-            )
 
     async def _emit_stackchan_event(self, payload: dict[str, Any]) -> None:
         """Forward a firmware-originated stackchan event to the MCP client."""
@@ -1114,6 +979,7 @@ class ESP32Manager:
             if subtype not in {
                 "knock_complete",
                 "attention_complete",
+                "expression_complete",
                 "behavior_failed",
             }:
                 logger.warning(
@@ -1322,26 +1188,47 @@ class ESP32Manager:
         )
 
     async def perform_xc_body_behavior(
-        self, behavior_id: str, kind: str
+        self,
+        behavior_id: str,
+        kind: str,
+        expression: str | None = None,
     ) -> ToolCallResult:
         """Run a reviewed firmware behavior through the shared waiter."""
 
         success_subtypes = {
             "knock": "knock_complete",
             "attention": "attention_complete",
+            "expression": "expression_complete",
         }
         success_subtype = success_subtypes.get(kind)
         if success_subtype is None:
             return None, {
                 "code": -32602,
-                "message": "kind must be knock or attention",
+                "message": "kind must be knock, attention, or expression",
             }
+        arguments = {"behavior_id": behavior_id, "kind": kind}
+        if kind == "expression":
+            arguments["expression"] = expression
         return await self._perform_xc_body_behavior(
             behavior_id,
             device_tool="self.robot.xc_body_behavior",
-            arguments={"behavior_id": behavior_id, "kind": kind},
+            arguments=arguments,
             success_subtype=success_subtype,
         )
+
+    async def perform_xc_body_expression(
+        self, expression: str
+    ) -> ToolCallResult:
+        """Run one saved expression and await its safe return."""
+        behavior_id = uuid.uuid4().hex
+        result, error = await self.perform_xc_body_behavior(
+            behavior_id,
+            "expression",
+            expression,
+        )
+        if error is None and isinstance(result, dict):
+            result["expression"] = expression
+        return result, error
 
     def _fail_behavior_waiters(self, session_id: str) -> None:
         for key, waiter in list(self._behavior_waiters.items()):
@@ -1356,7 +1243,7 @@ class ESP32Manager:
 
         Existing single-tool callers should continue to use ``call_tool``.
         This helper is for compound gateway flows that can safely overlap
-        hardware-independent peripherals, such as servo + LEDs + avatar.
+        hardware-independent peripherals, such as servo + LEDs + screen.
         Calls sharing the same hardware lane are serialized; calls on
         different lanes are dispatched concurrently.
         """
@@ -1395,28 +1282,6 @@ class ESP32Manager:
             if connection is not self._connection or not connection.connected:
                 return None, {"code": -32000, "message": "ESP32 not connected"}
             return await connection.call_tool(name, arguments)
-
-    async def send_avatar_set_fetch(
-        self,
-        url: str,
-        token: str,
-        mode: str,
-        checksum: str,
-        expected_size: int,
-        timeout: float = 60.0,
-    ) -> dict[str, Any]:
-        """Forward an avatar_set_fetch to the device and await the reply.
-
-        Phase 4.5 avatar (saiverse-stackchan-addon). Returns a dict with
-        keys {ok, checksum, error}; ok=False is returned with a synthetic
-        error when no device is connected (rather than raising) so the
-        MCP tool surfaces a clean error JSON to the caller.
-        """
-        if not self._connection or not self._connection.connected:
-            return {"ok": False, "checksum": checksum, "error": "no_device"}
-        return await self._connection.send_avatar_set_fetch(
-            url, token, mode, checksum, expected_size, timeout
-        )
 
     async def send_audio_frame(self, opus_frame: bytes) -> None:
         """Push a single Opus frame to the connected device.

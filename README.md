@@ -28,19 +28,19 @@ turning it off should make the room feel a little emptier.
   completions, chooses `offer` or `skip`, and submits accepted summaries to the
   authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
-  submission retries, robot-session avatar restoration, supervisor recovery,
-  and connected idle display dimming. OpenClaw, route, robot, gateway, pending
+  submission retries, robot-session recovery, supervisor recovery, and
+  connected idle display dimming. OpenClaw, route, robot, gateway, pending
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   configured cloud rendezvous host; raw service ports remain private.
 - Milestone 4 direct conversation and appliance UX have physical acceptance.
   Exact candidate identifiers and the real-user acceptance record are in the
   milestone document.
-- Milestone 5 is active. Its firmware and USB calibration candidate implements
-  seven deterministic expressions; `agree` uses a restrained nod and `idle`
-  remains the fallback base presence. Production selection and direct-turn
-  integration remain deferred until the recipes pass physical calibration.
-  Background offers remain unchanged.
+- Milestone 5 is active. Its replacement candidate removes the layered avatar
+  and uses the saved expression runner for idle presence, direct attention,
+  offer knocks, touch reactions, and speaking animation. Direct and background
+  behavior remain fixed to `curious`; there is no projection redesign. The
+  replacement integration still requires end-to-end physical acceptance.
 - Milestone 6 is reserved for explicit bounded camera observation.
 
 The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current

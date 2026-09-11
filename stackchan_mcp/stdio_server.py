@@ -48,7 +48,7 @@ STACKCHAN_EVENT_INSTRUCTIONS = (
     "event_type ('touch'), subtype ('tap' or 'stroke'), "
     "duration_ms, ts, session_id. When such a notification "
     "arrives, react naturally using existing tools "
-    "(set_avatar, say, set_mouth, set_leds, move_head). There is "
+    "(say, set_leds, move_head). There is "
     "no dedicated reply tool — the existing tool palette is the "
     "reaction surface."
 )
@@ -56,7 +56,7 @@ STACKCHAN_CHANNEL_INSTRUCTIONS = (
     'Stack-chan physical events arrive as Channels notifications under '
     '<channel source="plugin:stackchanmcp:stackchanmcp" action="..." '
     'subtype="..." duration_ms="...">. React naturally using existing '
-    'tools (set_avatar, say, set_mouth, set_leds, move_head).'
+    'tools (say, set_leds, move_head).'
 )
 STACKCHAN_JSONL_INSTRUCTIONS = (
     "Stack-chan physical events are persisted to the JSONL log; host "
@@ -870,32 +870,6 @@ async def _dispatch_mcp_tool(
             ]
         return [TextContent(type="text", text=json.dumps(result))]
 
-    if name == "load_avatar_set":
-        archive_path = arguments.get("archive_path", "")
-        mode = arguments.get("mode", "")
-        try:
-            timeout = float(arguments.get("timeout", 60.0))
-        except (TypeError, ValueError):
-            timeout = 60.0
-        if not archive_path or not isinstance(archive_path, str):
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {"ok": False, "error": "archive_path is required"}
-                    ),
-                )
-            ]
-        if mode not in ("layered", "matrix", "layered-320x240"):
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({"ok": False, "error": f"unknown mode: {mode}"}),
-                )
-            ]
-        result = await gateway.load_avatar_set(archive_path, mode, timeout)
-        return [TextContent(type="text", text=json.dumps(result))]
-
     if name == "stackchan_follow_pose_stream":
         return await _handle_follow_pose_stream(gateway, arguments)
 
@@ -926,6 +900,38 @@ async def _dispatch_mcp_tool(
                 ),
             )
         ]
+
+    if name == "perform_expression":
+        expression = arguments.get("expression")
+        supported = {
+            "agree",
+            "pleased",
+            "curious",
+            "concerned",
+            "surprised",
+            "embarrassed",
+            "mischievous",
+        }
+        if expression not in supported:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "unknown expression"}),
+                )
+            ]
+        result, error = await gateway.esp32.perform_xc_body_expression(
+            expression
+        )
+        if error:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"error": error.get("message", str(error))}
+                    ),
+                )
+            ]
+        return [TextContent(type="text", text=json.dumps(result))]
 
     if name in {"perform_knock", "perform_behavior"}:
         behavior_id = arguments.get("behavior_id")
@@ -1124,22 +1130,6 @@ async def _dispatch_mcp_tool(
         ),
         "set_offer_pending": (
             "self.display.set_offer_pending",
-            arguments,
-        ),
-        "set_avatar": (
-            "self.display.set_avatar",
-            arguments,
-        ),
-        "set_mouth": (
-            "self.display.set_mouth",
-            arguments,
-        ),
-        "set_mouth_sequence": (
-            "self.display.set_mouth_sequence",
-            {"steps_json": json.dumps(arguments.get("steps", []))},
-        ),
-        "set_blink": (
-            "self.display.set_blink",
             arguments,
         ),
         "set_servo_torque": (
@@ -1432,6 +1422,31 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 },
             ),
             Tool(
+                name="perform_expression",
+                description=(
+                    "Play one saved XC Body expression recipe and return only "
+                    "after the firmware has restored its safe idle pose."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "enum": [
+                                "agree",
+                                "pleased",
+                                "curious",
+                                "concerned",
+                                "surprised",
+                                "embarrassed",
+                                "mischievous",
+                            ],
+                        }
+                    },
+                    "required": ["expression"],
+                },
+            ),
+            Tool(
                 name="perform_behavior",
                 description=(
                     "Run one reviewed XC Body firmware behavior through the "
@@ -1454,8 +1469,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 name="perform_knock",
                 description=(
                     "Run XC Body's silent reviewed knock entirely on the "
-                    "robot and return only after its head is neutral and "
-                    "the idle avatar is restored."
+                    "robot and return only after its head is neutral."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1851,139 +1865,6 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         },
                     },
                     "required": ["pending"],
-                },
-            ),
-            Tool(
-                name="set_avatar",
-                description=(
-                    "Switch the avatar face shown on the LCD. "
-                    "Choose one of the supported faces; this is the robot's "
-                    "actual visible expression, not just a label. "
-                    "Pass 'off' to hide the avatar and disable blink, exposing the "
-                    "underlying xiaozhi-esp32 screens (WiFi config UI, OTA, settings); "
-                    "any other face brings the avatar back and restores blink."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "face": {
-                            "type": "string",
-                            "enum": [
-                                "idle",
-                                "happy",
-                                "thinking",
-                                "sad",
-                                "surprised",
-                                "embarrassed",
-                                "off",
-                            ],
-                            "description": (
-                                "One of: idle, happy, thinking, sad, surprised, "
-                                "embarrassed, off."
-                            ),
-                        },
-                    },
-                    "required": ["face"],
-                },
-            ),
-            Tool(
-                name="set_mouth",
-                description=(
-                    "Set the avatar mouth shape for lip-sync. "
-                    "The shape is held until the next set_avatar / set_mouth call, "
-                    "or until an autonomous blink restores the resting face. "
-                    "Calling this while a set_mouth_sequence is in flight "
-                    "interrupts the sequence."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "mouth": {
-                            "type": "string",
-                            "enum": ["closed", "half", "open", "e", "u"],
-                            "description": "One of: closed, half, open, e, u.",
-                        },
-                    },
-                    "required": ["mouth"],
-                },
-            ),
-            Tool(
-                name="set_mouth_sequence",
-                description=(
-                    "Queue a lip-sync sequence and play it on the device. "
-                    "Each step holds 'shape' for 'duration_ms' before "
-                    "advancing. The firmware walks the queue locally so "
-                    "there is no per-step network RTT (use this instead of "
-                    "issuing many set_mouth calls back-to-back from a TTS "
-                    "loop). Returns immediately with the queued step count "
-                    "and estimated total duration. Calling set_mouth, "
-                    "set_avatar, or this tool again interrupts the in-flight "
-                    "sequence and replaces it. Autonomous blink is paused "
-                    "while a sequence is playing and resumed when it ends. "
-                    "The final shape is held until the next "
-                    "set_mouth / set_avatar call, or until an autonomous "
-                    "blink restores the resting face — this is the same "
-                    "Phase 2 trade-off that applies to set_mouth, since the "
-                    "blink animation ends by repainting the full face. If "
-                    "the final shape must persist visually, disable blink "
-                    "with set_blink(false) before the sequence (or append a "
-                    "closed step if you just want the mouth to close at "
-                    "the end)."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "steps": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 256,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "shape": {
-                                        "type": "string",
-                                        "enum": ["closed", "half", "open", "e", "u"],
-                                        "description": (
-                                            "Mouth shape for this step. "
-                                            "One of: closed, half, open, e, u."
-                                        ),
-                                    },
-                                    "duration_ms": {
-                                        "type": "integer",
-                                        "minimum": 10,
-                                        "maximum": 10000,
-                                        "description": (
-                                            "How long to hold this shape "
-                                            "before advancing, in ms (10..10000)."
-                                        ),
-                                    },
-                                },
-                                "required": ["shape", "duration_ms"],
-                            },
-                            "description": (
-                                "Ordered list of mouth shapes with hold "
-                                "durations (1..256 steps)."
-                            ),
-                        },
-                    },
-                    "required": ["steps"],
-                },
-            ),
-            Tool(
-                name="set_blink",
-                description=(
-                    "Enable or disable autonomous eye blinking. "
-                    "When enabled, the avatar blinks every 3-6 seconds at random."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean",
-                            "description": "True to start blinking, false to stop.",
-                        },
-                    },
-                    "required": ["enabled"],
                 },
             ),
             Tool(
@@ -2468,18 +2349,8 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "Speak the given text on the device speaker via gateway-side "
                     "TTS. The gateway synthesises audio, encodes it to Opus, "
                     "and pushes frames over the existing WebSocket; the device "
-                    "firmware does not change. Engine is selectable via 'voice' "
-                    "(default 'voicevox'). If the text contains a supported "
-                    "expression emoji, say first switches the avatar face in the "
-                    "same call: happy (😊 😄 😀 😁 🙂 😆 🥰 😍 😋 🤗), "
-                    "sad (😢 😭 😞 😔 ☹️ 🙁 😿), surprised (😲 😮 😯 😱 🤯), "
-                    "embarrassed (😳 😅 🫣), thinking (🤔 🧐 💭). The first "
-                    "mapped emoji wins; unmapped emoji do not change the face, "
-                    "and emoji never select 'off'. Irodori keeps emoji in the "
-                    "TTS input so they can act as voice-style cues. Engines "
-                    "without emoji-style support, including VOICEVOX, strip all "
-                    "emoji before synthesis; if stripping leaves empty text, the "
-                    "face change is still attempted and speech is skipped."
+                    "firmware owns the speaking animation. Engine is selectable "
+                    "via 'voice' (default 'voicevox')."
                 ),
                 inputSchema={
                     "type": "object",
@@ -2540,9 +2411,8 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "minimal firmware change to handle the inbound 'listen' "
                     "wire type (paired with this gateway release). Engine is "
                     "selectable via 'engine' (default 'faster-whisper', local). "
-                    "Optional 'motion' feedback can switch the avatar to "
-                    "'thinking' during capture ('face-only') or tilt the head "
-                    "up while preserving yaw ('look-up'). "
+                    "Optional 'motion' feedback can tilt the head up while "
+                    "preserving yaw ('look-up'). "
                     "Install the relevant extra "
                     "('pip install stackchan-mcp[stt-faster-whisper]' or "
                     "'stt-openai'); calling this tool before an engine is "
@@ -2588,12 +2458,10 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         },
                         "motion": {
                             "type": "string",
-                            "enum": ["none", "face-only", "look-up"],
+                            "enum": ["none", "look-up"],
                             "description": (
                                 "Optional visible feedback during capture. "
                                 "'none' preserves the previous behaviour. "
-                                "'face-only' shows the thinking avatar during "
-                                "capture and restores idle at the end. "
                                 "'look-up' preserves yaw, tilts pitch to "
                                 "look_up_pitch, and holds the pose on success."
                             ),
@@ -2954,55 +2822,6 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         },
                     },
                     "required": ["addr", "write_bytes", "n_bytes"],
-                },
-            ),
-            Tool(
-                name="load_avatar_set",
-                description=(
-                    "Load a dynamic avatar set onto the connected ESP32 "
-                    "(Phase 4.5 avatar pipeline). The gateway stages the "
-                    "payload on its HTTP server, notifies the device via "
-                    "WebSocket, and the device fetches + SHA256-verifies + "
-                    "loads it into PSRAM. ``archive_path`` must point to a "
-                    "raw RGB565 file on the gateway host: layered mode = "
-                    "14 frames (face 6 + eyes 3 + mouth 5) totalling "
-                    "537,600 bytes; matrix mode = 90 frames (6 × 3 × 5) "
-                    "totalling 3,456,000 bytes; layered-320x240 mode = "
-                    "14 native frames totalling 2,150,400 bytes. Returns ok / "
-                    "checksum / "
-                    "bytes_transferred / error."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "archive_path": {
-                            "type": "string",
-                            "description": (
-                                "Filesystem path on the gateway host to "
-                                "the raw RGB565 payload."
-                            ),
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["layered", "matrix", "layered-320x240"],
-                            "description": (
-                                "'layered' (14 frames, ~525 KB) or "
-                                "'matrix' (90 frames, ~3.3 MB), or "
-                                "'layered-320x240' (14 frames, ~2.1 MB)."
-                            ),
-                        },
-                        "timeout": {
-                            "type": "number",
-                            "description": (
-                                "Max seconds to wait for the device's "
-                                "avatar_set_loaded reply."
-                            ),
-                            "default": 60.0,
-                            "minimum": 5.0,
-                            "maximum": 300.0,
-                        },
-                    },
-                    "required": ["archive_path", "mode"],
                 },
             ),
         ]

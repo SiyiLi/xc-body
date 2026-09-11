@@ -9,9 +9,8 @@ die() {
 runtime_image=${1:-}
 caddy_image=${2:-}
 source_commit=${3:-}
-avatar_sha256=${4:-}
-deployment_kind=${5:-}
-public_url=${6:-}
+deployment_kind=${4:-}
+public_url=${5:-}
 root=/data/xc-body
 log_dir=/data/xc-body/logs
 deploy_dir=$root/deploy
@@ -27,8 +26,6 @@ image_pattern='^[A-Za-z0-9._:-]+/[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$'
   || die "invalid Caddy image reference" 64
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid source commit" 64
-[[ "$avatar_sha256" =~ ^[0-9a-f]{64}$ ]] \
-  || die "invalid avatar digest" 64
 case "$deployment_kind" in
   candidate|committed) ;;
   *) die "invalid deployment kind" 64 ;;
@@ -146,7 +143,6 @@ state_tmp=$root/gateway-state/.last-deploy-state.$$
 {
   printf 'status=%s\n' "$deployment_kind"
   printf 'source_commit=%s\n' "$source_commit"
-  printf 'avatar_sha256=%s\n' "$avatar_sha256"
   printf 'runtime_image=%s\n' "$runtime_image"
   printf 'caddy_image=%s\n' "$caddy_image"
   printf 'deployed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

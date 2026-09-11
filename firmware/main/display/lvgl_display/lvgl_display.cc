@@ -175,9 +175,13 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
             FONT_AWESOME_BATTERY_FULL, // 80-99%
             FONT_AWESOME_BATTERY_FULL, // 100%
         };
+#if CONFIG_BOARD_TYPE_STACKCHAN
+        icon = levels[battery_level / 20];
+#else
         icon = charging && !appliance_status_style
             ? FONT_AWESOME_BATTERY_BOLT
             : levels[battery_level / 20];
+#endif
         if (battery_icon_ != icon) {
             battery_icon_ = icon;
             if (battery_label_ != nullptr) {
@@ -190,6 +194,12 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         }
         if (battery_label_ != nullptr) {
             lv_obj_remove_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_BOARD_TYPE_STACKCHAN
+            lv_obj_set_style_text_color(
+                battery_label_,
+                charging ? lv_color_hex(0x22C55E) : lv_color_white(),
+                0);
+#endif
         }
         if (appliance_battery_label_ != nullptr) {
             lv_obj_remove_flag(

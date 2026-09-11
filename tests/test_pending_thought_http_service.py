@@ -172,7 +172,6 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
         config = SimpleNamespace(
             token="upstream-secret",
             url="https://stackchan.invalid/mcp",
-            avatar_path="/srv/xc-body/avatar.rgb565le",
         )
         runtime = Mock()
         runtime.create_session.side_effect = [Session(), Session()]
@@ -249,7 +248,6 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             UPSTREAM_URL_ENV: "https://stackchan.invalid/mcp",
             UPSTREAM_TOKEN_ENV: "upstream-secret",
             DOWNSTREAM_TOKEN_ENV: "downstream-secret",
-            "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
             "XC_BODY_PCM_URL": "http://127.0.0.1:8766/pcm",
             "XC_BODY_PLAYBACK_TOKEN": "playback-secret",
@@ -287,7 +285,6 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             config = SimpleNamespace(
                 url="https://stackchan.invalid/mcp",
                 token="upstream-secret",
-                avatar_path="/srv/xc-body/avatar.rgb565le",
             )
             playback_config = PlaybackConfig(
                 url="http://127.0.0.1:8766/opus",
