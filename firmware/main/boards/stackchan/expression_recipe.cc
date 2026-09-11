@@ -116,6 +116,15 @@ bool IsStackChanExpressionName(const std::string& name) {
     return IsStackChanExpressionName(name.c_str());
 }
 
+bool IsStackChanExpressionRecipeName(const char* name) {
+    return IsStackChanExpressionName(name) ||
+        (name != nullptr && std::strcmp(name, "touch") == 0);
+}
+
+bool IsStackChanExpressionRecipeName(const std::string& name) {
+    return IsStackChanExpressionRecipeName(name.c_str());
+}
+
 const char* StackChanExpressionOutcomeName(StackChanExpressionOutcome outcome) {
     switch (outcome) {
         case StackChanExpressionOutcome::STARTED:
@@ -149,9 +158,15 @@ bool ParseStackChanExpressionRecipe(
     }
     const cJSON* schema =
         cJSON_GetObjectItemCaseSensitive(value, "schema_version");
+    const cJSON* animations =
+        cJSON_GetObjectItemCaseSensitive(value, "animations");
     const cJSON* steps = cJSON_GetObjectItemCaseSensitive(value, "steps");
-    if (!IsInteger(schema) || schema->valueint != 1 ||
-        !cJSON_IsArray(steps)) {
+    if (!IsInteger(schema) || schema->valueint != 2 ||
+        !cJSON_IsArray(animations) || !cJSON_IsArray(steps)) {
+        return false;
+    }
+    const int animation_count = cJSON_GetArraySize(animations);
+    if (animation_count != 1) {
         return false;
     }
     const int count = cJSON_GetArraySize(steps);
@@ -162,6 +177,12 @@ bool ParseStackChanExpressionRecipe(
 
     recipe = StackChanExpressionRecipe{};
     recipe.schema_version = schema->valueint;
+    const cJSON* animation = cJSON_GetArrayItem(animations, 0);
+    if (!IsString(animation) ||
+        !IsStackChanExpressionName(animation->valuestring)) {
+        return false;
+    }
+    recipe.animation = animation->valuestring;
     recipe.step_count = static_cast<size_t>(count);
     for (int index = 0; index < count; ++index) {
         const cJSON* item = cJSON_GetArrayItem(steps, index);
@@ -206,6 +227,9 @@ cJSON* EncodeStackChanExpressionRecipe(
     cJSON* encoded = cJSON_CreateObject();
     cJSON_AddNumberToObject(
         encoded, "schema_version", recipe.schema_version);
+    cJSON* animations = cJSON_AddArrayToObject(encoded, "animations");
+    cJSON_AddItemToArray(
+        animations, cJSON_CreateString(recipe.animation.c_str()));
     cJSON* steps = cJSON_AddArrayToObject(encoded, "steps");
     for (size_t index = 0; index < recipe.step_count; ++index) {
         const auto& step = recipe.steps[index];
@@ -234,9 +258,11 @@ cJSON* EncodeStackChanExpressionRecipe(
 bool ValidateStackChanExpressionRecipe(
         const StackChanExpressionRecipe& recipe,
         std::string& error) {
-    if (recipe.schema_version != 1 || recipe.step_count == 0 ||
+    if (recipe.schema_version != 2 ||
+        !IsStackChanExpressionName(recipe.animation) ||
+        recipe.step_count == 0 ||
         recipe.step_count > kStackChanExpressionMaxSteps) {
-        error = "recipe must use schema 1 with one to five steps";
+        error = "schema 2 currently requires one animation and one to five steps";
         return false;
     }
 
@@ -380,7 +406,7 @@ bool IsStackChanExpressionVelocitySafe(
 StackChanExpressionLoadStatus LoadStackChanExpressionRecipe(
         const std::string& name,
         StackChanExpressionRecipe& recipe) {
-    if (!IsStackChanExpressionName(name)) {
+    if (!IsStackChanExpressionRecipeName(name)) {
         return StackChanExpressionLoadStatus::INVALID;
     }
     Settings settings(kExpressionSettingsNamespace, false);
@@ -390,8 +416,21 @@ StackChanExpressionLoadStatus LoadStackChanExpressionRecipe(
     }
     cJSON* stored = cJSON_Parse(encoded.c_str());
     std::string error;
-    const bool valid = ParseStackChanExpressionRecipe(stored, recipe) &&
-        ValidateStackChanExpressionRecipe(recipe, error);
+    bool valid = ParseStackChanExpressionRecipe(stored, recipe);
+    if (!valid && cJSON_IsObject(stored)) {
+        cJSON* schema = cJSON_GetObjectItemCaseSensitive(
+            stored, "schema_version");
+        if (IsInteger(schema) && schema->valueint == 1) {
+            cJSON_ReplaceItemInObjectCaseSensitive(
+                stored, "schema_version", cJSON_CreateNumber(2));
+            cJSON* animations = cJSON_CreateArray();
+            cJSON_AddItemToArray(
+                animations, cJSON_CreateString(name.c_str()));
+            cJSON_AddItemToObject(stored, "animations", animations);
+            valid = ParseStackChanExpressionRecipe(stored, recipe);
+        }
+    }
+    valid = valid && ValidateStackChanExpressionRecipe(recipe, error);
     cJSON_Delete(stored);
     return valid
         ? StackChanExpressionLoadStatus::OK
@@ -402,7 +441,7 @@ bool SaveStackChanExpressionRecipe(
         const std::string& name,
         const StackChanExpressionRecipe& recipe,
         std::string& error) {
-    if (!IsStackChanExpressionName(name)) {
+    if (!IsStackChanExpressionRecipeName(name)) {
         error = "unknown expression";
         return false;
     }
@@ -423,7 +462,7 @@ bool SaveStackChanExpressionRecipe(
 }
 
 void ResetStackChanExpressionRecipe(const std::string& name) {
-    if (!IsStackChanExpressionName(name)) {
+    if (!IsStackChanExpressionRecipeName(name)) {
         return;
     }
     Settings settings(kExpressionSettingsNamespace, true);

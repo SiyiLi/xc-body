@@ -5191,7 +5191,7 @@ private:
 
     void StartAuthoredExpression(uint64_t now_us) {
         StopBlinkTimer();
-        if (!StartExpressionAnimation(expression_name_)) {
+        if (!StartExpressionAnimation(expression_recipe_.animation)) {
             FinishExpression(
                 StackChanExpressionOutcome::MOTION_FAILED, now_us);
             return;
@@ -5254,7 +5254,7 @@ private:
             const std::string& name,
             const StackChanExpressionRecipe& recipe) {
         std::string error;
-        if (!IsStackChanExpressionName(name) ||
+        if (!IsStackChanExpressionRecipeName(name) ||
             !ValidateStackChanExpressionRecipe(recipe, error)) {
             return StackChanExpressionOutcome::INVALID_RECIPE;
         }

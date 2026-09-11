@@ -42,7 +42,8 @@ struct StackChanExpressionStep {
 };
 
 struct StackChanExpressionRecipe {
-    int schema_version = 1;
+    int schema_version = 2;
+    std::string animation;
     size_t step_count = 0;
     std::array<StackChanExpressionStep, kStackChanExpressionMaxSteps> steps;
 };
@@ -67,6 +68,8 @@ enum class StackChanExpressionLoadStatus : uint8_t {
 
 bool IsStackChanExpressionName(const char* name);
 bool IsStackChanExpressionName(const std::string& name);
+bool IsStackChanExpressionRecipeName(const char* name);
+bool IsStackChanExpressionRecipeName(const std::string& name);
 const char* StackChanExpressionOutcomeName(StackChanExpressionOutcome outcome);
 
 bool ParseStackChanExpressionRecipe(

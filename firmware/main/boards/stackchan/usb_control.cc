@@ -337,7 +337,8 @@ void SetAutomaticOta(const cJSON* request) {
 
 void HandleExpressionRequest(const cJSON* request, const char* command) {
     const cJSON* name = cJSON_GetObjectItemCaseSensitive(request, "name");
-    if (!IsString(name) || !IsStackChanExpressionName(name->valuestring)) {
+    if (!IsString(name) ||
+        !IsStackChanExpressionRecipeName(name->valuestring)) {
         if (std::strcmp(command, "expression_preview") == 0) {
             SendExpressionOutcome(
                 command,
@@ -389,7 +390,9 @@ void HandleExpressionRequest(const cJSON* request, const char* command) {
                 name->valuestring,
                 StackChanExpressionOutcome::INVALID_RECIPE);
         } else {
-            SendError(command, "recipe must use schema 1 curve/pause steps");
+            SendError(
+                command,
+                "recipe must use schema 2 with one animation and curve/pause steps");
         }
         return;
     }

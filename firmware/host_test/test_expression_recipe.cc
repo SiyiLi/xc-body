@@ -6,6 +6,7 @@ namespace {
 
 StackChanExpressionRecipe Recipe(int duration_ms = 400, int via = 8) {
     StackChanExpressionRecipe recipe;
+    recipe.animation = "agree";
     recipe.step_count = 1;
     auto& curve = recipe.steps[0];
     curve.type = StackChanExpressionStepType::CURVE;
