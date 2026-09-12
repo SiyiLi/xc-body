@@ -128,7 +128,9 @@ supply motor parameters.
 2. The shared fast-model projection classifies it as `offer` or `skip`.
 3. An accepted short plain result crosses authenticated HTTPS unchanged;
    long or formatted results use the bounded Chinese projection.
-4. The VM prepares and validates Opus before creating pending state.
+4. The VM prepares and validates Opus, then arms the robot's offer gate before
+   creating pending state. If it cannot arm that gate, it ignores the offer and
+   does not knock.
 5. Firmware performs one silent knock and returns to idle.
 6. When direct attention and speech are inactive, a deliberate head pat or
    stroke starts the local touch reaction. Its successful safe return

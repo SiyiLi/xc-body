@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -27,6 +28,8 @@ _MAX_OPUS_PACKETS = 4096
 _MAX_OPUS_PACKET_BYTES = 1275
 _REQUIRED_OPUS_PACKET_DURATION_MS = 60
 _OFFER_TTL_SECONDS = 30 * 60
+
+logger = logging.getLogger(__name__)
 
 
 class PendingThoughtError(ValueError):
@@ -59,8 +62,8 @@ class TellPort(Protocol):
 
 
 class OfferStatePort(Protocol):
-    def set_offer_pending(self, pending: bool) -> None:
-        """Synchronize whether the robot is waiting on one offer."""
+    def set_offer_pending(self, pending: bool) -> bool:
+        """Return whether the robot accepted the pending-offer state."""
 
 
 def decode_prepared_audio(audio_base64: str) -> bytes:
@@ -270,9 +273,15 @@ class KnockWaitTell:
                 return self._record(thought, "remembered")
             if self._pending is not None:
                 return self._record(thought, "ignored")
+            if not self._set_offer_pending(True):
+                logger.warning(
+                    "offer dropped before knock: thought_id=%s "
+                    "reason=offer_gate_unavailable action=ignored",
+                    thought.thought_id,
+                )
+                return self._record(thought, "ignored")
             self._pending = thought
             try:
-                self._set_offer_pending(True)
                 self._knock_port.knock(thought.thought_id)
             except Exception:
                 self._pending = None
@@ -311,9 +320,10 @@ class KnockWaitTell:
         self._set_offer_pending(False)
         self._record(thought, "expired")
 
-    def _set_offer_pending(self, pending: bool) -> None:
-        if self._offer_state_port is not None:
-            self._offer_state_port.set_offer_pending(pending)
+    def _set_offer_pending(self, pending: bool) -> bool:
+        if self._offer_state_port is None:
+            return True
+        return self._offer_state_port.set_offer_pending(pending)
 
     def handle_stackchan_event(
         self, event: Mapping[str, object]

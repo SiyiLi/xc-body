@@ -74,8 +74,10 @@ assets package repairs it. A blank face is not a substitute for an expression.
 - Direct conversation runs saved `curious`, returns safely to idle, and then
   starts the unchanged speech path. There is no direct projection or model
   expression selection.
-- A background offer runs saved `curious` once, returns safely, then enters the
-  unchanged wait-for-touch state and tells the prepared result after consent.
+- A background offer first arms the robot's waiting gate. If that cannot be
+  armed, it is ignored without a knock. Otherwise it runs saved `curious`
+  once, returns safely, then enters the unchanged wait-for-touch state and
+  tells the prepared result after consent.
 - While direct attention or its speech is active, a head tap or stroke is
   ignored. After it completes, the next gesture runs the locally stored
   `touch` recipe. Only that reaction's successful safe return emits its

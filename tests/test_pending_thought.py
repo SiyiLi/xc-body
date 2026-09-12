@@ -37,6 +37,7 @@ class RecordingBody:
 
     def set_offer_pending(self, pending):
         self.offer_states.append(pending)
+        return True
 
 
 def offer(machine, thought_id="run:42"):

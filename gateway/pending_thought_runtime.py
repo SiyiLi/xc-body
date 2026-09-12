@@ -181,19 +181,20 @@ class StackChanThoughtBody:
             metrics.update(_stream_playback_metrics(playback))
             return metrics
 
-    def set_offer_pending(self, pending: bool) -> None:
-        """Best-effort synchronization of the firmware screensaver gate."""
+    def set_offer_pending(self, pending: bool) -> bool:
+        """Return whether firmware accepted the pending-offer state."""
 
         with self._operation_lock:
             if self._synced_offer_pending == pending:
-                return
+                return True
             try:
                 self._require_ready()
                 self._call("set_offer_pending", {"pending": pending})
             except PendingThoughtRuntimeError as exc:
                 logger.warning("offer-state synchronization failed: %s", exc)
-                return
+                return False
             self._synced_offer_pending = pending
+            return True
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
