@@ -4992,8 +4992,7 @@ private:
                 TouchEvent::IDLE, std::memory_order_acq_rel);
             if (expression_finish_outcome_ ==
                     StackChanExpressionOutcome::COMPLETED &&
-                touch_event != TouchEvent::IDLE &&
-                offer_pending_.load(std::memory_order_acquire)) {
+                touch_event != TouchEvent::IDLE) {
                 const char* subtype = touch_event == TouchEvent::TAP
                     ? "tap" : "stroke";
                 Application::GetInstance().SendStackChanEvent(
@@ -5198,8 +5197,7 @@ private:
             touch_reaction_duration_ms_.store(
                 touch_duration_ms, std::memory_order_relaxed);
             touch_offer_consent_event_.store(
-                offer_pending_.load(std::memory_order_acquire)
-                    ? touch_event : TouchEvent::IDLE,
+                touch_event,
                 std::memory_order_release);
         }
         expression_abort_requested_.store(false, std::memory_order_relaxed);

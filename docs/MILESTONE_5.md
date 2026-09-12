@@ -74,16 +74,16 @@ assets package repairs it. A blank face is not a substitute for an expression.
 - Direct conversation runs saved `curious`, returns safely to idle, and then
   starts the unchanged speech path. There is no direct projection or model
   expression selection.
-- A background offer first arms the robot's waiting gate. If that cannot be
-  armed, it is ignored without a knock. Otherwise it runs saved `curious`
-  once, returns safely, then enters the unchanged wait-for-touch state and
-  tells the prepared result after consent.
+- A background offer runs saved `curious` once, returns safely, then enters
+  the unchanged wait-for-touch state and tells the prepared result after
+  consent. The VM asks firmware to keep the idle screensaver hidden while the
+  offer waits; that display hint does not own offer admission.
 - While direct attention or its speech is active, a head tap or stroke is
   ignored. After it completes, the next gesture runs the locally stored
   `touch` recipe. Only that reaction's successful safe return emits its
-  existing event if that offer is still pending, then starts prepared playback.
-  With no offer, the reaction is local only and emits no gateway event. A
-  rejected or failed touch reaction has no offer or audio effect.
+  existing event. The VM starts prepared playback when an offer is pending and
+  discards the event otherwise. A rejected or failed touch reaction has no
+  offer or audio effect.
 - While recording, firmware plays `listening.gif` when that optional asset is
   available. It never starts a motor recipe; a missing or invalid GIF leaves
   the static idle face visible and cannot block recording.

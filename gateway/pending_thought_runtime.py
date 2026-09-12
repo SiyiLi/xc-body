@@ -75,7 +75,6 @@ class StackChanThoughtBody:
         self._playback_token = playback_token
         self._device_session_id: str | None = None
         self._operation_lock = RLock()
-        self._synced_offer_pending: bool | None = None
 
     def mark_device_ready(self, session_id: str) -> None:
         """Bind readiness to one initialized device session."""
@@ -84,8 +83,6 @@ class StackChanThoughtBody:
             raise PendingThoughtRuntimeError(
                 "device readiness requires a device session"
             )
-        if session_id != self._device_session_id:
-            self._synced_offer_pending = None
         self._device_session_id = session_id
 
     def is_ready(self) -> bool:
@@ -181,20 +178,15 @@ class StackChanThoughtBody:
             metrics.update(_stream_playback_metrics(playback))
             return metrics
 
-    def set_offer_pending(self, pending: bool) -> bool:
-        """Return whether firmware accepted the pending-offer state."""
+    def set_offer_pending(self, pending: bool) -> None:
+        """Best-effort hint controlling the firmware idle screensaver."""
 
         with self._operation_lock:
-            if self._synced_offer_pending == pending:
-                return True
             try:
                 self._require_ready()
                 self._call("set_offer_pending", {"pending": pending})
             except PendingThoughtRuntimeError as exc:
                 logger.warning("offer-state synchronization failed: %s", exc)
-                return False
-            self._synced_offer_pending = pending
-            return True
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
@@ -383,7 +375,7 @@ class PendingThoughtRuntime:
         return await asyncio.to_thread(self.body.is_ready)
 
     async def pending_thought_id(self) -> str | None:
-        """Return the current unexpired offer without device side effects."""
+        """Return the current unexpired offer."""
 
         if self.machine is None:
             return None
@@ -392,7 +384,7 @@ class PendingThoughtRuntime:
         )
 
     async def reconcile_offer_state(self) -> str | None:
-        """Expire stale offers and align the firmware pending-state gate."""
+        """Expire stale offers and restore the firmware display hint."""
 
         pending_id = await self.pending_thought_id()
         if self.body is not None:
@@ -445,7 +437,7 @@ class PendingThoughtRuntime:
             self.machine = KnockWaitTell(
                 self.body,
                 self.body,
-                offer_state_port=self.body,
+                offer_display_port=self.body,
             )
         session = create_stackchan_client_session(
             read_stream,

@@ -34,9 +34,9 @@ class RecordingBody:
 
 
 class StackChanEventSessionTests(unittest.TestCase):
-    def test_session_message_routes_only_stackchan_event(self):
+    def test_session_message_routes_only_touch_during_offer_wait(self):
         body = RecordingBody()
-        machine = self._waiting_machine(body)
+        machine = KnockWaitTell(body, body)
         unrelated = SimpleNamespace(
             root=SimpleNamespace(
                 method="notifications/tools/list_changed",
@@ -61,6 +61,9 @@ class StackChanEventSessionTests(unittest.TestCase):
 
         async def route_messages():
             await handle_session_message(unrelated, dispatcher)
+            await handle_session_message(head_tap, dispatcher)
+            self._offer(machine)
+            await dispatcher.drain()
             self.assertEqual(machine.pending_thought_id, "eval:42")
             await handle_session_message(head_tap, dispatcher)
             await dispatcher.drain()
@@ -131,8 +134,9 @@ class StackChanEventSessionTests(unittest.TestCase):
                 self.active = 0
                 self.max_active = 0
 
-            def handle_stackchan_event(self, event):
+            def handle_stackchan_event(self, event, received_at):
                 del event
+                del received_at
                 self.calls += 1
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
@@ -184,6 +188,11 @@ class StackChanEventSessionTests(unittest.TestCase):
     @staticmethod
     def _waiting_machine(body):
         machine = KnockWaitTell(body, body)
+        StackChanEventSessionTests._offer(machine)
+        return machine
+
+    @staticmethod
+    def _offer(machine):
         machine.submit(
             {
                 "version": "v1",
@@ -192,7 +201,6 @@ class StackChanEventSessionTests(unittest.TestCase):
                 "audio_base64": _PREPARED_AUDIO_BASE64,
             }
         )
-        return machine
 
 
 @contextmanager

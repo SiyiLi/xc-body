@@ -64,6 +64,8 @@ configuration that has not been inspected.
 - Think before coding and state assumptions.
 - Prefer the smallest implementation that advances the active milestone and
   preserves its reference validation scenarios.
+- Simplify the underlying logic before adding protection around it. Do not use
+  complex code to protect logic that can be made simpler.
 - Give each invariant one owner. Trust guarantees already enforced by upstream
   or downstream modules; do not duplicate their validation, ordering, queues,
   retries, or state.
@@ -104,8 +106,8 @@ configuration that has not been inspected.
   do not add fallbacks, retries, or extra validation to keep running.
 - USB calibration and conversation are separate. Do not report problems that
   require using both at once unless a normal flow does that.
-- Markdown can be stale. Use current product decisions and code, not generic
-  rules, to decide what is a bug.
+- Executable code and inspected runtime are the source of truth for current
+  behavior. Markdown alone is not evidence; correct it when it disagrees.
 - Do not treat theoretical parser or recovery hardening as a feature bug. Add
   it only when the user asks for it or a normal flow proves it is needed.
 

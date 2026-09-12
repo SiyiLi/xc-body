@@ -10,14 +10,18 @@ OpenClaw host                         Cloud rendezvous
 ┌──────────────────────┐             ┌────────────────────────────┐
 │ OpenClaw             │──HTTPS─────▶│ Caddy                      │
 │ - completion plugin  │             │ - public TLS               │
-│ - managed MCP client │             │ - authenticated routes     │
-└──────────────────────┘             │                            │
+└──────────────────────┘             │ - authenticated routes     │
+                                     │                            │
                                      │ XC Body runtime image      │
 StackChan K151/CoreS3                │ - gateway service          │
 ┌──────────────────────┐             │ - pending-thought service  │
 │ XC Body firmware     │──WSS───────▶│ - summary and playback     │
 └──────────────────────┘             └────────────────────────────┘
 ```
+
+The OpenClaw plugin uses authenticated summary and voice HTTP routes. In the
+deployed path, the pending-thought service owns the MCP connection to the
+gateway.
 
 Caddy terminates public TLS at the configured rendezvous origin. Gateway,
 playback, summary, and XC Body MCP routes are proxied internally. Caddy also
@@ -128,14 +132,16 @@ supply motor parameters.
 2. The shared fast-model projection classifies it as `offer` or `skip`.
 3. An accepted short plain result crosses authenticated HTTPS unchanged;
    long or formatted results use the bounded Chinese projection.
-4. The VM prepares and validates Opus, then arms the robot's offer gate before
-   creating pending state. If it cannot arm that gate, it ignores the offer and
-   does not knock.
+4. The VM prepares and validates Opus, then asks firmware to suppress the idle
+   screensaver while the offer transition runs.
 5. Firmware performs one silent knock and returns to idle.
-6. When direct attention and speech are inactive, a deliberate head pat or
-   stroke starts the local touch reaction. Its successful safe return
-   acknowledges the current offer.
-7. The VM sends the prepared audio for playback and clears the offer only
+6. Only after the knock completes does the VM create pending state. A failed
+   knock clears the display hint and drops the offer.
+7. When direct attention and speech are inactive, a deliberate head pat or
+   stroke starts the local touch reaction. Its successful safe return emits a
+   touch event. The VM acknowledges its current offer or discards the event
+   when no offer exists.
+8. The VM sends the prepared audio for playback and clears the offer only
    after success.
 
 The knock never receives prepared audio. No text-to-`say` fallback exists.
@@ -220,9 +226,9 @@ without USB when an immediate update is needed. USB remains a recovery fallback.
    summary, and temperature.
 3. The idle-view fonts and RGB565A8 weather icons are mapped from the assets
    partition rather than linked into either application slot.
-4. A pending offer suppresses the overlay. The pending-thought runtime
-   synchronizes this gate when an offer starts, completes, expires, or the
-   device reconnects.
+4. The pending-thought runtime asks firmware to suppress the overlay during an
+   offer transition and pending wait, and restores that display hint after a
+   device reconnect.
 5. Settings, transient behavior, listening, and speaking suppress the idle
    screen. The first LCD or head touch restores idle presence and is consumed;
    a later interaction performs its normal action. The independent power

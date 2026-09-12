@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Literal, Union
@@ -23,11 +24,11 @@ class StackChanEventDispatcher:
 
     def __init__(self, machine: KnockWaitTell):
         self._machine = machine
-        self._pending: Mapping[str, object] | None = None
+        self._pending: tuple[Mapping[str, object], float] | None = None
         self._task: asyncio.Task[None] | None = None
 
     def dispatch(self, event: Mapping[str, object]) -> None:
-        self._pending = event
+        self._pending = (event, time.monotonic())
         if self._task is None:
             self._task = asyncio.create_task(self._run())
 
@@ -37,12 +38,13 @@ class StackChanEventDispatcher:
 
     async def _run(self) -> None:
         while self._pending is not None:
-            event = self._pending
+            event, received_at = self._pending
             self._pending = None
             try:
                 await asyncio.to_thread(
                     self._machine.handle_stackchan_event,
                     event,
+                    received_at,
                 )
             except Exception:
                 logger.exception("StackChan event handler failed")

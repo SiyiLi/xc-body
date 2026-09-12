@@ -204,7 +204,7 @@ async def _maintain_pending_runtime(
                                 )
                                 if not restored:
                                     break
-                                await runtime.reconcile_offer_state()
+                                await runtime.pending_thought_id()
                                 await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
                         finally:
                             await wait_for_stackchan_event_tasks(session)

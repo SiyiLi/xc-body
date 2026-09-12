@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -28,9 +27,6 @@ _MAX_OPUS_PACKETS = 4096
 _MAX_OPUS_PACKET_BYTES = 1275
 _REQUIRED_OPUS_PACKET_DURATION_MS = 60
 _OFFER_TTL_SECONDS = 30 * 60
-
-logger = logging.getLogger(__name__)
-
 
 class PendingThoughtError(ValueError):
     """A pending-thought request or state transition is invalid."""
@@ -61,9 +57,9 @@ class TellPort(Protocol):
         """Play prepared audio using the ID as the endpoint idempotency key."""
 
 
-class OfferStatePort(Protocol):
-    def set_offer_pending(self, pending: bool) -> bool:
-        """Return whether the robot accepted the pending-offer state."""
+class OfferDisplayPort(Protocol):
+    def set_offer_pending(self, pending: bool) -> None:
+        """Best-effort hint controlling the robot's idle screensaver."""
 
 
 def decode_prepared_audio(audio_base64: str) -> bytes:
@@ -242,16 +238,16 @@ class KnockWaitTell:
         knock_port: KnockPort,
         tell_port: TellPort,
         *,
-        offer_state_port: OfferStatePort | None = None,
+        offer_display_port: OfferDisplayPort | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._knock_port = knock_port
         self._tell_port = tell_port
-        self._offer_state_port = offer_state_port
+        self._offer_display_port = offer_display_port
         self._clock = clock
         self._outcomes: OrderedDict[str, ThoughtOutcome] = OrderedDict()
         self._pending: PendingThought | None = None
-        self._pending_expires_at: float | None = None
+        self._pending_since: float | None = None
         self._lock = RLock()
 
     @property
@@ -273,60 +269,63 @@ class KnockWaitTell:
                 return self._record(thought, "remembered")
             if self._pending is not None:
                 return self._record(thought, "ignored")
-            if not self._set_offer_pending(True):
-                logger.warning(
-                    "offer dropped before knock: thought_id=%s "
-                    "reason=offer_gate_unavailable action=ignored",
-                    thought.thought_id,
-                )
-                return self._record(thought, "ignored")
-            self._pending = thought
             try:
+                self._set_offer_display_pending(True)
                 self._knock_port.knock(thought.thought_id)
             except Exception:
-                self._pending = None
-                self._pending_expires_at = None
-                self._set_offer_pending(False)
+                self._set_offer_display_pending(False)
                 self._record(thought, "ignored")
                 raise
-            self._pending_expires_at = self._clock() + _OFFER_TTL_SECONDS
+            self._pending = thought
+            self._pending_since = self._clock()
             return self._record(thought, "waiting")
 
-    def acknowledge_head_gesture(self) -> ThoughtOutcome | None:
+    def acknowledge_head_gesture(
+        self,
+        received_at: float | None = None,
+    ) -> ThoughtOutcome | None:
+        if received_at is None:
+            received_at = self._clock()
         with self._lock:
             self._expire_pending()
             thought = self._pending
-            if thought is None:
+            pending_since = self._pending_since
+            if (
+                thought is None
+                or pending_since is None
+                or received_at < pending_since
+            ):
                 return None
             if thought.audio_base64 is None:
                 raise RuntimeError("pending offer has no prepared audio")
             self._tell_port.tell(thought.thought_id, thought.audio_base64)
             self._pending = None
-            self._pending_expires_at = None
-            self._set_offer_pending(False)
+            self._pending_since = None
+            self._set_offer_display_pending(False)
             return self._record(thought, "told")
 
     def _expire_pending(self) -> None:
         thought = self._pending
-        expires_at = self._pending_expires_at
+        pending_since = self._pending_since
         if (
             thought is None
-            or expires_at is None
-            or self._clock() < expires_at
+            or pending_since is None
+            or self._clock() < pending_since + _OFFER_TTL_SECONDS
         ):
             return
         self._pending = None
-        self._pending_expires_at = None
-        self._set_offer_pending(False)
+        self._pending_since = None
+        self._set_offer_display_pending(False)
         self._record(thought, "expired")
 
-    def _set_offer_pending(self, pending: bool) -> bool:
-        if self._offer_state_port is None:
-            return True
-        return self._offer_state_port.set_offer_pending(pending)
+    def _set_offer_display_pending(self, pending: bool) -> None:
+        if self._offer_display_port is not None:
+            self._offer_display_port.set_offer_pending(pending)
 
     def handle_stackchan_event(
-        self, event: Mapping[str, object]
+        self,
+        event: Mapping[str, object],
+        received_at: float | None = None,
     ) -> ThoughtOutcome | None:
         """Acknowledge a deliberate tap or short stroke on the head."""
 
@@ -334,7 +333,7 @@ class KnockWaitTell:
             raise PendingThoughtError("StackChan event must be an object")
         if not is_head_acknowledgment(event):
             return None
-        return self.acknowledge_head_gesture()
+        return self.acknowledge_head_gesture(received_at)
 
     def _record(
         self,
