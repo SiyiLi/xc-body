@@ -178,7 +178,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
 #if CONFIG_BOARD_TYPE_STACKCHAN
         icon = levels[battery_level / 20];
 #else
-        icon = charging && !appliance_status_style
+        icon = charging && !application_status_bar
             ? FONT_AWESOME_BATTERY_BOLT
             : levels[battery_level / 20];
 #endif

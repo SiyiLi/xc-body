@@ -26,9 +26,6 @@ constexpr uint32_t kTaskStackSize = 6144;
 constexpr UBaseType_t kTaskPriority = tskIDLE_PRIORITY + 1;
 const char* const kTag = "StackChanUsb";
 StackChanExpressionController* expression_controller = nullptr;
-bool preview_response_pending = false;
-std::string preview_name;
-StackChanExpressionRecipe preview_recipe;
 
 bool IsString(const cJSON* value) {
     return value != nullptr && cJSON_IsString(value) &&
@@ -109,21 +106,6 @@ void SendExpressionOutcome(
             response, "recipe", EncodeStackChanExpressionRecipe(*recipe));
     }
     SendResponse(response);
-}
-
-void PollExpressionPreview() {
-    if (!preview_response_pending || expression_controller == nullptr) {
-        return;
-    }
-    StackChanExpressionOutcome outcome;
-    if (!expression_controller->TakeExpressionPreviewResult(outcome)) {
-        return;
-    }
-    SendExpressionOutcome(
-        "expression_preview", preview_name, outcome, &preview_recipe);
-    preview_response_pending = false;
-    preview_name.clear();
-    preview_recipe = StackChanExpressionRecipe{};
 }
 
 void AddGatewayStatus(cJSON* response) {
@@ -408,13 +390,6 @@ void HandleExpressionRequest(const cJSON* request, const char* command) {
         return;
     }
     if (std::strcmp(command, "expression_preview") == 0) {
-        if (preview_response_pending) {
-            SendExpressionOutcome(
-                command,
-                name->valuestring,
-                StackChanExpressionOutcome::BUSY);
-            return;
-        }
         if (expression_controller == nullptr) {
             SendExpressionOutcome(
                 command,
@@ -428,9 +403,12 @@ void HandleExpressionRequest(const cJSON* request, const char* command) {
             SendExpressionOutcome(command, name->valuestring, outcome);
             return;
         }
-        preview_name = name->valuestring;
-        preview_recipe = recipe;
-        preview_response_pending = true;
+        auto response = NewResponse(command, true);
+        cJSON_AddStringToObject(response, "name", name->valuestring);
+        cJSON_AddStringToObject(response, "outcome", "started");
+        cJSON_AddItemToObject(
+            response, "recipe", EncodeStackChanExpressionRecipe(recipe));
+        SendResponse(response);
         return;
     } else {
         if (!SaveStackChanExpressionRecipe(
@@ -444,14 +422,6 @@ void HandleExpressionRequest(const cJSON* request, const char* command) {
     cJSON_AddItemToObject(
         response, "recipe", EncodeStackChanExpressionRecipe(recipe));
     cJSON_AddStringToObject(response, "persistence", "nvs");
-    SendResponse(response);
-}
-
-void AbortExpressionPreview() {
-    const bool requested = expression_controller != nullptr &&
-        expression_controller->AbortExpressionPreview();
-    auto response = NewResponse("expression_abort", true);
-    cJSON_AddBoolToObject(response, "requested", requested);
     SendResponse(response);
 }
 
@@ -486,9 +456,6 @@ void HandleRequest(const char* json) {
         std::strcmp(command->valuestring, "expression_show") == 0 ||
         std::strcmp(command->valuestring, "expression_reset") == 0) {
         HandleExpressionRequest(request, command->valuestring);
-    } else if (std::strcmp(
-                   command->valuestring, "expression_abort") == 0) {
-        AbortExpressionPreview();
     } else {
         SendError(command->valuestring, "unsupported command");
     }
@@ -501,7 +468,6 @@ void UsbControlTask(void*) {
     bool overflow = false;
     ESP_LOGI(kTag, "USB maintenance control ready");
     while (true) {
-        PollExpressionPreview();
         int character = std::getchar();
         if (character == EOF) {
             clearerr(stdin);

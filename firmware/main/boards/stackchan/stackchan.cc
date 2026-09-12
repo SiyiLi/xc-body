@@ -659,6 +659,10 @@ private:
     // Last reported event for MCP get_touch_state.
     TouchEvent last_event_ = TouchEvent::IDLE;
     uint64_t   last_event_us_ = 0;
+    // A touch becomes external consent only when an offer was waiting at
+    // admission, remains pending, and the local reaction safely returns.
+    std::atomic<TouchEvent> touch_offer_consent_event_{TouchEvent::IDLE};
+    std::atomic<uint64_t> touch_reaction_duration_ms_{0};
     bool       last_zone_snapshot_[3] = {false, false, false};
     uint8_t    last_output1_raw_ = 0;
     // Press-start snapshot. last_* fields above are overwritten every poll
@@ -728,11 +732,9 @@ private:
     std::atomic<bool> expression_abort_requested_{false};
     std::atomic<ExpressionStep> expression_step_{
         ExpressionStep::STARTING};
-    std::atomic<bool> expression_preview_result_ready_{false};
-    std::atomic<StackChanExpressionOutcome> expression_preview_result_{
-        StackChanExpressionOutcome::UNAVAILABLE};
     std::atomic<bool> physical_motion_unavailable_{false};
     StackChanExpressionRecipe expression_recipe_;
+    bool expression_restore_only_ = false;
     size_t expression_step_index_ = 0;
     uint64_t expression_startup_deadline_us_ = 0;
     uint64_t expression_execution_deadline_us_ = 0;
@@ -2628,9 +2630,14 @@ private:
     }
 
     void HideScreenSaverLocked() {
-        screensaver_visible_.store(false, std::memory_order_release);
+        const bool was_visible = screensaver_visible_.exchange(
+            false, std::memory_order_acq_rel);
         if (screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
             lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (was_visible && face_gif_ != nullptr &&
+            !face_gif_->IsPlaying() && !face_gif_->HasDecodeFailure()) {
+            face_gif_->Resume();
         }
     }
 
@@ -3065,11 +3072,15 @@ private:
             !lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN) &&
             screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
             UpdateScreenSaverLocked();
-            if (!screensaver_visible_.load(std::memory_order_acquire)) {
+            const bool was_visible = screensaver_visible_.exchange(
+                true, std::memory_order_acq_rel);
+            if (!was_visible) {
+                if (face_gif_ != nullptr && face_gif_->IsPlaying()) {
+                    face_gif_->Pause();
+                }
                 lv_obj_clear_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_move_foreground(screensaver_);
             }
-            screensaver_visible_.store(true, std::memory_order_release);
         } else {
             HideScreenSaverLocked();
         }
@@ -4836,25 +4847,17 @@ private:
             preview, true, "environment_recheck", rejection_detail);
     }
 
-    void StartXcBodyExpression(
+    void StartXcBodyExpressionOperation(
             const std::string& behavior_id,
             const std::string& name,
+            const StackChanExpressionRecipe* recipe,
             const char* success_subtype) {
         if (behavior_id.empty() || behavior_id.size() > 128) {
             throw std::invalid_argument(
                 "behavior_id must contain 1 to 128 characters");
         }
-        if (!IsStackChanExpressionName(name)) {
-            throw std::invalid_argument("unknown expression");
-        }
-        StackChanExpressionRecipe recipe;
-        if (LoadStackChanExpressionRecipe(name, recipe) !=
-                StackChanExpressionLoadStatus::OK) {
-            throw std::runtime_error(
-                "expression is not calibrated");
-        }
         std::string rejection_detail;
-        const auto outcome = StartExpression(
+        const auto outcome = StartExpressionOperation(
             name,
             recipe,
             ExpressionInvocation::BEHAVIOR,
@@ -4869,6 +4872,27 @@ private:
             }
             throw std::runtime_error(message);
         }
+    }
+
+    void StartXcBodyExpression(
+            const std::string& behavior_id,
+            const std::string& name,
+            const char* success_subtype) {
+        if (!IsStackChanExpressionName(name)) {
+            throw std::invalid_argument("unknown expression");
+        }
+        StackChanExpressionRecipe recipe;
+        if (LoadStackChanExpressionRecipe(name, recipe) !=
+                StackChanExpressionLoadStatus::OK) {
+            throw std::runtime_error("expression is not calibrated");
+        }
+        StartXcBodyExpressionOperation(
+            behavior_id, name, &recipe, success_subtype);
+    }
+
+    void StartXcBodyIdleReturn(const std::string& behavior_id) {
+        StartXcBodyExpressionOperation(
+            behavior_id, "idle", nullptr, "idle_complete");
     }
 
     void StartXcBodyBehavior(
@@ -4939,16 +4963,9 @@ private:
             expression_name_.c_str(),
             StackChanExpressionOutcomeName(expression_finish_outcome_),
             face_restored ? 1 : 0);
-        physical_behavior_owner_.store(
-            PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         const auto invocation = expression_invocation_.load(
             std::memory_order_acquire);
-        if (invocation == ExpressionInvocation::PREVIEW) {
-            expression_preview_result_.store(
-                expression_finish_outcome_, std::memory_order_relaxed);
-            expression_preview_result_ready_.store(
-                true, std::memory_order_release);
-        } else if (invocation == ExpressionInvocation::BEHAVIOR) {
+        if (invocation == ExpressionInvocation::BEHAVIOR) {
             const char* subtype = expression_finish_outcome_ ==
                     StackChanExpressionOutcome::COMPLETED
                 ? expression_behavior_success_subtype_
@@ -4970,7 +4987,24 @@ private:
                 (now_us - expression_started_us_) / 1000ULL,
                 expression_behavior_id_.c_str(),
                 detail.c_str());
+        } else if (invocation == ExpressionInvocation::TOUCH) {
+            const TouchEvent touch_event = touch_offer_consent_event_.exchange(
+                TouchEvent::IDLE, std::memory_order_acq_rel);
+            if (expression_finish_outcome_ ==
+                    StackChanExpressionOutcome::COMPLETED &&
+                touch_event != TouchEvent::IDLE &&
+                offer_pending_.load(std::memory_order_acquire)) {
+                const char* subtype = touch_event == TouchEvent::TAP
+                    ? "tap" : "stroke";
+                Application::GetInstance().SendStackChanEvent(
+                    "touch",
+                    subtype,
+                    touch_reaction_duration_ms_.load(
+                        std::memory_order_acquire));
+            }
         }
+        physical_behavior_owner_.store(
+            PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         Application::GetInstance().ResumeDeferredAudioPlayback();
     }
 
@@ -5009,7 +5043,9 @@ private:
 
     void StartAuthoredExpression(uint64_t now_us) {
         if (!StartExpressionAnimation(expression_recipe_.animation)) {
-            expression_failure_reason_ = "animation_start_failed";
+            expression_failure_reason_ = ExpressionAnimationFailed()
+                ? "asset_decode_failed"
+                : "animation_start_failed";
             FinishExpression(
                 StackChanExpressionOutcome::MOTION_FAILED, now_us);
             return;
@@ -5036,7 +5072,22 @@ private:
             std::memory_order_release);
     }
 
+    void ContinueExpressionFromIdle(uint64_t now_us) {
+        if (expression_restore_only_) {
+            FinishExpression(StackChanExpressionOutcome::COMPLETED, now_us);
+        } else {
+            StartAuthoredExpression(now_us);
+        }
+    }
+
     void StartNextExpressionStep(uint64_t now_us) {
+        if (ExpressionAnimationFailed()) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "asset_decode_failed");
+            return;
+        }
         ++expression_step_index_;
         if (expression_step_index_ >= expression_recipe_.step_count) {
             if (ExpressionAnimationComplete()) {
@@ -5068,18 +5119,24 @@ private:
             ExpressionStep::RUNNING_CURVE, std::memory_order_release);
     }
 
-    StackChanExpressionOutcome StartExpression(
+    StackChanExpressionOutcome StartExpressionOperation(
             const std::string& name,
-            const StackChanExpressionRecipe& recipe,
+            const StackChanExpressionRecipe* recipe,
             ExpressionInvocation invocation,
             const std::string& behavior_id = "",
             const char* success_subtype = nullptr,
-            std::string* rejection_detail = nullptr) {
+            std::string* rejection_detail = nullptr,
+            TouchEvent touch_event = TouchEvent::IDLE,
+            uint64_t touch_duration_ms = 0) {
         std::string error;
-        if (!IsStackChanExpressionRecipeName(name) ||
-            !ValidateStackChanExpressionRecipe(recipe, error)) {
+        if ((recipe == nullptr && name != "idle") ||
+            (recipe != nullptr &&
+             !ValidateStackChanExpressionRecipeForName(
+                 name, *recipe, error))) {
             if (rejection_detail != nullptr) {
-                *rejection_detail = error;
+                *rejection_detail = error.empty()
+                    ? "invalid idle return"
+                    : error;
             }
             return StackChanExpressionOutcome::INVALID_RECIPE;
         }
@@ -5095,7 +5152,7 @@ private:
             }
             return StackChanExpressionOutcome::UNAVAILABLE;
         }
-        if (!motion_driver_->SupportsCurve()) {
+        if (recipe != nullptr && !motion_driver_->SupportsCurve()) {
             if (rejection_detail != nullptr) {
                 *rejection_detail = "curve_supported=0";
             }
@@ -5126,7 +5183,10 @@ private:
         }
 
         power_save_timer_->WakeUp();
-        expression_recipe_ = recipe;
+        if (recipe != nullptr) {
+            expression_recipe_ = *recipe;
+        }
+        expression_restore_only_ = recipe == nullptr;
         expression_step_index_ = 0;
         expression_name_ = name;
         expression_failure_reason_.clear();
@@ -5134,11 +5194,15 @@ private:
             invocation, std::memory_order_relaxed);
         expression_behavior_id_ = behavior_id;
         expression_behavior_success_subtype_ = success_subtype;
-        expression_abort_requested_.store(false, std::memory_order_relaxed);
-        if (preview) {
-            expression_preview_result_ready_.store(
-                false, std::memory_order_relaxed);
+        if (invocation == ExpressionInvocation::TOUCH) {
+            touch_reaction_duration_ms_.store(
+                touch_duration_ms, std::memory_order_relaxed);
+            touch_offer_consent_event_.store(
+                offer_pending_.load(std::memory_order_acquire)
+                    ? touch_event : TouchEvent::IDLE,
+                std::memory_order_release);
         }
+        expression_abort_requested_.store(false, std::memory_order_relaxed);
         const uint64_t now_us = esp_timer_get_time();
         expression_started_us_ = now_us;
         expression_startup_deadline_us_ =
@@ -5159,12 +5223,32 @@ private:
             }
             expression_active_.store(false, std::memory_order_release);
             expression_abort_requested_.store(false, std::memory_order_release);
+            if (invocation == ExpressionInvocation::TOUCH) {
+                touch_offer_consent_event_.store(
+                    TouchEvent::IDLE, std::memory_order_release);
+            }
             physical_behavior_owner_.store(
                 PhysicalBehaviorOwner::IDLE, std::memory_order_release);
             Application::GetInstance().ResumeDeferredAudioPlayback();
             return StackChanExpressionOutcome::BUSY;
         }
         return StackChanExpressionOutcome::STARTED;
+    }
+
+    StackChanExpressionOutcome StartExpression(
+            const std::string& name,
+            const StackChanExpressionRecipe& recipe,
+            ExpressionInvocation invocation,
+            const std::string& behavior_id = "",
+            const char* success_subtype = nullptr,
+            std::string* rejection_detail = nullptr) {
+        return StartExpressionOperation(
+            name,
+            &recipe,
+            invocation,
+            behavior_id,
+            success_subtype,
+            rejection_detail);
     }
 
     void AdvanceExpression() {
@@ -5182,6 +5266,16 @@ private:
                 StackChanExpressionOutcome::INTERRUPTED,
                 now_us,
                 "abort_requested");
+            return;
+        }
+        if (step != ExpressionStep::STARTING &&
+            step != ExpressionStep::RESTORING_FACE &&
+            step != ExpressionStep::RECOVERING_TO_IDLE &&
+            ExpressionAnimationFailed()) {
+            BeginExpressionRecovery(
+                StackChanExpressionOutcome::MOTION_FAILED,
+                now_us,
+                "asset_decode_failed");
             return;
         }
         if (step == ExpressionStep::RUNNING_CURVE &&
@@ -5218,7 +5312,7 @@ private:
                            PhysicalMotionConfirmedAt(
                                kStackChanExpressionIdleYaw,
                                kStackChanExpressionIdlePitch)) {
-                    StartAuthoredExpression(now_us);
+                    ContinueExpressionFromIdle(now_us);
                 } else if (!SynchronizePhysicalMotionPosition() ||
                            !WriteHeadAngles(
                                kStackChanExpressionIdleYaw,
@@ -5241,7 +5335,7 @@ private:
                     PhysicalMotionConfirmedAt(
                         kStackChanExpressionIdleYaw,
                         kStackChanExpressionIdlePitch)) {
-                    StartAuthoredExpression(now_us);
+                    ContinueExpressionFromIdle(now_us);
                 } else if (now_us >= expression_startup_deadline_us_) {
                     BeginExpressionRecovery(
                         StackChanExpressionOutcome::MOTION_FAILED,
@@ -5253,11 +5347,8 @@ private:
                 const auto& curve =
                     expression_recipe_.steps[expression_step_index_];
                 const auto& end = curve.points[3];
-                const bool final_curve = expression_step_index_ + 1 >=
-                    expression_recipe_.step_count;
                 if (PhysicalMotionInactive() &&
-                    (!final_curve ||
-                     PhysicalMotionConfirmedAt(end.yaw, end.pitch))) {
+                    PhysicalMotionConfirmedAt(end.yaw, end.pitch)) {
                     StartNextExpressionStep(now_us);
                 }
                 break;
@@ -5309,14 +5400,18 @@ private:
         }
     }
 
-    bool StartTouchReaction() {
+    bool StartTouchReaction(
+            TouchEvent touch_event,
+            uint64_t duration_ms) {
         StackChanExpressionRecipe recipe;
-        if (!LoadTouchRecipe(recipe)) {
+        if (LoadStackChanExpressionRecipe("touch", recipe) !=
+                StackChanExpressionLoadStatus::OK) {
             ESP_LOGW(TAG, "Touch reaction recipe is unavailable");
             return false;
         }
-        return StartExpression(
-            "touch", recipe, ExpressionInvocation::TOUCH) ==
+        return StartExpressionOperation(
+            "touch", &recipe, ExpressionInvocation::TOUCH,
+            "", nullptr, nullptr, touch_event, duration_ms) ==
             StackChanExpressionOutcome::STARTED;
     }
 
@@ -5364,32 +5459,25 @@ private:
                  (unsigned)duration_ms);
     }
 
-    void HandleTap(uint64_t duration_ms) {
-        if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
+    void HandleTouch(
+            TouchEvent touch_event,
+            const char* event_name,
+            uint64_t duration_ms) {
+        if (!touch_sensor_enabled_.load(std::memory_order_acquire) ||
+            !StartTouchReaction(touch_event, duration_ms)) {
             return;
         }
-        if (!StartTouchReaction()) {
-            return;
-        }
-        LogTouchEvent("TAP", duration_ms);
-        Application::GetInstance().SendStackChanEvent(
-            "touch", "tap", duration_ms);
-        last_event_ = TouchEvent::TAP;
+        LogTouchEvent(event_name, duration_ms);
+        last_event_ = touch_event;
         last_event_us_ = esp_timer_get_time();
     }
 
+    void HandleTap(uint64_t duration_ms) {
+        HandleTouch(TouchEvent::TAP, "TAP", duration_ms);
+    }
+
     void HandleStroke(uint64_t duration_ms) {
-        if (!touch_sensor_enabled_.load(std::memory_order_acquire)) {
-            return;
-        }
-        if (!StartTouchReaction()) {
-            return;
-        }
-        LogTouchEvent("STROKE", duration_ms);
-        Application::GetInstance().SendStackChanEvent(
-            "touch", "stroke", duration_ms);
-        last_event_ = TouchEvent::STROKE;
-        last_event_us_ = esp_timer_get_time();
+        HandleTouch(TouchEvent::STROKE, "STROKE", duration_ms);
     }
 
     // 200 ms periodic poll. Reads the sensor, applies a 2-sample debounce on
@@ -5611,7 +5699,7 @@ private:
     }
 
     bool ShowIdleFaceLocked() {
-        return ShowFaceAssetLocked("expression-agree.gif", 1, false);
+        return ShowFaceAssetLocked("idle.gif", 0, true);
     }
 
     bool ShowIdleFace() {
@@ -5665,7 +5753,8 @@ private:
             return false;
         }
         return ShowFaceAsset(
-            "expression-" + animation + ".gif", 1, true);
+                   "expression-" + animation + ".gif", 1, true) &&
+            !ExpressionAnimationFailed();
     }
 
     bool ExpressionAnimationComplete() {
@@ -5676,31 +5765,12 @@ private:
         return face_gif_ != nullptr && !face_gif_->IsPlaying();
     }
 
-    bool LoadTouchRecipe(StackChanExpressionRecipe& recipe) {
-        const auto stored = LoadStackChanExpressionRecipe("touch", recipe);
-        if (stored == StackChanExpressionLoadStatus::OK) {
-            return true;
-        }
-        if (stored == StackChanExpressionLoadStatus::INVALID) {
+    bool ExpressionAnimationFailed() {
+        if (display_ == nullptr) {
             return false;
         }
-
-        void* data = nullptr;
-        size_t size = 0;
-        if (!Assets::GetInstance().GetAssetData(
-                "touch.json", data, size) ||
-            data == nullptr || size == 0) {
-            return false;
-        }
-        const std::string encoded(
-            static_cast<const char*>(data), size);
-        cJSON* root = cJSON_ParseWithLength(
-            encoded.c_str(), encoded.size());
-        std::string error;
-        const bool valid = ParseStackChanExpressionRecipe(root, recipe) &&
-            ValidateStackChanExpressionRecipe(recipe, error);
-        cJSON_Delete(root);
-        return valid;
+        DisplayLockGuard lock(display_);
+        return face_gif_ != nullptr && face_gif_->HasDecodeFailure();
     }
 
     static bool IsGatewayUrlForced() {
@@ -5938,8 +6008,9 @@ private:
         mcp_server.AddTool(
             "self.robot.xc_body_behavior",
             "Run one XC Body physical behavior locally. Knock and attention "
-            "play curious; expression plays one named saved recipe. Every "
-            "kind returns safely to idle before publishing completion.",
+            "play curious; expression plays one named saved recipe; idle "
+            "restores the safe pose without playing a recipe. Every kind "
+            "returns safely to idle before publishing completion.",
             PropertyList({
                 Property("behavior_id", kPropertyTypeString),
                 Property("kind", kPropertyTypeString),
@@ -5955,6 +6026,8 @@ private:
                     StartXcBodyKnock(behavior_id);
                 } else if (kind == "attention") {
                     StartXcBodyAttention(behavior_id);
+                } else if (kind == "idle") {
+                    StartXcBodyIdleReturn(behavior_id);
                 } else if (kind == "expression") {
                     const std::string& expression =
                         properties["expression"].value<std::string>();
@@ -5964,7 +6037,7 @@ private:
                         "expression_complete");
                 } else {
                     throw std::invalid_argument(
-                        "kind must be knock, attention, or expression");
+                        "kind must be knock, attention, idle, or expression");
                 }
 
                 cJSON* root = cJSON_CreateObject();
@@ -7570,26 +7643,6 @@ public:
             const StackChanExpressionRecipe& recipe) override {
         return StartExpression(
             name, recipe, ExpressionInvocation::PREVIEW);
-    }
-
-    bool AbortExpressionPreview() override {
-        if (!expression_active_.load(std::memory_order_acquire) ||
-            expression_invocation_.load(std::memory_order_acquire) !=
-                ExpressionInvocation::PREVIEW) {
-            return false;
-        }
-        expression_abort_requested_.store(true, std::memory_order_release);
-        return true;
-    }
-
-    bool TakeExpressionPreviewResult(
-            StackChanExpressionOutcome& outcome) override {
-        if (!expression_preview_result_ready_.exchange(
-                false, std::memory_order_acq_rel)) {
-            return false;
-        }
-        outcome = expression_preview_result_.load(std::memory_order_relaxed);
-        return true;
     }
 
     bool BeginFirmwareMaintenance() override {

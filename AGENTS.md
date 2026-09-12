@@ -95,6 +95,19 @@ configuration that has not been inspected.
 - Do not commit unless the user requests it or explicitly approves the prepared
   commit story.
 
+## Review Rules
+
+- Report a bug only when a normal supported flow gives the user a wrong result.
+  Show the trigger, current code path, and visible result.
+- Corrupt release assets are fatal. Log the failure and safely return the head;
+  do not add fallbacks, retries, or extra validation to keep running.
+- USB calibration and conversation are separate. Do not report problems that
+  require using both at once unless a normal flow does that.
+- Markdown can be stale. Use current product decisions and code, not generic
+  rules, to decide what is a bug.
+- Do not treat theoretical parser or recovery hardening as a feature bug. Add
+  it only when the user asks for it or a normal flow proves it is needed.
+
 ## Validation Standard
 
 - Keep first-party Python at 88 columns or fewer.

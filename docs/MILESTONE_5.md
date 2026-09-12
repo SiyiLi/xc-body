@@ -3,9 +3,9 @@
 ## Objective
 
 Replace the legacy layered avatar with one deterministic expression renderer
-without changing XC Body's established conversation, offer, touch, or power
-behavior. The renderer combines reviewed GIF animation with firmware-owned
-head motion and exact safe return.
+while preserving XC Body's established conversation, offer, and power flows.
+The renderer combines reviewed GIF animation with firmware-owned head motion
+and exact safe return.
 
 ## Current Status
 
@@ -29,10 +29,10 @@ The named recipes remain:
 | `embarrassed` | mistakes and mild self-consciousness |
 | `mischievous` | playful cunning and knowing humor |
 
-Idle presence is the first frame of `expression-agree.gif`; it is not a
-separate motor recipe. The legacy `AvatarSet`, layered faces, eyes, mouth
-shapes, blink state, lip-sync renderer, download route, and checksum lifecycle
-do not remain as a fallback.
+Idle presence is the looping `idle.gif` asset; it is not a separate motor
+recipe. The legacy `AvatarSet`, layered faces, eyes, mouth shapes, blink state,
+lip-sync renderer, download route, and checksum lifecycle do not remain as a
+fallback.
 
 ## Recipe Contract
 
@@ -63,7 +63,11 @@ animation entry later changes the face without adding a touch-only renderer.
 
 Firmware validates step count and duration, servo ranges, curve continuity,
 exact idle start and return, and sampled velocity before movement. The shared
-motion driver and physical owner remain the only execution path.
+motion driver and physical owner remain the only execution path. A named
+expression also requires its named GIF: a missing or invalid expression asset
+fails before head movement. This is a critical assets integrity failure; direct
+attention, offer knocks, and touch reactions remain unavailable until a valid
+assets package repairs it. A blank face is not a substitute for an expression.
 
 ## Runtime Behavior
 
@@ -72,26 +76,32 @@ motion driver and physical owner remain the only execution path.
   expression selection.
 - A background offer runs saved `curious` once, returns safely, then enters the
   unchanged wait-for-touch state and tells the prepared result after consent.
-- A head tap or stroke runs the locally stored `touch` recipe. Gesture
-  classification, event subtype, pending-offer consent, and network traffic
-  remain unchanged.
+- While direct attention or its speech is active, a head tap or stroke is
+  ignored. After it completes, the next gesture runs the locally stored
+  `touch` recipe. Only that reaction's successful safe return emits its
+  existing event if that offer is still pending, then starts prepared playback.
+  With no offer, the reaction is local only and emits no gateway event. A
+  rejected or failed touch reaction has no offer or audio effect.
 - While recording, firmware plays `listening.gif` when that optional asset is
   available. It never starts a motor recipe; a missing or invalid GIF leaves
   the static idle face visible and cannot block recording.
 - `speaking.gif` loops only for actual audio playback, with no head motion or
   blink. Missing or invalid speaking art cannot block speech. TTS stop restores
   idle presence.
-- The public `perform_expression` gateway tool accepts one of the seven names
-  and delegates to the same firmware runner. It exposes no angles, curves,
-  timing, or other motor parameters.
+- The public `perform_expression` gateway tool accepts `idle` or one of the
+  seven expression names from a trusted upstream semantic caller. It does not
+  distinguish a user request from model judgment. `idle` restores the safe
+  pose; named expressions use the same firmware runner. The tool exposes no
+  motor parameters.
 
 ## Display Behavior
 
 - The application view owns the expression and application status bar. The
   configuration and OTA view owns the generic system content and status row.
   Switching views hides the complete inactive pair; their layers never mix.
-- XC Body does not construct generic emoji widgets. Application faces come
-  only from expression assets, and a missing asset leaves the face area blank.
+- XC Body does not construct generic emoji widgets. A blank face is the
+  fallback only for a display-only state; it never substitutes for a named
+  expression whose GIF is missing or invalid.
 - Configuration, activation, maintenance, and upgrading never show a face.
 - The first idle face is installed only after the device reaches `Idle`, so the
   face area remains blank during normal boot.
@@ -107,11 +117,14 @@ motion driver and physical owner remain the only execution path.
 
 ## USB Calibration
 
-The existing USB commands preview, abort, save, show, and reset both the seven
-named recipes and `touch`. Preview is transient; save persists the validated
-recipe in NVS. Routine app OTA preserves NVS. A stored schema-1 recipe for one
-of the original seven expressions is migrated in memory to the equivalent
-single-animation schema so previously approved motor calibration is retained.
+The existing USB commands preview, save, show, and reset both the seven named
+recipes and `touch`. `expression-recipes/touch.json` is the checked-in
+calibration input for the ordinary `touch` recipe. Preview returns immediate
+admission and remains transient; the firmware runner executes an admitted
+recipe independently. Save persists the validated recipe in NVS.
+Routine app OTA preserves NVS. A stored schema-1 recipe for one of the original
+seven expressions is migrated in memory to the equivalent single-animation
+schema so previously approved motor calibration is retained.
 
 USB remains the only boundary for changing recipes. Gateway and OpenClaw calls
 can choose only a saved semantic name.
@@ -126,8 +139,11 @@ record exact firmware, gateway, OpenClaw, and source versions:
 3. charging transition -> green level glyph with no lightning glyph;
 4. accepted USB OTA -> face hidden -> maintenance UI -> update;
 5. direct request -> listening -> curious -> safe return -> speaking -> idle;
-6. background offer -> curious -> safe return -> wait -> touch -> speaking;
-7. tap and stroke -> pleased plus the existing shake -> safe return; and
+   head touch during attention or speech has no effect;
+6. background offer -> curious -> safe return -> wait -> touch -> pleased and
+   shake -> safe return -> prepared speech;
+7. tap and stroke with no pending offer -> pleased and shake -> safe return;
+   no speech; and
 8. USB preview and persistence of `touch.json` with no second motion runner.
 
 ## Out of Scope

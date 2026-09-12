@@ -41,7 +41,9 @@ The 16 MiB StackChan layout contains two `0x3f0000` app partitions and one
 8 MiB assets partition. Routine releases starting with `0.1.8` deliver both
 the app and metadata-bound assets over OTA. Assets use one in-place partition:
 the verified update is non-atomic under power loss, while the app remains
-bootable with static fallback and retries on a later boot.
+bootable only to repair the assets partition and retries on a later boot. A
+missing, corrupt, or undecodable named expression GIF is a critical assets
+integrity failure and blocks that expression before motor movement.
 
 StackChan's expression and speaking GIFs, default touch recipe, idle-screen
 fonts, and RGB565A8 weather icons are packaged in that assets partition. They
@@ -66,8 +68,8 @@ Firmware flashing always requires separate explicit permission. Detailed
 project rules are in [`../AGENTS.md`](../AGENTS.md).
 
 The no-USB dual-slot OTA path has historical physical acceptance across
-consecutive updates. The active Milestone 4 candidate still requires physical
-acceptance.
+consecutive updates. The active Milestone 5 replacement candidate still
+requires end-to-end physical acceptance.
 
 After a bootloader rollback, firmware disables automatic boot OTA until it is
 re-enabled through USB or the configuration screen. Configuration mode uses

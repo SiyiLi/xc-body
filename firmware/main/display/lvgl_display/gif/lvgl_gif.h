@@ -44,6 +44,11 @@ public:
     bool IsPlaying() const;
 
     /**
+     * Check whether playback stopped because GIF frame decoding failed.
+     */
+    bool HasDecodeFailure() const;
+
+    /**
      * Check if GIF was loaded successfully
      */
     bool IsLoaded() const;
@@ -101,6 +106,7 @@ private:
     // Animation state
     bool playing_;
     bool loaded_;
+    bool decode_failed_;
     
     // Loop delay configuration
     uint32_t loop_delay_ms_;      // Delay between loops in milliseconds

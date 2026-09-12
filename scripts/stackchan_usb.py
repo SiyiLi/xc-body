@@ -22,12 +22,6 @@ RESPONSE_PREFIX = b"XC_BODY_RESPONSE "
 DEFAULT_TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 MAX_MANIFEST_BYTES = 64 * 1024
-EXPRESSION_STARTUP_SECONDS = 5.0
-EXPRESSION_FACE_SECONDS = 2.4
-EXPRESSION_EXECUTION_MARGIN_SECONDS = 2.0
-EXPRESSION_RECOVERY_SECONDS = 5.0
-EXPRESSION_RESPONSE_MARGIN_SECONDS = 1.5
-EXPRESSION_CANCEL_TIMEOUT_SECONDS = 6.5
 
 
 class UsbControlError(RuntimeError):
@@ -155,67 +149,6 @@ def _send_request(
             time.monotonic() + timeout,
             bytearray(),
         )
-    finally:
-        _close_port(descriptor, previous)
-
-
-def _expression_preview_timeout(
-    recipe: dict[str, object],
-    requested_timeout: float,
-) -> float:
-    duration_ms = 0
-    steps = recipe.get("steps")
-    if isinstance(steps, list):
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            duration = step.get("duration_ms")
-            if isinstance(duration, int) and not isinstance(duration, bool):
-                duration_ms += max(0, duration)
-            elif isinstance(duration, float) and duration.is_integer():
-                duration_ms += max(0, int(duration))
-    required = (
-        EXPRESSION_STARTUP_SECONDS
-        + max(duration_ms / 1000, EXPRESSION_FACE_SECONDS)
-        + EXPRESSION_EXECUTION_MARGIN_SECONDS
-        + EXPRESSION_RECOVERY_SECONDS
-        + EXPRESSION_RESPONSE_MARGIN_SECONDS
-    )
-    return max(requested_timeout, required)
-
-
-def _send_expression_preview(
-    path: str,
-    request: dict[str, object],
-    timeout: float,
-) -> dict[str, object]:
-    descriptor, previous = _open_port(path)
-    buffered = bytearray()
-    try:
-        try:
-            _write_request(descriptor, request, timeout)
-            return _receive_response(
-                descriptor,
-                "expression_preview",
-                time.monotonic() + timeout,
-                buffered,
-            )
-        except KeyboardInterrupt:
-            try:
-                _write_request(
-                    descriptor,
-                    {"command": "expression_abort"},
-                    1.0,
-                )
-                _receive_response(
-                    descriptor,
-                    "expression_preview",
-                    time.monotonic() + EXPRESSION_CANCEL_TIMEOUT_SECONDS,
-                    buffered,
-                )
-            except (OSError, UsbControlError):
-                pass
-            raise
     finally:
         _close_port(descriptor, previous)
 
@@ -471,15 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         else:
             request = {"command": args.command}
-        if args.command == "expression-preview":
-            preview_timeout = _expression_preview_timeout(
-                request["recipe"], args.timeout
-            )
-            response = _send_expression_preview(
-                path, request, preview_timeout
-            )
-        else:
-            response = _send_request(path, request, args.timeout)
+        response = _send_request(path, request, args.timeout)
         print(json.dumps(response, indent=2, sort_keys=True))
         return 0 if response.get("ok") is True else 1
     except (OSError, UsbControlError) as error:

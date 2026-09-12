@@ -84,10 +84,10 @@ scripts/stackchan_usb.py expression-show agree
 scripts/stackchan_usb.py expression-reset agree
 ```
 
-Preview waits for a terminal firmware outcome. `Ctrl-C` requests an abort on
-the same open serial transaction and waits briefly for safe recovery. Saving,
-resetting, rebooting, and physical preview motion each require their own
-explicit hardware authorization.
+Preview returns when firmware admits or rejects the recipe. Firmware executes
+an admitted preview and its safe return independently. Saving, resetting,
+rebooting, and physical preview motion each require their own explicit hardware
+authorization.
 
 Flashing firmware requires separate explicit permission.
 
@@ -95,7 +95,9 @@ Routine OTA starting with `0.1.2` requires only publishing a newer release and
 rebooting the robot. Starting with `0.1.8`, the same release also updates the
 assets partition when its verified manifest digest differs. Assets OTA is
 single-partition and therefore non-atomic under power loss; the application
-stays bootable with static fallback and retries on a later boot. The
+stays bootable only to repair the assets partition and retries on a later boot.
+A missing, corrupt, or undecodable named expression GIF is a critical assets
+integrity failure: named behavior fails before motion until it is repaired. The
 authenticated `upgrade_firmware` gateway tool provides a no-USB bridge from
 `0.1.1` and an emergency fallback. USB remains the local maintenance and
 recovery path.

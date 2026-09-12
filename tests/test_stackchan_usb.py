@@ -10,11 +10,10 @@ from unittest.mock import patch
 from scripts.stackchan_usb import (
     UsbControlError,
     _expression_recipe_request,
-    _expression_preview_timeout,
     _firmware_from_manifest,
+    main,
     _parser,
     _receive_response,
-    _send_expression_preview,
 )
 
 
@@ -95,12 +94,12 @@ class StackChanUsbExpressionTests(unittest.TestCase):
 
     def test_receive_ignores_other_valid_command_responses(self) -> None:
         abort = b'XC_BODY_RESPONSE {"command":"expression_abort","ok":true}\n'
-        preview = (
+        admission = (
             b'XC_BODY_RESPONSE {"command":"expression_preview",'
-            b'"ok":false,"outcome":"interrupted"}\n'
+            b'"ok":true,"outcome":"started"}\n'
         )
         with patch("scripts.stackchan_usb.select.select", return_value=([7], [], [])):
-            with patch("scripts.stackchan_usb.os.read", return_value=abort + preview):
+            with patch("scripts.stackchan_usb.os.read", return_value=abort + admission):
                 response = _receive_response(
                     7,
                     "expression_preview",
@@ -108,52 +107,28 @@ class StackChanUsbExpressionTests(unittest.TestCase):
                     bytearray(),
                 )
 
-        self.assertEqual(response["outcome"], "interrupted")
+        self.assertEqual(response["outcome"], "started")
 
-    def test_preview_timeout_includes_execution_and_recovery(self) -> None:
-        recipe = {
-            "steps": [
-                {"duration_ms": 5000.0},
-                {"duration_ms": 5000.0},
-                {"duration_ms": 5000.0},
-            ]
-        }
+    def test_preview_uses_one_immediate_request(self) -> None:
+        recipe = {"schema_version": 2, "animations": ["agree"], "steps": []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agree.json"
+            path.write_text(json.dumps(recipe), encoding="utf-8")
+            with patch(
+                "scripts.stackchan_usb._discover_port",
+                return_value="/dev/test",
+            ), patch(
+                "scripts.stackchan_usb._send_request",
+                return_value={"command": "expression_preview", "ok": True},
+            ) as send:
+                with patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(
+                        main(["expression-preview", "agree", str(path)]),
+                        0,
+                    )
 
-        self.assertEqual(_expression_preview_timeout(recipe, 5.0), 28.5)
-
-    def test_preview_cancellation_reuses_descriptor_and_buffer(self) -> None:
-        request = {
-            "command": "expression_preview",
-            "name": "agree",
-            "recipe": {"steps": []},
-        }
-        terminal = {
-            "command": "expression_preview",
-            "ok": False,
-            "outcome": "interrupted",
-        }
-        with patch(
-            "scripts.stackchan_usb._open_port",
-            return_value=(7, []),
-        ), patch("scripts.stackchan_usb._close_port") as close, patch(
-            "scripts.stackchan_usb._write_request"
-        ) as write, patch(
-            "scripts.stackchan_usb._receive_response",
-            side_effect=(KeyboardInterrupt, terminal),
-        ) as receive:
-            with self.assertRaises(KeyboardInterrupt):
-                _send_expression_preview("/dev/test", request, 20.0)
-
-        self.assertEqual(write.call_args_list[0].args[:2], (7, request))
-        self.assertEqual(
-            write.call_args_list[1].args[:2],
-            (7, {"command": "expression_abort"}),
-        )
-        self.assertIs(
-            receive.call_args_list[0].args[3],
-            receive.call_args_list[1].args[3],
-        )
-        close.assert_called_once_with(7, [])
+        self.assertEqual(send.call_args.args[0], "/dev/test")
+        self.assertEqual(send.call_args.args[1]["command"], "expression_preview")
 
 if __name__ == "__main__":
     unittest.main()

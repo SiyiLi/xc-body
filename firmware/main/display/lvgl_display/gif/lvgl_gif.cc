@@ -6,8 +6,8 @@
 
 LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
     : gif_(nullptr), timer_(nullptr), last_call_(0), playing_(false), loaded_(false),
-      loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0),
-      timeline_playback_(false) {
+      decode_failed_(false), loop_delay_ms_(0), loop_waiting_(false),
+      loop_wait_start_(0), timeline_playback_(false) {
     if (!img_dsc || !img_dsc->data) {
         ESP_LOGE(TAG, "Invalid image descriptor");
         return;
@@ -67,6 +67,7 @@ void LvglGif::Start() {
     }
 
     if (timer_) {
+        decode_failed_ = false;
         playing_ = true;
         loop_waiting_ = false;  // Reset loop waiting state
         last_call_ = lv_tick_get();
@@ -94,11 +95,15 @@ void LvglGif::Resume() {
         return;
     }
 
-    if (timer_) {
-        playing_ = true;
-        lv_timer_resume(timer_);
-        ESP_LOGD(TAG, "GIF animation resumed");
+    if (!timer_) {
+        return;
     }
+
+    playing_ = true;
+    last_call_ = lv_tick_get();
+    lv_timer_resume(timer_);
+    lv_timer_reset(timer_);
+    ESP_LOGD(TAG, "GIF animation resumed");
 }
 
 void LvglGif::Stop() {
@@ -122,6 +127,10 @@ void LvglGif::Stop() {
 
 bool LvglGif::IsPlaying() const {
     return playing_;
+}
+
+bool LvglGif::HasDecodeFailure() const {
+    return decode_failed_;
 }
 
 bool LvglGif::IsLoaded() const {
@@ -218,6 +227,7 @@ void LvglGif::NextFrame() {
                 lv_timer_pause(timer_);
             }
             if (has_next < 0) {
+                decode_failed_ = true;
                 ESP_LOGE(TAG, "GIF animation decode failed");
             } else {
                 ESP_LOGD(TAG, "GIF animation completed");

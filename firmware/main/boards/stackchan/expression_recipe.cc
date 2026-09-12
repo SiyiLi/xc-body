@@ -333,6 +333,24 @@ bool ValidateStackChanExpressionRecipe(
     return true;
 }
 
+bool ValidateStackChanExpressionRecipeForName(
+        const std::string& name,
+        const StackChanExpressionRecipe& recipe,
+        std::string& error) {
+    if (!IsStackChanExpressionRecipeName(name)) {
+        error = "unknown expression";
+        return false;
+    }
+    if (!ValidateStackChanExpressionRecipe(recipe, error)) {
+        return false;
+    }
+    if (IsStackChanExpressionName(name) && recipe.animation != name) {
+        error = "named expression animation must match its name";
+        return false;
+    }
+    return true;
+}
+
 uint32_t StackChanExpressionRecipeDurationMs(
         const StackChanExpressionRecipe& recipe) {
     uint32_t total_ms = 0;
@@ -430,7 +448,8 @@ StackChanExpressionLoadStatus LoadStackChanExpressionRecipe(
             valid = ParseStackChanExpressionRecipe(stored, recipe);
         }
     }
-    valid = valid && ValidateStackChanExpressionRecipe(recipe, error);
+    valid = valid && ValidateStackChanExpressionRecipeForName(
+        name, recipe, error);
     cJSON_Delete(stored);
     return valid
         ? StackChanExpressionLoadStatus::OK
@@ -441,11 +460,7 @@ bool SaveStackChanExpressionRecipe(
         const std::string& name,
         const StackChanExpressionRecipe& recipe,
         std::string& error) {
-    if (!IsStackChanExpressionRecipeName(name)) {
-        error = "unknown expression";
-        return false;
-    }
-    if (!ValidateStackChanExpressionRecipe(recipe, error)) {
+    if (!ValidateStackChanExpressionRecipeForName(name, recipe, error)) {
         return false;
     }
     cJSON* stored = EncodeStackChanExpressionRecipe(recipe);

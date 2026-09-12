@@ -80,6 +80,10 @@ cJSON* EncodeStackChanExpressionRecipe(
 bool ValidateStackChanExpressionRecipe(
     const StackChanExpressionRecipe& recipe,
     std::string& error);
+bool ValidateStackChanExpressionRecipeForName(
+    const std::string& name,
+    const StackChanExpressionRecipe& recipe,
+    std::string& error);
 uint32_t StackChanExpressionRecipeDurationMs(
     const StackChanExpressionRecipe& recipe);
 uint32_t NextStackChanExpressionSampleElapsedMs(

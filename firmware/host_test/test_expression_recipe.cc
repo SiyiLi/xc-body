@@ -29,6 +29,18 @@ TEST(ExpressionRecipe, ValidatesMotionBounds) {
     EXPECT_NE(error.find("move"), std::string::npos);
 }
 
+TEST(ExpressionRecipe, BindsNamedAnimationButAllowsTouchSelection) {
+    std::string error;
+    auto recipe = Recipe();
+    recipe.animation = "mischievous";
+
+    EXPECT_FALSE(ValidateStackChanExpressionRecipeForName(
+        "agree", recipe, error));
+    EXPECT_NE(error.find("match"), std::string::npos);
+    EXPECT_TRUE(ValidateStackChanExpressionRecipeForName(
+        "touch", recipe, error));
+}
+
 TEST(ExpressionRecipe, UsesSharedMathAtBoundaries) {
     const auto recipe = Recipe();
     const auto& curve = recipe.steps[0];

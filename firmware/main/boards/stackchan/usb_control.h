@@ -11,9 +11,6 @@ public:
     virtual StackChanExpressionOutcome StartExpressionPreview(
         const std::string& name,
         const StackChanExpressionRecipe& recipe) = 0;
-    virtual bool AbortExpressionPreview() = 0;
-    virtual bool TakeExpressionPreviewResult(
-        StackChanExpressionOutcome& outcome) = 0;
 };
 
 void StartStackChanUsbControl(StackChanExpressionController* expressions);
