@@ -909,6 +909,7 @@ async def _dispatch_mcp_tool(
     if name == "perform_expression":
         expression = arguments.get("expression")
         supported = {
+            "idle",
             "agree",
             "pleased",
             "curious",
@@ -1434,8 +1435,11 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
             Tool(
                 name="perform_expression",
                 description=(
-                    "Play one saved XC Body expression recipe and return only "
-                    "after the firmware has restored its safe idle pose."
+                    "Play a named expression from a trusted upstream "
+                    "semantic intention. The device does not distinguish a "
+                    "user request from model judgment. Named recipes play "
+                    "once. Idle is non-expressive and only restores the "
+                    "safe pose. The call returns after restoration."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1443,6 +1447,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         "expression": {
                             "type": "string",
                             "enum": [
+                                "idle",
                                 "agree",
                                 "pleased",
                                 "curious",

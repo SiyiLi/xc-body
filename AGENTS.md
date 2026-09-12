@@ -23,14 +23,15 @@ presence.
 
 Keep Milestone 5 constrained to:
 
-- seven named expressions plus idle ambient presence selected by projection;
+- seven named expressions plus idle ambient presence;
 - deterministic face and head recipes with reviewed servo limits;
-- replacement of the direct turn's existing attention behavior only;
+- replacement of direct attention and the background-offer knock with fixed
+  `curious`;
 - sparse idle ambient behavior with strict activity budgets;
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
-- explicit user requests to show one supported expression.
+- trusted upstream semantic intentions to show one supported expression.
 
 Do not add expressions to background offers, model-generated motion parameters,
 camera input, autonomous semantic moods, constant servo activity, or more

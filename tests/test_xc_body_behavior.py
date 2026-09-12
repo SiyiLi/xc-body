@@ -215,6 +215,44 @@ class XcBodyBehaviorTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_idle_uses_the_shared_behavior_waiter(self) -> None:
+        manager = ESP32Manager()
+        connection = FakeConnection()
+        manager._connection = connection
+
+        behavior_id = "semantic:idle"
+        generated_id = types.SimpleNamespace(hex=behavior_id)
+        with mock.patch.object(
+            esp32_client.uuid, "uuid4", return_value=generated_id
+        ):
+            task = asyncio.create_task(
+                manager.perform_xc_body_expression("idle")
+            )
+            await self._wait_for_behavior(manager, behavior_id)
+        await manager._emit_stackchan_event(
+            {
+                "event_type": "behavior",
+                "subtype": "idle_complete",
+                "behavior_id": behavior_id,
+                "duration_ms": 20,
+                "ts": 1,
+                "session_id": connection.session_id,
+            }
+        )
+
+        result, error = await task
+        self.assertIsNone(error)
+        self.assertEqual(result["expression"], "idle")
+        self.assertEqual(
+            connection.calls,
+            [
+                (
+                    "self.robot.xc_body_behavior",
+                    {"behavior_id": behavior_id, "kind": "idle"},
+                )
+            ],
+        )
+
     @staticmethod
     async def _wait_for_behavior(
         manager: ESP32Manager, behavior_id: str

@@ -8,12 +8,13 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.embodiment import ExpressionAndIdleError, IntentRequestError
+from gateway.embodiment import IntentRequestError
 from gateway.semantic_service import (
     create_service_server,
     main,
     run_service_streams,
 )
+from stackchan.adapter import ClientOperationError
 
 
 VALID_STATUS = {
@@ -264,10 +265,7 @@ class SemanticServiceTests(unittest.TestCase):
             server = create_service_server(Mock())
         errors = (
             IntentRequestError("bad intent"),
-            ExpressionAndIdleError(
-                RuntimeError("expression failed"),
-                RuntimeError("idle failed"),
-            ),
+            ClientOperationError("perform_expression", "failed"),
         )
 
         for error in errors:

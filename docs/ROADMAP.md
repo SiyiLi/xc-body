@@ -50,9 +50,10 @@ posture changes and local touch reactions. Rest remains normal, activity is
 strictly budgeted, and interaction or low-power state suspends ambient motion.
 These local behaviors create no OpenClaw or Telegram traffic.
 
-Direct conversation, background offers, and touch retain their existing state
-machines; only their presentation implementation changes. See
-[`MILESTONE_5.md`](MILESTONE_5.md) for the active boundary.
+Direct conversation and background offers retain their existing lifecycle.
+Touch consent follows a successful local reaction and is ignored during direct
+attention and speech. See [`MILESTONE_5.md`](MILESTONE_5.md) for the active
+boundary.
 
 ## Milestone 6: Explicit Camera Observation
 

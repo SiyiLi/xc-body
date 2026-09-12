@@ -105,16 +105,18 @@ follows the established action. Display dimming and sleep remain separate
 
 The USB channel reports status, updates the saved gateway URL and token, queues
 verified firmware metadata, streams logs, and requests an application reboot.
-It also parses expression calibration requests and holds one pending preview
-response while the board-owned runner executes autonomously. It has no network
-listener and never returns the saved token. Production tools select only a
-saved expression name and cannot supply motor parameters.
+It also parses expression calibration requests and immediately reports whether
+the board-owned runner admitted a transient preview. The runner then executes
+independently. The USB channel has no network listener and never returns the
+saved token. Production tools select only a saved expression name and cannot
+supply motor parameters.
 
 ## Runtime Flows
 
 ### Manual embodiment
 
-1. OpenClaw submits a versioned semantic intention.
+1. OpenClaw submits a versioned semantic intention, whether selected from a
+   user request or the model's own judgment.
 2. XC Body validates the contract and complete semantic-to-expression mapping.
 3. The service verifies that the same initialized device session remains ready.
 4. The adapter invokes one saved firmware expression by name.
@@ -128,7 +130,9 @@ saved expression name and cannot supply motor parameters.
    long or formatted results use the bounded Chinese projection.
 4. The VM prepares and validates Opus before creating pending state.
 5. Firmware performs one silent knock and returns to idle.
-6. A deliberate head pat or head stroke acknowledges the current offer.
+6. When direct attention and speech are inactive, a deliberate head pat or
+   stroke starts the local touch reaction. Its successful safe return
+   acknowledges the current offer.
 7. The VM sends the prepared audio for playback and clears the offer only
    after success.
 
@@ -152,7 +156,9 @@ eventual direct answer.
 5. The gateway reuses its servo lane, correlated completion waiter, timeout,
    and recovery path. Direct PCM playback starts only after the firmware
    reports physical settle and neutral return.
-6. The pending offer, if any, is untouched.
+6. The pending offer, if any, is untouched. Head touch is ignored during
+   direct attention and speech; after they end, a new successful touch
+   reaction may acknowledge the offer.
 7. Each owner contributes content-free phase timings under the existing turn
    ID. The pending service emits one JSON timeline when a turn is answered or
    explicitly abandoned.
@@ -186,8 +192,9 @@ rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
 4. On the new app's first boot, firmware proves the installed assets bytes and
    internal structure against the matching manifest. A mismatch triggers one
    bounded, in-place verified assets download. Power loss is non-atomic for
-   this single assets partition; the app remains bootable and a later boot
-   retries.
+   this single assets partition; the app remains bootable only for repair and
+   a later boot retries. A missing, corrupt, or undecodable named expression
+   GIF fails that behavior before motor movement.
 5. The bootloader starts the new slot pending verification. Firmware marks it
    valid only after the authenticated gateway completes MCP tool discovery;
    otherwise it remains eligible for rollback.
@@ -229,6 +236,8 @@ this recovery.
 Expression assets ship in the firmware assets partition. Motor recipes are
 selected by name and stored in NVS through USB. The gateway never transfers
 face layers, checksums a runtime face package, or accepts raw recipe data.
+The named GIF and motor recipe are one expression: a named-asset load or decode
+failure is a critical release fault, not a blank-face fallback.
 
 ## State and Recovery
 

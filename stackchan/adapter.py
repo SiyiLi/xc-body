@@ -34,8 +34,8 @@ class ClientOperationError(StackChanAdapterError):
     pass
 
 
-_EXPRESSION_BY_STEP: dict[tuple[str, str], str | None] = {
-    ("neutral", "relaxed_center"): None,
+_EXPRESSION_BY_STEP: dict[tuple[str, str], str] = {
+    ("neutral", "relaxed_center"): "idle",
     ("attentive", "restrained_side_glance"): "curious",
     ("happy", "single_small_nod"): "pleased",
     ("concerned", "restrained_head_tilt"): "concerned",
@@ -78,15 +78,14 @@ class StackChanAdapter:
                 "get_status",
                 "device is not ready for the current session",
             )
-        if expression is not None:
-            self._call(
-                "perform_expression",
-                self._client.perform_expression,
-                expression,
-            )
+        self._call(
+            "perform_expression",
+            self._client.perform_expression,
+            expression,
+        )
 
     @staticmethod
-    def _resolve(face: str, motion: str) -> str | None:
+    def _resolve(face: str, motion: str) -> str:
         try:
             return _EXPRESSION_BY_STEP[(face, motion)]
         except KeyError as exc:

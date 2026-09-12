@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from gateway.embodiment import ExpressionAndIdleError, IntentRequestError
+from gateway.embodiment import IntentRequestError
 from gateway.semantic_e2e import (
     RunnerConfig,
     RunnerConfigError,
@@ -133,11 +133,7 @@ def create_service_server(
             return [_error_content(TextContent, f"unknown tool: {name!r}")]
         try:
             result = await executor.execute(arguments or {})
-        except (
-            ExpressionAndIdleError,
-            IntentRequestError,
-            StackChanAdapterError,
-        ) as exc:
+        except (IntentRequestError, StackChanAdapterError) as exc:
             return [_error_content(TextContent, str(exc))]
         return [
             TextContent(

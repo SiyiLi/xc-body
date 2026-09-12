@@ -979,6 +979,7 @@ class ESP32Manager:
             if subtype not in {
                 "knock_complete",
                 "attention_complete",
+                "idle_complete",
                 "expression_complete",
                 "behavior_failed",
             }:
@@ -1233,13 +1234,16 @@ class ESP32Manager:
         success_subtypes = {
             "knock": "knock_complete",
             "attention": "attention_complete",
+            "idle": "idle_complete",
             "expression": "expression_complete",
         }
         success_subtype = success_subtypes.get(kind)
         if success_subtype is None:
             return None, {
                 "code": -32602,
-                "message": "kind must be knock, attention, or expression",
+                "message": (
+                    "kind must be knock, attention, idle, or expression"
+                ),
             }
         arguments = {"behavior_id": behavior_id, "kind": kind}
         if kind == "expression":
@@ -1254,11 +1258,12 @@ class ESP32Manager:
     async def perform_xc_body_expression(
         self, expression: str
     ) -> ToolCallResult:
-        """Run one saved expression and await its safe return."""
+        """Run one saved expression or restore idle, then await completion."""
         behavior_id = uuid.uuid4().hex
+        kind = "idle" if expression == "idle" else "expression"
         result, error = await self.perform_xc_body_behavior(
             behavior_id,
-            "expression",
+            kind,
             expression,
         )
         if error is None and isinstance(result, dict):

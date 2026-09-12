@@ -406,15 +406,12 @@ async def send_pcm_audio(
     # The whole start → frames → stop block runs under the device's
     # TTS lock so two concurrent pushes can't interleave their Opus
     # frames on the same WebSocket or overlap their state notifications.
-    tts_lock = getattr(gateway.esp32, "tts_lock", None)
-    lock_ctx = tts_lock if tts_lock is not None else nullcontext()
-
     sent = 0
     push_error: ConnectionError | None = None
     stop_error: Exception | None = None
     drain_metrics: dict[str, Any] | None = None
     verify_integrity = False
-    async with lock_ctx:
+    async with gateway.esp32.tts_lock:
         connection = gateway.esp32.connection
         if connection is None or not connection.connected:
             raise RuntimeError(
@@ -619,9 +616,7 @@ async def send_pcm_stream(
             paced=sent >= DIRECT_PCM_BURST_FRAMES,
         )
 
-    tts_lock = getattr(gateway.esp32, "tts_lock", None)
-    lock_context = tts_lock if tts_lock is not None else nullcontext()
-    async with lock_context:
+    async with gateway.esp32.tts_lock:
         connection = gateway.esp32.connection
         if connection is None or not connection.connected:
             raise RuntimeError("No ESP32 device connected")

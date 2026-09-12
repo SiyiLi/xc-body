@@ -69,11 +69,21 @@ class StackChanAdapterTests(unittest.TestCase):
             [
                 ("get_status",),
                 ("perform_expression", "curious"),
-                ("get_status",),
             ],
         )
 
-    def test_expression_failure_still_attempts_idle_boundary(self):
+    def test_explicit_idle_uses_firmware_owned_restore(self):
+        client = FakeClient()
+        embody(
+            {"version": "v1", "intent": "idle"},
+            StackChanAdapter(client),
+        )
+        self.assertEqual(
+            client.calls,
+            [("get_status",), ("perform_expression", "idle")],
+        )
+
+    def test_expression_failure_does_not_start_a_second_operation(self):
         client = FakeClient(fail=True)
         with self.assertRaisesRegex(ClientOperationError, "perform_expression"):
             embody(
@@ -85,7 +95,6 @@ class StackChanAdapterTests(unittest.TestCase):
             [
                 ("get_status",),
                 ("perform_expression", "curious"),
-                ("get_status",),
             ],
         )
 

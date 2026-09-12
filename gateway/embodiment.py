@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
 from stackchan.recipes import (
-    IDLE_STEP,
     SUPPORTED_INTENTS,
     Intent,
     IntentRecipe,
@@ -36,18 +35,6 @@ class DevicePort(Protocol):
 
     def present(self, *, face: str, motion: str) -> None:
         """Present one symbolic face-and-motion action."""
-
-
-class ExpressionAndIdleError(RuntimeError):
-    """Both an expressive action and its mandatory idle return failed."""
-
-    def __init__(self, expression_error: Exception, idle_error: Exception):
-        self.expression_error = expression_error
-        self.idle_error = idle_error
-        super().__init__(
-            "expression failed and return to idle also failed: "
-            f"expression={expression_error}; idle={idle_error}"
-        )
 
 
 def parse_intent_request(payload: Mapping[str, object]) -> IntentRequest:
@@ -79,36 +66,16 @@ def parse_intent_request(payload: Mapping[str, object]) -> IntentRequest:
 
 def execute_intent(request: IntentRequest, device: DevicePort) -> IntentRecipe:
     recipe = recipe_for(request.intent)
-    device.prepare(planned_steps_for(request))
-    if request.intent == "idle":
-        _present(device, IDLE_STEP)
-        return recipe
-    expression_error: Exception | None = None
-    try:
-        for step in recipe.steps:
-            _present(device, step)
-    except Exception as exc:
-        expression_error = exc
-        raise
-    finally:
-        try:
-            _present(device, IDLE_STEP)
-        except Exception as idle_error:
-            if expression_error is not None:
-                raise ExpressionAndIdleError(
-                    expression_error, idle_error
-                ) from expression_error
-            raise
+    device.prepare(recipe.steps)
+    for step in recipe.steps:
+        _present(device, step)
     return recipe
 
 
 def planned_steps_for(request: IntentRequest) -> tuple[RecipeStep, ...]:
-    """Return the complete expression and mandatory-idle execution plan."""
+    """Return the single firmware-owned expression operation."""
 
-    recipe = recipe_for(request.intent)
-    if request.intent == "idle":
-        return recipe.steps
-    return recipe.steps + (IDLE_STEP,)
+    return recipe_for(request.intent).steps
 
 
 def embody(payload: Mapping[str, object], device: DevicePort) -> IntentRecipe:
