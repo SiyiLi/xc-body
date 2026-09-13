@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections import deque
@@ -33,6 +34,8 @@ _PCM_PROGRESS_TIMEOUT_SECONDS = (
     + EDGE_TTS_RECEIVE_TIMEOUT_SECONDS
     + 5
 )
+_PRODUCER_CLEANUP_TIMEOUT_SECONDS = 1.0
+logger = logging.getLogger(__name__)
 _TURN_METRIC_NAMES = frozenset(
     (
         "capture_started_uptime_us",
@@ -274,6 +277,26 @@ def _unix_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
+def _consume_producer_result(producer: asyncio.Task[None]) -> None:
+    if not producer.cancelled():
+        producer.exception()
+
+
+async def _cancel_producer(producer: asyncio.Task[None]) -> None:
+    """Stop failed-turn synthesis without holding answer admission."""
+
+    producer.cancel()
+    done, _ = await asyncio.wait(
+        (producer,),
+        timeout=_PRODUCER_CLEANUP_TIMEOUT_SECONDS,
+    )
+    if done:
+        _consume_producer_result(producer)
+        return
+    producer.add_done_callback(_consume_producer_result)
+    logger.error("direct TTS producer cleanup timed out")
+
+
 def parse_plugin_metrics(
     value: object,
 ) -> tuple[dict[str, int], str | None]:
@@ -500,13 +523,11 @@ async def speak_direct_answer(
         await producer
     except asyncio.CancelledError:
         pcm.abort()
-        producer.cancel()
-        await asyncio.gather(producer, return_exceptions=True)
+        await _cancel_producer(producer)
         raise
     except Exception as exc:
         pcm.abort()
-        producer.cancel()
-        await asyncio.gather(producer, return_exceptions=True)
+        await _cancel_producer(producer)
         metrics = pcm.metrics()
         if isinstance(exc, PendingThoughtRuntimeError):
             metrics.update(exc.metrics)

@@ -40,6 +40,7 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <limits>
 #include <memory>
@@ -576,7 +577,8 @@ private:
     std::unique_ptr<Py32IoExpander> io_expander_;
 
     lv_obj_t* face_image_ = nullptr;
-    lv_img_dsc_t face_gif_source_ = {};
+    lv_img_dsc_t face_image_source_ = {};
+    bool face_image_source_installed_ = false;
     std::unique_ptr<LvglGif> face_gif_;
 
     lv_obj_t* settings_panel_ = nullptr;
@@ -718,6 +720,7 @@ private:
     static constexpr uint64_t EXPRESSION_FACE_RESTORE_TIMEOUT_US = 500000ULL;
     static constexpr uint64_t EXPRESSION_RECOVERY_RETRY_INTERVAL_US =
         500000ULL;
+    static constexpr uint32_t IDLE_FACE_LOOP_DELAY_MS = 4000;
 
     std::atomic<PhysicalBehaviorOwner> physical_behavior_owner_{
         PhysicalBehaviorOwner::IDLE};
@@ -3834,9 +3837,10 @@ private:
                          BOOT_READPOS_MAX_ATTEMPTS, BOOT_INIT_PITCH_DEG);
             }
 
-            BaseType_t ok = xTaskCreate(&StackChanBoard::ServoTaskTrampoline,
-                                        "servo_motion", 4096, this, 5,
-                                        &servo_task_handle_);
+            BaseType_t ok = xTaskCreatePinnedToCore(
+                &StackChanBoard::ServoTaskTrampoline,
+                "servo_motion", 4096, this, 5,
+                &servo_task_handle_, 1);
             if (ok != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create servo_motion task; disabling servo");
                 if (motion_mutex_ != nullptr) {
@@ -4749,7 +4753,8 @@ private:
     bool PhysicalMotionConfirmedAt(
             int yaw_deg,
             int pitch_deg,
-            const char* diagnostic_context = nullptr) {
+            const char* diagnostic_context = nullptr,
+            std::string* diagnostic_detail = nullptr) {
         if (!servo_ok_ || motion_driver_ == nullptr) {
             if (diagnostic_context != nullptr) {
                 ESP_LOGW(
@@ -4764,7 +4769,7 @@ private:
         xSemaphoreGive(motion_mutex_);
         int yaw_pos = -1;
         int pitch_pos = -1;
-        if (settled) {
+        if (settled || diagnostic_detail != nullptr) {
             xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
             yaw_pos = scs_bus_.ReadPos(SERVO_YAW_ID);
             pitch_pos = scs_bus_.ReadPos(SERVO_PITCH_ID);
@@ -4773,9 +4778,21 @@ private:
         constexpr int kPositionTolerance = 8;
         const int expected_yaw_pos = YawDegToPos(yaw_deg);
         const int expected_pitch_pos = PitchDegToPos(pitch_deg);
-        const bool confirmed = settled && yaw_pos >= 0 && pitch_pos >= 0 &&
+        const bool endpoint_matches = yaw_pos >= 0 && pitch_pos >= 0 &&
             std::abs(yaw_pos - expected_yaw_pos) <= kPositionTolerance &&
             std::abs(pitch_pos - expected_pitch_pos) <= kPositionTolerance;
+        const bool confirmed = settled && endpoint_matches;
+        if (!confirmed && diagnostic_detail != nullptr) {
+            if (yaw_pos < 0 || pitch_pos < 0) {
+                *diagnostic_detail = "position_read_failed";
+            } else if (!settled && endpoint_matches) {
+                *diagnostic_detail = "motion_active_at_endpoint";
+            } else if (!settled) {
+                *diagnostic_detail = "motion_active_before_endpoint";
+            } else {
+                *diagnostic_detail = "endpoint_mismatch";
+            }
+        }
         if (!confirmed && diagnostic_context != nullptr) {
             ESP_LOGW(
                 TAG,
@@ -5289,10 +5306,26 @@ private:
             step != ExpressionStep::RESTORING_FACE &&
             step != ExpressionStep::RECOVERING_TO_IDLE &&
             now_us >= expression_execution_deadline_us_) {
+            std::string deadline_detail;
+            if (step == ExpressionStep::RUNNING_CURVE) {
+                const auto& curve =
+                    expression_recipe_.steps[expression_step_index_];
+                const auto& end = curve.points[3];
+                if (PhysicalMotionConfirmedAt(
+                        end.yaw, end.pitch, "execution deadline",
+                        &deadline_detail)) {
+                    deadline_detail = "endpoint_confirmed_late";
+                }
+            }
+            std::string deadline_reason = "execution_deadline";
+            if (!deadline_detail.empty()) {
+                deadline_reason += ":";
+                deadline_reason += deadline_detail;
+            }
             BeginExpressionRecovery(
                 StackChanExpressionOutcome::MOTION_FAILED,
                 now_us,
-                "execution_deadline");
+                deadline_reason.c_str());
             return;
         }
 
@@ -5619,6 +5652,75 @@ private:
             ApplicationDisplayAllowed(state, owner);
     }
 
+    static bool SameFaceImageLayout(
+            const lv_img_dsc_t* first,
+            const lv_img_dsc_t* second) {
+        return first != nullptr && second != nullptr &&
+            first->header.w == second->header.w &&
+            first->header.h == second->header.h &&
+            first->header.cf == second->header.cf &&
+            first->header.stride == second->header.stride;
+    }
+
+    static bool FindChangedFaceArea(
+            const lv_img_dsc_t* before,
+            const lv_img_dsc_t* after,
+            lv_area_t& changed_area) {
+        int32_t min_x = after->header.w;
+        int32_t min_y = after->header.h;
+        int32_t max_x = -1;
+        int32_t max_y = -1;
+        for (int32_t y = 0; y < after->header.h; ++y) {
+            const uint8_t* before_row =
+                before->data + y * before->header.stride;
+            const uint8_t* after_row =
+                after->data + y * after->header.stride;
+            if (std::memcmp(
+                    before_row,
+                    after_row,
+                    after->header.stride) == 0) {
+                continue;
+            }
+            for (int32_t x = 0; x < after->header.w; ++x) {
+                if (std::memcmp(
+                        before_row + x * 4,
+                        after_row + x * 4,
+                        4) == 0) {
+                    continue;
+                }
+                min_x = std::min(min_x, x);
+                min_y = std::min(min_y, y);
+                max_x = std::max(max_x, x);
+                max_y = std::max(max_y, y);
+            }
+        }
+        if (max_x < 0) {
+            return false;
+        }
+        changed_area = {
+            .x1 = min_x,
+            .y1 = min_y,
+            .x2 = max_x,
+            .y2 = max_y,
+        };
+        return true;
+    }
+
+    void InvalidateFaceAreaLocked(const lv_area_t& relative_area) {
+        if (face_image_ == nullptr || !lv_obj_is_valid(face_image_)) {
+            return;
+        }
+        lv_area_t face_area;
+        lv_obj_get_coords(face_image_, &face_area);
+        const lv_area_t dirty_area = {
+            .x1 = face_area.x1 + relative_area.x1,
+            .y1 = face_area.y1 + relative_area.y1,
+            .x2 = face_area.x1 + relative_area.x2,
+            .y2 = face_area.y1 + relative_area.y2,
+        };
+        lv_obj_invalidate_area(face_image_, &dirty_area);
+    }
+
     bool EnsureFaceObjectLocked() {
         if (face_image_ != nullptr && lv_obj_is_valid(face_image_)) {
             return true;
@@ -5631,7 +5733,9 @@ private:
         if (face_image_ == nullptr) {
             return false;
         }
+        face_image_source_installed_ = false;
         lv_obj_align(face_image_, LV_ALIGN_CENTER, 0, 0);
+        lv_image_set_scale(face_image_, 256);
         lv_obj_clear_flag(face_image_, LV_OBJ_FLAG_SCROLLABLE);
         display_->PlaceBehindStatusBarLocked(face_image_);
         return true;
@@ -5640,8 +5744,7 @@ private:
     bool ShowFaceAssetLocked(
             const std::string& asset,
             int32_t loop_count,
-            bool play,
-            bool timeline_playback = true) {
+            bool play) {
         void* data = nullptr;
         size_t size = 0;
         if (!Assets::GetInstance().GetAssetData(asset, data, size) ||
@@ -5659,7 +5762,6 @@ private:
             return false;
         }
         gif->SetLoopCount(loop_count);
-        gif->SetTimelinePlayback(timeline_playback);
         if (play) {
             gif->Start();
         } else {
@@ -5667,37 +5769,53 @@ private:
             gif->Pause();
         }
 
-        face_gif_source_ = source;
+        const lv_img_dsc_t* previous_image = face_gif_ != nullptr
+            ? face_gif_->image_dsc() : nullptr;
+        const lv_img_dsc_t* next_image = gif->image_dsc();
+        const bool reuse_image_source =
+            face_image_source_installed_ &&
+            SameFaceImageLayout(previous_image, next_image);
+        lv_area_t transition_area;
+        const bool transition_changed = reuse_image_source &&
+            FindChangedFaceArea(
+                previous_image, next_image, transition_area);
+        const bool face_was_hidden =
+            lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
+
         face_gif_ = std::move(gif);
-        face_gif_->SetFrameCallback([this]() {
-            if (face_image_ != nullptr && face_gif_ != nullptr) {
-                lv_image_set_src(face_image_, face_gif_->image_dsc());
-                lv_obj_invalidate(face_image_);
-            }
+        face_image_source_ = *face_gif_->image_dsc();
+        face_gif_->SetFrameCallback([this](const lv_area_t& frame_area) {
+            InvalidateFaceAreaLocked(frame_area);
         });
-        lv_image_set_src(face_image_, face_gif_->image_dsc());
-        lv_image_set_scale(face_image_, 256);
+        if (!reuse_image_source) {
+            lv_image_set_src(face_image_, &face_image_source_);
+            face_image_source_installed_ = true;
+        }
         lv_obj_clear_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
         display_->PlaceBehindStatusBarLocked(face_image_);
-        lv_obj_invalidate(face_image_);
+        if (reuse_image_source && transition_changed && !face_was_hidden) {
+            InvalidateFaceAreaLocked(transition_area);
+        }
         return true;
     }
 
     bool ShowFaceAsset(
             const std::string& asset,
             int32_t loop_count,
-            bool play,
-            bool timeline_playback = true) {
+            bool play) {
         if (display_ == nullptr || !FaceDisplayAllowed()) {
             return false;
         }
         DisplayLockGuard lock(display_);
-        return ShowFaceAssetLocked(
-            asset, loop_count, play, timeline_playback);
+        return ShowFaceAssetLocked(asset, loop_count, play);
     }
 
     bool ShowIdleFaceLocked() {
-        return ShowFaceAssetLocked("idle.gif", 0, true);
+        if (!ShowFaceAssetLocked("idle.gif", 0, true)) {
+            return false;
+        }
+        face_gif_->SetLoopDelay(IDLE_FACE_LOOP_DELAY_MS);
+        return true;
     }
 
     bool ShowIdleFace() {
@@ -7773,10 +7891,7 @@ public:
     }
 
     virtual void OnTtsStart() override {
-        // Unlike deterministic expression playback, speaking is allowed to
-        // drop late visual frames. Catching up several GIF frames in one LVGL
-        // callback competes with the real-time audio path.
-        ShowFaceAsset("speaking.gif", 0, true, false);
+        ShowFaceAsset("speaking.gif", 0, true);
     }
 
     virtual void OnTtsStop() override {
