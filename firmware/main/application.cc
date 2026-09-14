@@ -84,11 +84,12 @@ void Application::ResumeDeferredAudioPlayback() {
     if (GetDeviceState() != kDeviceStateSpeaking) {
         return;
     }
-    bool released = audio_service_.ReleasePreparedAudioPlayback();
-    released = audio_service_.ReleaseDirectAudioPlayback() || released;
-    if (released) {
-        Board::GetInstance().OnTtsStart();
-    }
+    auto& board = Board::GetInstance();
+    // Prepare the visual before waking the audio task. GIF setup is optional,
+    // but it must not compete with the first codec writes when it is present.
+    board.OnTtsStart();
+    audio_service_.ReleasePreparedAudioPlayback();
+    audio_service_.ReleaseDirectAudioPlayback();
 }
 
 void Application::Initialize() {
@@ -636,14 +637,19 @@ void Application::InitializeProtocol() {
                 Schedule([this, &board]() {
                     bool defer_playback =
                         board.ShouldDeferAudioPlayback();
+                    if (!defer_playback) {
+                        board.OnTtsStart();
+                    }
                     if (!audio_service_.CommitPreparedAudio(defer_playback)) {
                         ESP_LOGE(TAG, "Prepared audio transfer incomplete");
+                        if (!defer_playback) {
+                            board.OnTtsStop();
+                        }
                         SetDeviceState(kDeviceStateIdle);
                         return;
                     }
-                    if (!defer_playback) {
-                        board.OnTtsStart();
-                    } else if (!board.ShouldDeferAudioPlayback()) {
+                    if (defer_playback &&
+                        !board.ShouldDeferAudioPlayback()) {
                         ResumeDeferredAudioPlayback();
                     }
                 });

@@ -98,6 +98,16 @@ The firmware drives the display, servos, LEDs, audio, touch events, and USB
 maintenance channel. Deterministic firmware behaviors own expression timing,
 head movement, local reaction ordering, and idle restoration.
 
+Expression coordination does not execute servo ticks, GIF frames, or audio
+samples. The head runner receives the complete trajectory and owns its fixed
+clock, endpoint checks, abort, and measured safe return. The face player uses
+the existing low-priority LVGL task and publishes only changed image regions.
+The existing audio-output task remains the sole audio executor. Audio and head
+deadlines take priority over visual deadlines; a late GIF frame may wait, but
+it cannot run catch-up work inside either real-time executor. The neutral first
+frame is prepared first; the head runner confirms the initial pose and torque
+before the animation and trajectory begin.
+
 The firmware also owns idle presence, optional listening animation, speaking
 animation, the Milestone 4 idle screen timing, and LVGL rendering. Listening
 art is display-only and missing art falls back to static idle without affecting

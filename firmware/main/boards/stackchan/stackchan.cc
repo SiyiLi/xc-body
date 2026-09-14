@@ -1,7 +1,8 @@
 #include "wifi_board.h"
 #include "cores3_audio_codec.h"
 #include "display/lcd_display.h"
-#include "display/lvgl_display/gif/lvgl_gif.h"
+#include "face_animation_player.h"
+#include "head_motion_runner.h"
 #include "application.h"
 #include "config.h"
 #include "power_save_timer.h"
@@ -546,7 +547,9 @@ private:
     }
 };
 
-class StackChanBoard : public WifiBoard, public StackChanExpressionController {
+class StackChanBoard : public WifiBoard,
+                       public StackChanExpressionController,
+                       private XcBodyHeadMotionBackend {
 private:
     // Internal I2C bus (shared by AXP2101 / AW9523 / FT6336 / PY32 / Si12T /
     // audio codec / IMU). Direct on-board ICs only; not exposed through
@@ -581,10 +584,7 @@ private:
     ScsBus scs_bus_;
     std::unique_ptr<Py32IoExpander> io_expander_;
 
-    lv_obj_t* face_image_ = nullptr;
-    lv_img_dsc_t face_image_source_ = {};
-    bool face_image_source_installed_ = false;
-    std::unique_ptr<LvglGif> face_gif_;
+    std::unique_ptr<XcBodyFaceAnimationPlayer> face_player_;
 
     lv_obj_t* settings_panel_ = nullptr;
     lv_obj_t* settings_volume_label_ = nullptr;
@@ -683,13 +683,11 @@ private:
     uint8_t    press_start_output1_raw_ = 0;
 
     enum class ExpressionStep : uint8_t {
-        STARTING = 0,
-        CENTERING,
-        RUNNING_CURVE,
-        PAUSING,
+        PREPARING = 0,
+        WAITING_FOR_HEAD_READY,
+        RUNNING,
         WAITING_FOR_FACE,
         RESTORING_FACE,
-        RECOVERING_TO_IDLE,
     };
     enum class PhysicalBehaviorOwner : uint8_t {
         IDLE = 0,
@@ -718,15 +716,9 @@ private:
     static constexpr int XC_BODY_IDLE_YAW_DEG = 0;
     static constexpr int XC_BODY_IDLE_PITCH_DEG = 43;
     static constexpr int XC_BODY_BEHAVIOR_SPEED_DPS = 30;
-    static constexpr uint64_t EXPRESSION_STARTUP_TIMEOUT_US = 5000000ULL;
     static constexpr uint64_t EXPRESSION_FACE_DURATION_US = 2400000ULL;
     static constexpr uint64_t EXPRESSION_EXECUTION_MARGIN_US = 2000000ULL;
-    static constexpr uint64_t EXPRESSION_RECOVERY_TIMEOUT_US = 5000000ULL;
     static constexpr uint64_t EXPRESSION_FACE_RESTORE_TIMEOUT_US = 500000ULL;
-    static constexpr uint64_t EXPRESSION_RECOVERY_RETRY_INTERVAL_US =
-        500000ULL;
-    static constexpr uint32_t IDLE_FACE_LOOP_DELAY_MS = 4000;
-
     std::atomic<PhysicalBehaviorOwner> physical_behavior_owner_{
         PhysicalBehaviorOwner::IDLE};
 
@@ -739,19 +731,12 @@ private:
     std::atomic<bool> expression_active_{false};
     std::atomic<bool> expression_abort_requested_{false};
     std::atomic<ExpressionStep> expression_step_{
-        ExpressionStep::STARTING};
+        ExpressionStep::PREPARING};
     std::atomic<bool> physical_motion_unavailable_{false};
     StackChanExpressionRecipe expression_recipe_;
     bool expression_restore_only_ = false;
-    size_t expression_step_index_ = 0;
-    uint64_t expression_startup_deadline_us_ = 0;
     uint64_t expression_execution_deadline_us_ = 0;
-    uint64_t expression_hold_until_us_ = 0;
-    uint64_t expression_recovery_deadline_us_ = 0;
-    uint64_t expression_recovery_retry_at_us_ = 0;
     uint64_t expression_face_restore_deadline_us_ = 0;
-    StackChanExpressionOutcome expression_recovery_outcome_ =
-        StackChanExpressionOutcome::MOTION_FAILED;
     StackChanExpressionOutcome expression_finish_outcome_ =
         StackChanExpressionOutcome::UNAVAILABLE;
     std::atomic<ExpressionInvocation> expression_invocation_{
@@ -761,6 +746,9 @@ private:
     std::string expression_failure_reason_;
     const char* expression_behavior_success_subtype_ = nullptr;
     uint64_t expression_started_us_ = 0;
+    bool expression_outcome_override_ = false;
+    StackChanExpressionOutcome expression_override_outcome_ =
+        StackChanExpressionOutcome::UNAVAILABLE;
 
     // Shared motion state. This stays on the board singleton because boot-init
     // ReadPos restore / re-sync phases seed the same state before and after the
@@ -810,15 +798,17 @@ private:
         bool position_unknown = false;
     };
     class MotionDriver;
-    // TODO: motion_mutex_/scs_bus_mutex_/servo_task_handle_ have no destroy path; board is singleton via DECLARE_BOARD.
+    // The board is a process-lifetime singleton, so these resources have no
+    // destroy path.
     AxisMotion yaw_motion_;
     AxisMotion pitch_motion_;
     SemaphoreHandle_t motion_mutex_ = nullptr;     // protects AxisMotion fields
     SemaphoreHandle_t scs_bus_mutex_ = nullptr;    // serializes UART access (WritePos/ReadPos)
     std::unique_ptr<MotionDriver> motion_driver_;
-    TaskHandle_t servo_task_handle_ = nullptr;
-    uint32_t last_motion_end_ms_ = 0;              // ServoTask-private
-    bool last_motion_end_valid_ = false;           // ServoTask-private
+    std::unique_ptr<XcBodyHeadMotionRunner> head_motion_runner_;
+    TaskHandle_t expression_task_handle_ = nullptr;
+    uint32_t last_motion_end_ms_ = 0;        // HeadMotionRunner-private
+    bool last_motion_end_valid_ = false;     // HeadMotionRunner-private
     std::atomic<bool> idle_timer_reset_pending_{false};
     enum class TorqueState : uint8_t {
         kEngaged = 0,
@@ -848,8 +838,8 @@ private:
     static constexpr uint32_t MOTION_DEFAULT_DURATION_MS = 600;
     // Speed-based motion API (Issue #129).
     // MIN_STEP_SAFE_SPEED_DPS prevents the raw-integer speed_dps escape hatch
-    // from advancing less than one SCS0009 step per ServoTask tick. The
-    // physical step is 300 deg / 1024 = 0.293 deg; at MOTION_TICK_MS=20 ms
+    // from advancing less than one SCS0009 step per head-motion tick. The
+    // physical step is 300 deg / 1024 = 0.293 deg; at a 20 ms motion tick
     // this is 14.65 deg/s, rounded up to 15 deg/s for headroom. This shares
     // the same physical origin as BOOT_INIT_TARGET_DEG_PER_SEC (#121/#141),
     // but stays separate because the boot path carries its own duration-floor
@@ -857,7 +847,7 @@ private:
     static constexpr int MIN_STEP_SAFE_SPEED_DPS = 15;
     // MIN_SMOOTH_SPEED_DPS is the on-device measured smoothness floor
     // (5 step/tick "transition out", measured 2026-05-15). Speeds below
-    // this look textured on SCS0009 at MOTION_TICK_MS=20 ms; the firmware
+    // this look textured on SCS0009 at a 20 ms motion tick; the firmware
     // permits sub-floor speeds (logged with ESP_LOGW) so callers like the
     // gateway "low" preset (30 dps) can deliver deliberately slow motion.
     static constexpr int MIN_SMOOTH_SPEED_DPS = 72;
@@ -996,7 +986,7 @@ private:
     // no-stutter Smooth lower bound established under #121 Problem 2
     // (Issue #121 / PR #125 history: 1000 -> 4000 was a partial step
     // toward this; on-device feedback under #141 verification confirmed
-    // 15 deg/s is the speed at which the ServoTask MOTION_TICK_MS=20 ms
+    // 15 deg/s is the speed at which the 20 ms head-motion task
     // interpolation stops being perceptible as individual position
     // jumps without sliding into a startling regime). Boot-time budget
     // is intentionally not optimised: operator safety and avoiding
@@ -1110,8 +1100,8 @@ private:
             torque_state_.load(std::memory_order_acquire);
         if (state == TorqueState::kEngaged &&
             old_state != TorqueState::kEngaged) {
-            // Reset the ServoTask-owned idle window even when OFF->ON
-            // happens between ServoTask ticks.
+            // Reset the head-motion task's idle window even when OFF->ON
+            // happens between its ticks.
             idle_timer_reset_pending_.store(true,
                                             std::memory_order_release);
         }
@@ -1211,7 +1201,7 @@ private:
         // True iff at least one axis is currently in motion.
         virtual bool IsMoving() const = 0;
 
-        // Called from ServoTask body at a driver-dependent cadence.
+        // Called from the head-motion task at a driver-dependent cadence.
         virtual void Tick() = 0;
 
         // Optional hooks for drivers that need setup or shutdown.
@@ -2643,9 +2633,8 @@ private:
         if (screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
             lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
         }
-        if (was_visible && face_gif_ != nullptr &&
-            !face_gif_->IsPlaying() && !face_gif_->HasDecodeFailure()) {
-            face_gif_->Resume();
+        if (was_visible && face_player_ != nullptr) {
+            face_player_->ResumeLocked();
         }
     }
 
@@ -3062,9 +3051,8 @@ private:
         if (!application_view) {
             HideFaceLocked();
         } else if (!expression_active_.load(std::memory_order_acquire) &&
-                   (state_changed || face_image_ == nullptr ||
-                    !lv_obj_is_valid(face_image_) ||
-                    lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN))) {
+                   (state_changed || face_player_ == nullptr ||
+                    !face_player_->IsVisibleLocked())) {
             if (state == kDeviceStateIdle) {
                 ShowIdleFaceLocked();
             } else if (state == kDeviceStateListening) {
@@ -3075,17 +3063,14 @@ private:
             display_->SetRecordingIndicatorLocked(
                 state == kDeviceStateListening);
         }
-        if (show_screensaver && face_image_ != nullptr &&
-            lv_obj_is_valid(face_image_) &&
-            !lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN) &&
+        if (show_screensaver && face_player_ != nullptr &&
+            face_player_->IsVisibleLocked() &&
             screensaver_ != nullptr && lv_obj_is_valid(screensaver_)) {
             UpdateScreenSaverLocked();
             const bool was_visible = screensaver_visible_.exchange(
                 true, std::memory_order_acq_rel);
             if (!was_visible) {
-                if (face_gif_ != nullptr && face_gif_->IsPlaying()) {
-                    face_gif_->Pause();
-                }
+                face_player_->PauseLocked();
                 lv_obj_clear_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_move_foreground(screensaver_);
             }
@@ -3381,6 +3366,8 @@ private:
 
         display_ = new SpiLcdDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        face_player_ =
+            std::make_unique<XcBodyFaceAnimationPlayer>(display_);
     }
 
      void InitializeCamera() {
@@ -3775,7 +3762,7 @@ private:
 
             // Phase 1c (diagnostic, #123): unified pre-init ReadPos log
             // with tick timestamp. Off the timing-critical path
-            // intentionally; ServoTask has not been created yet, so no
+            // intentionally; the head-motion task does not exist yet, so no
             // `scs_bus_mutex_` contention is possible at this point.
             ESP_LOGI(TAG,
                      "Boot pre-init ReadPos: yaw_raw=%d (attempts=%d) "
@@ -3842,12 +3829,13 @@ private:
                          BOOT_READPOS_MAX_ATTEMPTS, BOOT_INIT_PITCH_DEG);
             }
 
-            BaseType_t ok = xTaskCreatePinnedToCore(
-                &StackChanBoard::ServoTaskTrampoline,
-                "servo_motion", 4096, this, 5,
-                &servo_task_handle_, 1);
-            if (ok != pdPASS) {
-                ESP_LOGE(TAG, "Failed to create servo_motion task; disabling servo");
+            head_motion_runner_ =
+                std::make_unique<XcBodyHeadMotionRunner>(
+                    static_cast<XcBodyHeadMotionBackend&>(*this));
+            if (!head_motion_runner_->StartTask()) {
+                ESP_LOGE(
+                    TAG,
+                    "Failed to create head_motion task; disabling servo");
                 if (motion_mutex_ != nullptr) {
                     vSemaphoreDelete(motion_mutex_);
                     motion_mutex_ = nullptr;
@@ -3857,7 +3845,7 @@ private:
                     scs_bus_mutex_ = nullptr;
                 }
                 motion_driver_.reset();
-                servo_task_handle_ = nullptr;
+                head_motion_runner_.reset();
                 servo_ok_ = false;
                 return;
             }
@@ -3981,7 +3969,7 @@ private:
             }
 
             // Issue #123: capture post-init ReadPos so the boot-init effect
-            // is observable in the serial log. ServoTask is now running, so
+            // is observable in the serial log. Head motion is now running, so
             // hold scs_bus_mutex_ across the ReadPos pair.
             //
             // Retry budget mirrors Phase 1a / 1b and the get_head_angles
@@ -4342,7 +4330,7 @@ private:
 
             // Preserve the existing cancellation-first disable path exactly:
             // reset MotionDriver state for axes being disabled before the
-            // EnableTorque(OFF) bus frames can race with ServoTask writes.
+            // EnableTorque(OFF) bus frames can race with head-motion writes.
             if (motion_driver_ != nullptr && motion_mutex_ != nullptr &&
                 disables_axis) {
                 xSemaphoreTake(motion_mutex_, portMAX_DELAY);
@@ -4479,7 +4467,7 @@ private:
             return;
         }
         // PublishTorqueState() raises this when torque re-engages between
-        // ServoTask ticks, so a stale idle timer cannot immediately re-OFF.
+        // head-motion ticks, so a stale idle timer cannot immediately re-OFF.
         if (idle_timer_reset_pending_.exchange(
                 false, std::memory_order_acq_rel)) {
             last_motion_end_valid_ = false;
@@ -4742,7 +4730,7 @@ private:
         return true;
     }
 
-    bool StartMeasuredIdleRecovery() {
+    bool StartMeasuredIdleRecovery() override {
         if (!SynchronizePhysicalMotionPosition(true)) {
             ESP_LOGW(
                 TAG,
@@ -4753,6 +4741,59 @@ private:
             XC_BODY_IDLE_YAW_DEG,
             XC_BODY_IDLE_PITCH_DEG,
             XC_BODY_BEHAVIOR_SPEED_DPS);
+    }
+
+    void TickHeadMotion() override {
+        motion_driver_->Tick();
+    }
+
+    void MaintainIdleTorque() override {
+        MaybeAutoReleaseTorque();
+    }
+
+    bool HeadMotionCachedAt(int yaw, int pitch) override {
+        return PhysicalMotionCachedAt(yaw, pitch);
+    }
+
+    bool HeadMotionConfirmedAt(
+            int yaw,
+            int pitch,
+            const char* diagnostic_context,
+            std::string* diagnostic_detail) override {
+        return PhysicalMotionConfirmedAt(
+            yaw, pitch, diagnostic_context, diagnostic_detail);
+    }
+
+    bool SynchronizeHeadPosition(bool cancel_motion) override {
+        return SynchronizePhysicalMotionPosition(cancel_motion);
+    }
+
+    bool MoveHeadToIdle() override {
+        return WriteHeadAngles(
+            XC_BODY_IDLE_YAW_DEG,
+            XC_BODY_IDLE_PITCH_DEG,
+            XC_BODY_BEHAVIOR_SPEED_DPS);
+    }
+
+    bool PrepareHeadMotion() override {
+        if (!TakeMotionMutexAfterTorqueEngaged()) {
+            return false;
+        }
+        xSemaphoreGive(motion_mutex_);
+        return true;
+    }
+
+    bool StartHeadCurve(
+            const StackChanExpressionStep& curve) override {
+        return WriteHeadCurve(curve);
+    }
+
+    bool HeadMotionInactive() override {
+        return PhysicalMotionInactive();
+    }
+
+    bool ConsumeHeadCurveFailure() override {
+        return motion_driver_->ConsumeCurveFailure();
     }
 
     bool PhysicalMotionConfirmedAt(
@@ -5029,115 +5070,21 @@ private:
         Application::GetInstance().ResumeDeferredAudioPlayback();
     }
 
-    void BeginExpressionRecovery(
+    void RequestExpressionRecovery(
             StackChanExpressionOutcome outcome,
-            uint64_t now_us,
             const char* reason) {
-        expression_recovery_outcome_ = outcome;
-        expression_failure_reason_ = reason ? reason : "";
-        // Do not leave the final GIF frame visible during motor recovery.
-        const bool face_restored = ShowIdleFace();
-        ESP_LOGW(
-            TAG,
-            "Expression recovery started: name=%s reason=%s outcome=%s "
-            "step_index=%u face_restored=%d",
-            expression_name_.c_str(), reason,
-            StackChanExpressionOutcomeName(outcome),
-            static_cast<unsigned>(expression_step_index_),
-            face_restored ? 1 : 0);
-        if (PhysicalMotionConfirmedAt(
-                kStackChanExpressionIdleYaw,
-                kStackChanExpressionIdlePitch,
-                "recovery entry")) {
-            FinishExpression(outcome, now_us);
+        if (expression_outcome_override_) {
             return;
         }
-        expression_recovery_deadline_us_ =
-            now_us + EXPRESSION_RECOVERY_TIMEOUT_US;
-        expression_recovery_retry_at_us_ =
-            now_us + EXPRESSION_RECOVERY_RETRY_INTERVAL_US;
-        StartMeasuredIdleRecovery();
-        expression_step_.store(
-            ExpressionStep::RECOVERING_TO_IDLE,
-            std::memory_order_release);
-    }
-
-    void StartAuthoredExpression(uint64_t now_us) {
-        if (!StartExpressionAnimation(expression_recipe_.animation)) {
-            expression_failure_reason_ = ExpressionAnimationFailed()
-                ? "asset_decode_failed"
-                : "animation_start_failed";
-            FinishExpression(
-                StackChanExpressionOutcome::MOTION_FAILED, now_us);
-            return;
+        expression_outcome_override_ = true;
+        expression_override_outcome_ = outcome;
+        expression_failure_reason_ = reason != nullptr ? reason : "";
+        if (head_motion_runner_ != nullptr) {
+            head_motion_runner_->RequestRecovery(outcome, reason);
         }
-        HandleScreenSaverUserInteraction();
-        display_->UpdateStatusBar(true);
-        if (!WriteHeadCurve(expression_recipe_.steps[0])) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                "first_curve_start_failed");
-            return;
-        }
-        expression_step_index_ = 0;
-        const uint64_t motion_duration_us =
-            static_cast<uint64_t>(StackChanExpressionRecipeDurationMs(
-                expression_recipe_)) * 1000ULL;
-        expression_execution_deadline_us_ =
-            static_cast<uint64_t>(esp_timer_get_time()) +
-            std::max(motion_duration_us, EXPRESSION_FACE_DURATION_US) +
-            EXPRESSION_EXECUTION_MARGIN_US;
-        expression_step_.store(
-            ExpressionStep::RUNNING_CURVE,
-            std::memory_order_release);
-    }
-
-    void ContinueExpressionFromIdle(uint64_t now_us) {
-        if (expression_restore_only_) {
-            FinishExpression(StackChanExpressionOutcome::COMPLETED, now_us);
-        } else {
-            StartAuthoredExpression(now_us);
-        }
-    }
-
-    void StartNextExpressionStep(uint64_t now_us) {
-        if (ExpressionAnimationFailed()) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                "asset_decode_failed");
-            return;
-        }
-        ++expression_step_index_;
-        if (expression_step_index_ >= expression_recipe_.step_count) {
-            if (ExpressionAnimationComplete()) {
-                FinishExpression(
-                    StackChanExpressionOutcome::COMPLETED, now_us);
-            } else {
-                expression_step_.store(
-                    ExpressionStep::WAITING_FOR_FACE,
-                    std::memory_order_release);
-            }
-            return;
-        }
-        const auto& next = expression_recipe_.steps[expression_step_index_];
-        if (next.type == StackChanExpressionStepType::PAUSE) {
-            expression_hold_until_us_ = now_us +
-                static_cast<uint64_t>(next.duration_ms) * 1000ULL;
-            expression_step_.store(
-                ExpressionStep::PAUSING, std::memory_order_release);
-            return;
-        }
-        if (!WriteHeadCurve(next)) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                "curve_start_failed");
-            return;
-        }
-        expression_step_.store(
-            ExpressionStep::RUNNING_CURVE, std::memory_order_release);
+        // Recovery has already been handed to the high-priority head runner;
+        // restoring the visual cannot delay the safety command.
+        ShowIdleFace();
     }
 
     StackChanExpressionOutcome StartExpressionOperation(
@@ -5167,7 +5114,9 @@ private:
             }
             return StackChanExpressionOutcome::UNAVAILABLE;
         }
-        if (!servo_ok_ || motion_driver_ == nullptr) {
+        if (!servo_ok_ || motion_driver_ == nullptr ||
+            head_motion_runner_ == nullptr ||
+            expression_task_handle_ == nullptr) {
             if (rejection_detail != nullptr) {
                 *rejection_detail = "servo_ready=0";
             }
@@ -5208,9 +5157,11 @@ private:
             expression_recipe_ = *recipe;
         }
         expression_restore_only_ = recipe == nullptr;
-        expression_step_index_ = 0;
         expression_name_ = name;
         expression_failure_reason_.clear();
+        expression_outcome_override_ = false;
+        expression_override_outcome_ =
+            StackChanExpressionOutcome::UNAVAILABLE;
         expression_invocation_.store(
             invocation, std::memory_order_relaxed);
         expression_behavior_id_ = behavior_id;
@@ -5225,10 +5176,8 @@ private:
         expression_abort_requested_.store(false, std::memory_order_relaxed);
         const uint64_t now_us = esp_timer_get_time();
         expression_started_us_ = now_us;
-        expression_startup_deadline_us_ =
-            now_us + EXPRESSION_STARTUP_TIMEOUT_US;
         expression_step_.store(
-            ExpressionStep::STARTING, std::memory_order_relaxed);
+            ExpressionStep::PREPARING, std::memory_order_relaxed);
         expression_active_.store(true, std::memory_order_release);
 
         // Close the admission/callback handoff: a state transition that
@@ -5252,6 +5201,7 @@ private:
             Application::GetInstance().ResumeDeferredAudioPlayback();
             return StackChanExpressionOutcome::BUSY;
         }
+        xTaskNotifyGive(expression_task_handle_);
         return StackChanExpressionOutcome::STARTED;
     }
 
@@ -5276,163 +5226,153 @@ private:
             return;
         }
         const uint64_t now_us = esp_timer_get_time();
-        ExpressionStep step = expression_step_.load(
+        const ExpressionStep step = expression_step_.load(
             std::memory_order_acquire);
-        if (step != ExpressionStep::STARTING &&
-            step != ExpressionStep::RESTORING_FACE &&
-            step != ExpressionStep::RECOVERING_TO_IDLE &&
-            expression_abort_requested_.load(std::memory_order_acquire)) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::INTERRUPTED,
-                now_us,
-                "abort_requested");
-            return;
-        }
-        if (step != ExpressionStep::STARTING &&
-            step != ExpressionStep::RESTORING_FACE &&
-            step != ExpressionStep::RECOVERING_TO_IDLE &&
-            ExpressionAnimationFailed()) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                "asset_decode_failed");
-            return;
-        }
-        if (step == ExpressionStep::RUNNING_CURVE &&
-            motion_driver_->ConsumeCurveFailure()) {
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                "curve_driver_failed");
-            return;
-        }
-        if (step != ExpressionStep::STARTING &&
-            step != ExpressionStep::CENTERING &&
-            step != ExpressionStep::RESTORING_FACE &&
-            step != ExpressionStep::RECOVERING_TO_IDLE &&
-            now_us >= expression_execution_deadline_us_) {
-            std::string deadline_detail;
-            if (step == ExpressionStep::RUNNING_CURVE) {
-                const auto& curve =
-                    expression_recipe_.steps[expression_step_index_];
-                const auto& end = curve.points[3];
-                if (PhysicalMotionConfirmedAt(
-                        end.yaw, end.pitch, "execution deadline",
-                        &deadline_detail)) {
-                    deadline_detail = "endpoint_confirmed_late";
-                }
-            }
-            std::string deadline_reason = "execution_deadline";
-            if (!deadline_detail.empty()) {
-                deadline_reason += ":";
-                deadline_reason += deadline_detail;
-            }
-            BeginExpressionRecovery(
-                StackChanExpressionOutcome::MOTION_FAILED,
-                now_us,
-                deadline_reason.c_str());
-            return;
-        }
 
         switch (step) {
-            case ExpressionStep::STARTING:
+            case ExpressionStep::PREPARING:
                 if (expression_abort_requested_.load(
                         std::memory_order_acquire)) {
-                    BeginExpressionRecovery(
+                    FinishExpression(
                         StackChanExpressionOutcome::INTERRUPTED,
-                        now_us,
-                        "startup_abort_requested");
-                } else if (PhysicalMotionCachedAt(
-                               kStackChanExpressionIdleYaw,
-                               kStackChanExpressionIdlePitch) &&
-                           PhysicalMotionConfirmedAt(
-                               kStackChanExpressionIdleYaw,
-                               kStackChanExpressionIdlePitch)) {
-                    ContinueExpressionFromIdle(now_us);
-                } else if (!SynchronizePhysicalMotionPosition() ||
-                           !WriteHeadAngles(
-                               kStackChanExpressionIdleYaw,
-                               kStackChanExpressionIdlePitch,
-                               XC_BODY_BEHAVIOR_SPEED_DPS)) {
-                    BeginExpressionRecovery(
+                        now_us);
+                    break;
+                }
+                if (!expression_restore_only_ &&
+                    !PrepareExpressionAnimation(
+                        expression_recipe_.animation)) {
+                    expression_failure_reason_ = ExpressionAnimationFailed()
+                        ? "asset_decode_failed"
+                        : "animation_prepare_failed";
+                    FinishExpression(
                         StackChanExpressionOutcome::MOTION_FAILED,
-                        now_us,
-                        "startup_center_failed");
-                } else {
+                        now_us);
+                    break;
+                }
+                HandleScreenSaverUserInteraction();
+                display_->UpdateStatusBar(true);
+                if (head_motion_runner_ == nullptr ||
+                    !head_motion_runner_->Start(
+                        expression_restore_only_
+                            ? nullptr : &expression_recipe_,
+                        expression_restore_only_)) {
+                    expression_failure_reason_ = "head_runner_unavailable";
+                    FinishExpression(
+                        StackChanExpressionOutcome::MOTION_FAILED,
+                        now_us);
+                    break;
+                }
+                expression_step_.store(
+                    ExpressionStep::WAITING_FOR_HEAD_READY,
+                    std::memory_order_release);
+                break;
+            case ExpressionStep::WAITING_FOR_HEAD_READY:
+                if (expression_abort_requested_.load(
+                        std::memory_order_acquire)) {
+                    RequestExpressionRecovery(
+                        StackChanExpressionOutcome::INTERRUPTED,
+                        "startup_abort_requested");
+                } else if (head_motion_runner_->IsReady()) {
+                    if (!PlayPreparedExpressionAnimation()) {
+                        RequestExpressionRecovery(
+                            StackChanExpressionOutcome::MOTION_FAILED,
+                            "animation_start_failed");
+                        break;
+                    }
+                    const uint64_t motion_duration_us =
+                        static_cast<uint64_t>(
+                            StackChanExpressionRecipeDurationMs(
+                                expression_recipe_)) * 1000ULL;
+                    expression_execution_deadline_us_ = now_us +
+                        std::max(
+                            motion_duration_us,
+                            EXPRESSION_FACE_DURATION_US) +
+                        EXPRESSION_EXECUTION_MARGIN_US;
+                    head_motion_runner_->BeginPreparedTrajectory();
                     expression_step_.store(
-                        ExpressionStep::CENTERING,
+                        ExpressionStep::RUNNING,
                         std::memory_order_release);
                 }
                 break;
-            case ExpressionStep::CENTERING:
-                if (PhysicalMotionCachedAt(
-                        kStackChanExpressionIdleYaw,
-                        kStackChanExpressionIdlePitch) &&
-                    PhysicalMotionConfirmedAt(
-                        kStackChanExpressionIdleYaw,
-                        kStackChanExpressionIdlePitch)) {
-                    ContinueExpressionFromIdle(now_us);
-                } else if (now_us >= expression_startup_deadline_us_) {
-                    BeginExpressionRecovery(
+            case ExpressionStep::RUNNING:
+                if (expression_abort_requested_.load(
+                        std::memory_order_acquire)) {
+                    RequestExpressionRecovery(
+                        StackChanExpressionOutcome::INTERRUPTED,
+                        "abort_requested");
+                } else if (ExpressionAnimationFailed()) {
+                    RequestExpressionRecovery(
                         StackChanExpressionOutcome::MOTION_FAILED,
-                        now_us,
-                        "startup_deadline");
-                }
-                break;
-            case ExpressionStep::RUNNING_CURVE: {
-                const auto& curve =
-                    expression_recipe_.steps[expression_step_index_];
-                const auto& end = curve.points[3];
-                if (PhysicalMotionInactive() &&
-                    PhysicalMotionConfirmedAt(end.yaw, end.pitch)) {
-                    StartNextExpressionStep(now_us);
-                }
-                break;
-            }
-            case ExpressionStep::PAUSING:
-                if (now_us >= expression_hold_until_us_) {
-                    StartNextExpressionStep(now_us);
+                        "asset_decode_failed");
+                } else if (now_us >= expression_execution_deadline_us_) {
+                    RequestExpressionRecovery(
+                        StackChanExpressionOutcome::MOTION_FAILED,
+                        "expression_deadline");
                 }
                 break;
             case ExpressionStep::WAITING_FOR_FACE:
-                if (ExpressionAnimationComplete()) {
+                if (expression_abort_requested_.load(
+                        std::memory_order_acquire)) {
+                    expression_failure_reason_ = "abort_requested";
+                    FinishExpression(
+                        StackChanExpressionOutcome::INTERRUPTED, now_us);
+                } else if (ExpressionAnimationFailed()) {
+                    expression_failure_reason_ = "asset_decode_failed";
+                    FinishExpression(
+                        StackChanExpressionOutcome::MOTION_FAILED, now_us);
+                } else if (ExpressionAnimationComplete()) {
                     FinishExpression(
                         StackChanExpressionOutcome::COMPLETED, now_us);
+                } else if (now_us >= expression_execution_deadline_us_) {
+                    expression_failure_reason_ = "face_deadline";
+                    FinishExpression(
+                        StackChanExpressionOutcome::MOTION_FAILED, now_us);
                 }
                 break;
             case ExpressionStep::RESTORING_FACE:
                 FinishExpression(expression_finish_outcome_, now_us);
                 break;
-            case ExpressionStep::RECOVERING_TO_IDLE: {
-                const bool recovery_deadline_reached =
-                    now_us >= expression_recovery_deadline_us_;
-                const bool recovery_retry_due =
-                    !recovery_deadline_reached &&
-                    now_us >= expression_recovery_retry_at_us_ &&
-                    PhysicalMotionInactive();
-                const char* diagnostic_context = recovery_deadline_reached
-                    ? "safe return deadline"
-                    : recovery_retry_due ? "idle return retry" : nullptr;
-                if (PhysicalMotionConfirmedAt(
-                        kStackChanExpressionIdleYaw,
-                        kStackChanExpressionIdlePitch,
-                        diagnostic_context)) {
-                    FinishExpression(expression_recovery_outcome_, now_us);
-                } else if (recovery_deadline_reached) {
-                    if (!expression_failure_reason_.empty()) {
-                        expression_failure_reason_ += ":";
-                    }
-                    expression_failure_reason_ += "recovery_deadline";
-                    FinishExpression(
-                        StackChanExpressionOutcome::SAFE_RETURN_FAILED,
-                        now_us);
-                } else if (recovery_retry_due) {
-                    StartMeasuredIdleRecovery();
-                    expression_recovery_retry_at_us_ = now_us +
-                        EXPRESSION_RECOVERY_RETRY_INTERVAL_US;
-                }
-                break;
-            }
+        }
+
+        if (!expression_active_.load(std::memory_order_acquire) ||
+            step == ExpressionStep::RESTORING_FACE ||
+            step == ExpressionStep::WAITING_FOR_FACE ||
+            step == ExpressionStep::PREPARING) {
+            return;
+        }
+
+        StackChanExpressionOutcome head_outcome;
+        std::string head_reason;
+        if (!head_motion_runner_->TakeCompletion(
+                head_outcome, head_reason)) {
+            return;
+        }
+        if (!head_reason.empty()) {
+            expression_failure_reason_ = head_reason;
+        }
+        if (head_outcome == StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
+            FinishExpression(head_outcome, now_us);
+            return;
+        }
+        if (expression_outcome_override_) {
+            FinishExpression(expression_override_outcome_, now_us);
+            return;
+        }
+        if (head_outcome != StackChanExpressionOutcome::COMPLETED ||
+            expression_restore_only_) {
+            FinishExpression(head_outcome, now_us);
+            return;
+        }
+        if (ExpressionAnimationFailed()) {
+            expression_failure_reason_ = "asset_decode_failed";
+            FinishExpression(
+                StackChanExpressionOutcome::MOTION_FAILED, now_us);
+        } else if (ExpressionAnimationComplete()) {
+            FinishExpression(StackChanExpressionOutcome::COMPLETED, now_us);
+        } else {
+            expression_step_.store(
+                ExpressionStep::WAITING_FOR_FACE,
+                std::memory_order_release);
         }
     }
 
@@ -5472,21 +5412,35 @@ private:
             StackChanExpressionOutcome::STARTED;
     }
 
-    static void ServoTaskTrampoline(void* arg) {
-        static_cast<StackChanBoard*>(arg)->ServoTaskMain();
+    static void ExpressionTaskTrampoline(void* arg) {
+        static_cast<StackChanBoard*>(arg)->ExpressionTaskMain();
     }
 
-    void ServoTaskMain() {
+    void ExpressionTaskMain() {
         while (true) {
-            if (!servo_ok_ || motion_driver_ == nullptr) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            while (expression_active_.load(std::memory_order_acquire)) {
                 AdvanceExpression();
                 vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
-                continue;
             }
-            motion_driver_->Tick();
-            AdvanceExpression();
-            MaybeAutoReleaseTorque();
-            taskYIELD();
+        }
+    }
+
+    void InitializeExpressionRunner() {
+        if (!servo_ok_ || head_motion_runner_ == nullptr) {
+            return;
+        }
+        const BaseType_t created = xTaskCreatePinnedToCore(
+            &StackChanBoard::ExpressionTaskTrampoline,
+            "expression_runner",
+            4096,
+            this,
+            3,
+            &expression_task_handle_,
+            1);
+        if (created != pdPASS) {
+            expression_task_handle_ = nullptr;
+            ESP_LOGE(TAG, "Failed to create expression_runner task");
         }
     }
     static inline char Si12tChLevelChar(uint8_t raw, int ch) {
@@ -5678,193 +5632,26 @@ private:
             ApplicationDisplayAllowed(state, owner);
     }
 
-    static bool SameFaceImageLayout(
-            const lv_img_dsc_t* first,
-            const lv_img_dsc_t* second) {
-        return first != nullptr && second != nullptr &&
-            first->header.w == second->header.w &&
-            first->header.h == second->header.h &&
-            first->header.cf == second->header.cf &&
-            first->header.stride == second->header.stride;
-    }
-
-    static bool FindChangedFaceArea(
-            const lv_img_dsc_t* before,
-            const lv_img_dsc_t* after,
-            lv_area_t& changed_area) {
-        int32_t min_x = after->header.w;
-        int32_t min_y = after->header.h;
-        int32_t max_x = -1;
-        int32_t max_y = -1;
-        for (int32_t y = 0; y < after->header.h; ++y) {
-            const uint8_t* before_row =
-                before->data + y * before->header.stride;
-            const uint8_t* after_row =
-                after->data + y * after->header.stride;
-            if (std::memcmp(
-                    before_row,
-                    after_row,
-                    after->header.stride) == 0) {
-                continue;
-            }
-            for (int32_t x = 0; x < after->header.w; ++x) {
-                if (std::memcmp(
-                        before_row + x * 4,
-                        after_row + x * 4,
-                        4) == 0) {
-                    continue;
-                }
-                min_x = std::min(min_x, x);
-                min_y = std::min(min_y, y);
-                max_x = std::max(max_x, x);
-                max_y = std::max(max_y, y);
-            }
-        }
-        if (max_x < 0) {
-            return false;
-        }
-        changed_area = {
-            .x1 = min_x,
-            .y1 = min_y,
-            .x2 = max_x,
-            .y2 = max_y,
-        };
-        return true;
-    }
-
-    void InvalidateFaceAreaLocked(const lv_area_t& relative_area) {
-        if (face_image_ == nullptr || !lv_obj_is_valid(face_image_)) {
-            return;
-        }
-        lv_area_t face_area;
-        lv_obj_get_coords(face_image_, &face_area);
-        const lv_area_t dirty_area = {
-            .x1 = face_area.x1 + relative_area.x1,
-            .y1 = face_area.y1 + relative_area.y1,
-            .x2 = face_area.x1 + relative_area.x2,
-            .y2 = face_area.y1 + relative_area.y2,
-        };
-        lv_obj_invalidate_area(face_image_, &dirty_area);
-    }
-
-    bool EnsureFaceObjectLocked() {
-        if (face_image_ != nullptr && lv_obj_is_valid(face_image_)) {
-            return true;
-        }
-        lv_obj_t* screen = lv_screen_active();
-        if (screen == nullptr) {
-            return false;
-        }
-        face_image_ = lv_image_create(screen);
-        if (face_image_ == nullptr) {
-            return false;
-        }
-        face_image_source_installed_ = false;
-        lv_obj_align(face_image_, LV_ALIGN_CENTER, 0, 0);
-        lv_image_set_scale(face_image_, 256);
-        lv_obj_clear_flag(face_image_, LV_OBJ_FLAG_SCROLLABLE);
-        display_->PlaceBehindStatusBarLocked(face_image_);
-        return true;
-    }
-
-    bool ShowFaceAssetLocked(
-            const std::string& asset,
-            int32_t loop_count,
-            bool play) {
-        void* data = nullptr;
-        size_t size = 0;
-        if (!Assets::GetInstance().GetAssetData(asset, data, size) ||
-            data == nullptr || size == 0 || !EnsureFaceObjectLocked()) {
-            ESP_LOGW(TAG, "Face asset unavailable: %s", asset.c_str());
-            return false;
-        }
-
-        lv_img_dsc_t source = {};
-        source.data = static_cast<const uint8_t*>(data);
-        source.data_size = size;
-        auto gif = std::make_unique<LvglGif>(&source);
-        if (!gif->IsLoaded()) {
-            ESP_LOGW(TAG, "Face GIF could not be decoded: %s", asset.c_str());
-            return false;
-        }
-        gif->SetLoopCount(loop_count);
-        if (play) {
-            gif->Start();
-        } else {
-            gif->Start();
-            gif->Pause();
-        }
-
-        const lv_img_dsc_t* previous_image = face_gif_ != nullptr
-            ? face_gif_->image_dsc() : nullptr;
-        const lv_img_dsc_t* next_image = gif->image_dsc();
-        const bool reuse_image_source =
-            face_image_source_installed_ &&
-            SameFaceImageLayout(previous_image, next_image);
-        lv_area_t transition_area;
-        const bool transition_changed = reuse_image_source &&
-            FindChangedFaceArea(
-                previous_image, next_image, transition_area);
-        const bool face_was_hidden =
-            lv_obj_has_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
-
-        face_gif_ = std::move(gif);
-        face_image_source_ = *face_gif_->image_dsc();
-        face_gif_->SetFrameCallback([this](const lv_area_t& frame_area) {
-            InvalidateFaceAreaLocked(frame_area);
-        });
-        if (!reuse_image_source) {
-            lv_image_set_src(face_image_, &face_image_source_);
-            face_image_source_installed_ = true;
-        }
-        lv_obj_clear_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
-        display_->PlaceBehindStatusBarLocked(face_image_);
-        if (reuse_image_source && transition_changed && !face_was_hidden) {
-            InvalidateFaceAreaLocked(transition_area);
-        }
-        return true;
-    }
-
-    bool ShowFaceAsset(
-            const std::string& asset,
-            int32_t loop_count,
-            bool play) {
-        if (display_ == nullptr || !FaceDisplayAllowed()) {
-            return false;
-        }
-        DisplayLockGuard lock(display_);
-        return ShowFaceAssetLocked(asset, loop_count, play);
-    }
-
     bool ShowIdleFaceLocked() {
-        if (!ShowFaceAssetLocked("idle.gif", 0, true)) {
-            return false;
-        }
-        face_gif_->SetLoopDelay(IDLE_FACE_LOOP_DELAY_MS);
-        return true;
+        return face_player_ != nullptr && face_player_->ShowIdleLocked();
     }
 
     bool ShowIdleFace() {
         if (display_ == nullptr || !FaceDisplayAllowed()) {
             return false;
         }
-        DisplayLockGuard lock(display_);
-        return ShowIdleFaceLocked();
+        return face_player_ != nullptr && face_player_->ShowIdle();
     }
 
     bool ShowListeningFaceLocked() {
-        if (ShowFaceAssetLocked("listening.gif", 0, true)) {
-            return true;
-        }
-        return ShowIdleFaceLocked();
+        return face_player_ != nullptr && face_player_->ShowListeningLocked();
     }
 
     bool ShowListeningFace() {
         if (display_ == nullptr || !FaceDisplayAllowed()) {
             return false;
         }
-        DisplayLockGuard lock(display_);
-        return ShowListeningFaceLocked();
+        return face_player_ != nullptr && face_player_->ShowListening();
     }
 
     bool RestoreFaceForCurrentState() {
@@ -5875,9 +5662,8 @@ private:
     }
 
     void HideFaceLocked() {
-        face_gif_.reset();
-        if (face_image_ != nullptr && lv_obj_is_valid(face_image_)) {
-            lv_obj_add_flag(face_image_, LV_OBJ_FLAG_HIDDEN);
+        if (face_player_ != nullptr) {
+            face_player_->HideLocked();
         }
         HideScreenSaverLocked();
     }
@@ -5890,29 +5676,23 @@ private:
         HideFaceLocked();
     }
 
-    bool StartExpressionAnimation(const std::string& animation) {
-        if (!IsStackChanExpressionName(animation)) {
-            return false;
-        }
-        return ShowFaceAsset(
-                   "expression-" + animation + ".gif", 1, true) &&
-            !ExpressionAnimationFailed();
+    bool PrepareExpressionAnimation(const std::string& animation) {
+        return face_player_ != nullptr && FaceDisplayAllowed() &&
+            face_player_->PrepareExpression(animation);
+    }
+
+    bool PlayPreparedExpressionAnimation() {
+        return face_player_ != nullptr && FaceDisplayAllowed() &&
+            face_player_->PlayPreparedExpression();
     }
 
     bool ExpressionAnimationComplete() {
-        if (display_ == nullptr) {
-            return false;
-        }
-        DisplayLockGuard lock(display_);
-        return face_gif_ != nullptr && !face_gif_->IsPlaying();
+        return face_player_ != nullptr &&
+            face_player_->ExpressionComplete();
     }
 
     bool ExpressionAnimationFailed() {
-        if (display_ == nullptr) {
-            return false;
-        }
-        DisplayLockGuard lock(display_);
-        return face_gif_ != nullptr && face_gif_->HasDecodeFailure();
+        return face_player_ != nullptr && face_player_->ExpressionFailed();
     }
 
     static bool IsGatewayUrlForced() {
@@ -7773,6 +7553,7 @@ public:
         GetBacklight()->RestoreBrightness();
         InitializeIOExpander();
         InitializeServo();
+        InitializeExpressionRunner();
         InitializeTouchSettings();
         InitializeSi12tTouch();
         I2cDetect();
@@ -7917,7 +7698,9 @@ public:
     }
 
     virtual void OnTtsStart() override {
-        ShowFaceAsset("speaking.gif", 0, true);
+        if (face_player_ != nullptr && FaceDisplayAllowed()) {
+            face_player_->ShowSpeaking();
+        }
     }
 
     virtual void OnTtsStop() override {
