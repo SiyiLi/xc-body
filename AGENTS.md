@@ -17,27 +17,28 @@ Before changing firmware, also read `firmware/README.md`.
 
 ## Current Phase
 
-Milestones 1 through 4 have physical acceptance. Milestone 5 is active and
-covers expression-aware direct conversation plus sparse deterministic ambient
-presence.
+Milestones 1 through 4 have physical acceptance. Milestone 5 implementation is
+complete and awaits versioned physical acceptance for expression-aware direct
+conversation.
 
 Keep Milestone 5 constrained to:
 
-- seven named expressions plus idle ambient presence;
+- seven named expressions plus idle ambient presence selected by projection;
 - deterministic face and head recipes with reviewed servo limits;
-- replacement of direct attention and the background-offer knock with fixed
-  `curious`;
-- sparse idle ambient behavior with strict activity budgets;
+- replacement of direct attention and the background-offer knock with one
+  selected expression before playback or pending wait;
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
-- trusted upstream semantic intentions to show one supported expression.
+- expression-only direct turns when one supported silent expression is a
+  natural and complete response; uncertain cases remain conversation.
 
-Do not add expressions to background offers, model-generated motion parameters,
-camera input, autonomous semantic moods, constant servo activity, or more
-expressions without evidence from real use during Milestone 5. Milestone 6 owns
-camera work. USB calibration must not create a second motion runner or expose
-raw motor parameters through the network.
+Do not repeat expression motion during a pending-offer wait, add model-generated
+motion parameters, camera input, autonomous semantic moods, constant servo
+activity, or more expressions without evidence from real use during Milestone
+5. Milestone 6 owns camera-guided ambient presence. USB calibration must not
+create a second motion runner or expose raw motor parameters through the
+network.
 
 ## Known Deployment Fact
 

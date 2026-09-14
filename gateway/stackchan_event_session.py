@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Literal, Union
 
-from gateway.pending_thought import KnockWaitTell, is_head_acknowledgment
+from gateway.pending_thought import OfferFlow, is_head_acknowledgment
 
 STACKCHAN_EVENT_METHOD = "stackchan/event"
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class StackChanEventSessionError(RuntimeError):
 class StackChanEventDispatcher:
     """Run at most one gesture worker and coalesce one pending gesture."""
 
-    def __init__(self, machine: KnockWaitTell):
+    def __init__(self, machine: OfferFlow):
         self._machine = machine
         self._pending: tuple[Mapping[str, object], float] | None = None
         self._task: asyncio.Task[None] | None = None
@@ -82,7 +82,7 @@ async def wait_for_stackchan_event_tasks(session: object) -> None:
 def create_stackchan_client_session(
     read_stream: Any,
     write_stream: Any,
-    machine: KnockWaitTell,
+    machine: OfferFlow,
 ) -> Any:
     """Create a pinned-SDK session that accepts ``stackchan/event``."""
 

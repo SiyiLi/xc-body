@@ -8,6 +8,7 @@ const output = join(root, "dist");
 const sources = [
   "core.ts",
   "direct-conversation.ts",
+  "expression.ts",
   "hooks.ts",
   "index.ts",
   "projection-client.ts",

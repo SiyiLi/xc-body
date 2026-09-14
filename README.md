@@ -36,12 +36,16 @@ turning it off should make the room feel a little emptier.
 - Milestone 4 direct conversation and appliance UX have physical acceptance.
   Exact candidate identifiers and the real-user acceptance record are in the
   milestone document.
-- Milestone 5 is active. Its replacement candidate removes the layered avatar
-  and uses the saved expression runner for idle presence, direct attention,
-  offer knocks, touch reactions, and speaking animation. Direct and background
-  behavior remain fixed to `curious`; there is no projection redesign. The
-  replacement integration still requires end-to-end physical acceptance.
-- Milestone 6 is reserved for explicit bounded camera observation.
+- Milestone 5 implementation is complete. Its replacement candidate removes
+  the layered avatar
+  and uses the saved expression runner for idle presence, direct responses,
+  offer cues, touch reactions, and speaking animation. Compound transcription
+  may select a silent expression when it is a complete response; questions,
+  actions, and uncertain cases run the agent. Answer and offer projection use
+  the same fixed vocabulary. Interaction executes the selected expression
+  before optional speech. Versioned end-to-end physical acceptance remains.
+- Milestone 6 owns future perception-guided ambient presence, including sparse
+  idle behavior and explicit bounded camera observation.
 
 The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current
 system structure is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future

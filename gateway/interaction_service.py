@@ -24,10 +24,12 @@ from gateway.direct_conversation import (
     build_direct_turn_report,
     emit_direct_turn_metrics,
     parse_plugin_metrics,
-    speak_direct_answer,
+    perform_direct_answer,
 )
+from gateway.expression_names import SUPPORTED_EXPRESSIONS
 from gateway.interaction_runtime import (
     InteractionRuntime,
+    InteractionRuntimeError,
     ready_device_session_id,
 )
 from gateway.stackchan_event_session import wait_for_stackchan_event_tasks
@@ -57,6 +59,8 @@ _AUTHENTICATED_PATHS = frozenset(
 )
 _MAX_SUMMARY_REQUEST_BYTES = 4096
 _MAX_ANSWER_REQUEST_BYTES = 64 * 1024
+_ANSWER_REQUIRED_FIELDS = frozenset(("turn_id", "expression", "speech"))
+_ANSWER_ALLOWED_FIELDS = _ANSWER_REQUIRED_FIELDS | {"metrics"}
 _RECOVERY_DELAY_SECONDS = 5
 _CAPTURE_METRIC_HEADERS = {
     "capture_started_uptime_us": "X-XC-Device-Capture-Start-Us",
@@ -66,8 +70,6 @@ _CAPTURE_METRIC_HEADERS = {
     "gateway_upload_started_ms": "X-XC-Gateway-Upload-Started-Ms",
 }
 logger = logging.getLogger(__name__)
-
-
 class InteractionServiceError(RuntimeError):
     """The Interaction service configuration or runtime is invalid."""
 
@@ -436,9 +438,26 @@ def build_app(
             if len(raw_body) > _MAX_ANSWER_REQUEST_BYTES:
                 raise ValueError
             payload = json.loads(raw_body.decode("utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError
+            fields = set(payload)
+            if (
+                not _ANSWER_REQUIRED_FIELDS.issubset(fields)
+                or fields - _ANSWER_ALLOWED_FIELDS
+            ):
+                raise ValueError
             turn_id = payload["turn_id"]
-            answer = payload["answer"]
-            if not isinstance(turn_id, str) or not isinstance(answer, str):
+            expression = payload["expression"]
+            speech = payload["speech"]
+            if (
+                not isinstance(turn_id, str)
+                or not isinstance(expression, str)
+                or expression not in SUPPORTED_EXPRESSIONS
+                or (
+                    speech is not None
+                    and (not isinstance(speech, str) or not speech.strip())
+                )
+            ):
                 raise ValueError
             turn_metrics, failed_stage = parse_plugin_metrics(
                 payload.get("metrics")
@@ -465,10 +484,11 @@ def build_app(
             time.time_ns() // 1_000_000
         )
         try:
-            body_metrics = await speak_direct_answer(
+            body_metrics = await perform_direct_answer(
                 runtime,
                 turn_id,
-                answer,
+                expression,
+                speech,
                 voice,
             )
         except Exception as exc:

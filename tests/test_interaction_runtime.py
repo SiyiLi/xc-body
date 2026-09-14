@@ -48,27 +48,29 @@ def ready_body(caller, **kwargs):
 
 
 class InteractionRuntimeTests(unittest.TestCase):
-    def test_knock_delegates_complete_physical_behavior(self):
+    def test_expression_failure_is_reported(self):
+        caller = RecordingCaller([RuntimeError("expression failed")])
+        body = ready_body(caller)
+
+        with self.assertRaisesRegex(
+            InteractionRuntimeError,
+            "expression failed",
+        ):
+            body.perform_expression("pleased")
+
+    def test_expression_uses_the_existing_body_lane(self):
         caller = RecordingCaller()
         body = ready_body(caller)
 
-        body.knock("eval:42")
+        body.perform_expression("curious")
 
         self.assertEqual(
             caller.calls,
             [
                 ("get_status", {}),
-                ("perform_knock", {"behavior_id": "eval:42"}),
+                ("perform_expression", {"expression": "curious"}),
             ],
         )
-        self.assertNotIn("say", [name for name, _ in caller.calls])
-
-    def test_knock_failure_is_reported(self):
-        caller = RecordingCaller([RuntimeError("knock failed")])
-        body = ready_body(caller)
-
-        with self.assertRaisesRegex(InteractionRuntimeError, "knock failed"):
-            body.knock("eval:42")
 
     @patch("gateway.interaction_runtime.urllib.request.urlopen")
     def test_tell_posts_audio_without_cloud_motion_control(self, urlopen):
@@ -120,7 +122,7 @@ class InteractionRuntimeTests(unittest.TestCase):
             InteractionRuntimeError,
             "device is not ready",
         ):
-            body.knock("eval:unverified")
+            body.perform_expression("curious")
         self.assertEqual(caller.calls, [])
 
         body.mark_device_ready("device-session-1")
@@ -129,7 +131,7 @@ class InteractionRuntimeTests(unittest.TestCase):
             InteractionRuntimeError,
             "device is not ready",
         ):
-            body.knock("eval:reconnected")
+            body.perform_expression("curious")
         self.assertEqual(caller.calls, [("get_status", {})])
 
     def test_runtime_owns_machine_for_session_lifetime(self):
@@ -199,15 +201,15 @@ class InteractionRuntimeTests(unittest.TestCase):
                 "gateway_playback_completed_ms": 1060,
             },
         ) as play:
-            metrics = body.tell_direct_stream("robot:1", pcm)
+            metrics = body.tell_direct_stream("robot:1", "pleased", pcm)
 
         self.assertEqual(
             caller.calls,
             [
                 ("get_status", {}),
                 (
-                    "perform_behavior",
-                    {"behavior_id": "robot:1", "kind": "attention"},
+                    "perform_expression",
+                    {"expression": "pleased"},
                 ),
             ],
         )
@@ -234,7 +236,7 @@ class InteractionRuntimeTests(unittest.TestCase):
                 InteractionRuntimeError,
                 "direct stream: RuntimeError",
             ):
-                body.tell_direct_stream("robot:1", Pcm())
+                body.tell_direct_stream("robot:1", "concerned", Pcm())
 
         play.assert_not_called()
 
@@ -314,7 +316,7 @@ class InteractionRuntimeTests(unittest.TestCase):
 
         playback_started = threading.Event()
         release_playback = threading.Event()
-        knock_finished = threading.Event()
+        presentation_finished = threading.Event()
         body = ready_body(
             RecordingCaller(),
             streaming_url="http://127.0.0.1:8766/pcm",
@@ -326,26 +328,26 @@ class InteractionRuntimeTests(unittest.TestCase):
             release_playback.wait(timeout=1)
             return {"ok": True}
 
-        def knock():
-            body.knock("eval:next")
-            knock_finished.set()
+        def present():
+            body.perform_expression("surprised")
+            presentation_finished.set()
 
         with patch.object(body, "_play_pcm_stream", side_effect=play):
             direct = threading.Thread(
                 target=body.tell_direct_stream,
-                args=("robot:1", Pcm()),
+                args=("robot:1", "curious", Pcm()),
             )
             direct.start()
             self.assertTrue(playback_started.wait(timeout=1))
-            contender = threading.Thread(target=knock)
+            contender = threading.Thread(target=present)
             contender.start()
-            self.assertFalse(knock_finished.wait(timeout=0.02))
+            self.assertFalse(presentation_finished.wait(timeout=0.02))
             release_playback.set()
             direct.join(timeout=1)
             contender.join(timeout=1)
 
         self.assertFalse(direct.is_alive())
-        self.assertTrue(knock_finished.is_set())
+        self.assertTrue(presentation_finished.is_set())
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,26 @@ type HookHandler = (
   context?: Record<string, unknown>,
 ) => Promise<void>;
 
+function offer(text: string) {
+  return {
+    text: JSON.stringify({
+      decision: "offer",
+      speech: text,
+      expression: "pleased",
+    }),
+  };
+}
+
+function skip() {
+  return {
+    text: JSON.stringify({
+      decision: "skip",
+      speech: null,
+      expression: null,
+    }),
+  };
+}
+
 function fakeApi(messages: unknown[]) {
   const hooks = new Map<string, HookHandler>();
   const sessionCalls: unknown[] = [];
@@ -38,9 +58,7 @@ test("registers only completion hooks and retrieves bounded child messages", asy
   const submitted: unknown[] = [];
   const integration = new CompletionIntegration({
     async complete() {
-      return {
-        text: "子任务已经完成。",
-      };
+      return offer("子任务已经完成。");
     },
     async submit(payload) {
       submitted.push(payload);
@@ -76,9 +94,7 @@ test("successful agent turn uses its final assistant result", async () => {
   const integration = new CompletionIntegration({
     async complete(params) {
       completedResults.push(params.messages[0]?.content ?? "");
-      return {
-        text: "当前工作已经完成。",
-      };
+      return offer("当前工作已经完成。");
     },
     async submit(payload) {
       submitted.push(payload);
@@ -99,7 +115,9 @@ test("successful agent turn uses its final assistant result", async () => {
     { runId: "agent-run" },
   );
 
-  assert.deepEqual(completedResults, ["meaningful completed result"]);
+  assert.deepEqual(completedResults.map(JSON.parse), [
+    { openclaw_result: "meaningful completed result" },
+  ]);
   assert.equal(submitted.length, 1);
 });
 
@@ -108,9 +126,7 @@ test("same run is deduplicated across completion hooks", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       completions += 1;
-      return {
-        text: "SKIP",
-      };
+      return skip();
     },
     async submit() {
       return true;
@@ -148,10 +164,10 @@ test("successful cron completion uses its typed summary and run ID", async () =>
   const submitted: unknown[] = [];
   const integration = new CompletionIntegration({
     async complete(params) {
-      assert.equal(params.messages[0]?.content, "cron completed result");
-      return {
-        text: "定时任务已经完成。",
-      };
+      assert.deepEqual(JSON.parse(params.messages[0]?.content ?? ""), {
+        openclaw_result: "cron completed result",
+      });
+      return offer("定时任务已经完成。");
     },
     async submit(payload) {
       submitted.push(payload);
@@ -175,9 +191,7 @@ test("scheduled cron completion uses its job and start time", async () => {
   const submitted: unknown[] = [];
   const integration = new CompletionIntegration({
     async complete() {
-      return {
-        text: "定时任务已经完成。",
-      };
+      return offer("定时任务已经完成。");
     },
     async submit(payload) {
       submitted.push(payload);
@@ -205,9 +219,7 @@ test("unsuccessful and incomplete events fail closed", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       completions += 1;
-      return {
-        text: "SKIP",
-      };
+      return skip();
     },
     async submit() {
       return true;

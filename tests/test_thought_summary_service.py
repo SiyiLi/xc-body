@@ -49,6 +49,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                 "version": "v1",
                 "thought_id": "subagent:abc123",
                 "summary": "  你的私人项目已经完成，可以查看结果。  ",
+                "expression": "pleased",
             }
         )
 
@@ -63,6 +64,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                 "version": "v1",
                 "thought_id": "agent:english",
                 "summary": "Build completed.",
+                "expression": "pleased",
             }
         )
         self.assertEqual(english_request.summary, "Build completed.")
@@ -78,6 +80,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "subagent:abc123",
                     "summary": "a" * 1_001,
+                    "expression": "pleased",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,
@@ -108,6 +111,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "cron:def456",
                     "summary": summary,
+                    "expression": "pleased",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,
@@ -127,9 +131,10 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         payload = runtime.consider_thought.await_args.args[0]
         self.assertEqual(payload["decision"], "offer")
         self.assertEqual(payload["audio_base64"], _PREPARED_AUDIO_BASE64)
+        self.assertEqual(payload["expression"], "pleased")
         self.assertNotIn("summary", payload)
 
-    def test_synthesis_failure_causes_no_knock_or_plaintext_leakage(self):
+    def test_synthesis_failure_causes_no_presentation_or_plaintext_leak(self):
         private_summary = "私人事项：体检报告已经整理完成。"
         runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(
@@ -143,6 +148,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "cron:private",
                     "summary": private_summary,
+                    "expression": "concerned",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,
@@ -157,7 +163,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
         self.assertNotIn(private_summary, json.dumps(response))
         runtime.consider_thought.assert_not_awaited()
 
-    def test_invalid_prepared_audio_causes_no_knock(self):
+    def test_invalid_prepared_audio_causes_no_presentation(self):
         runtime = ready_runtime(consider_thought=AsyncMock())
         prepare = AsyncMock(return_value="not-valid-audio")
 
@@ -168,6 +174,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "cron:invalid-audio",
                     "summary": "任务已经完成，可以查看。",
+                    "expression": "pleased",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,
@@ -190,6 +197,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "cron:new",
                     "summary": "另一个任务已经完成。",
+                    "expression": "curious",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,
@@ -210,6 +218,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
                     "version": "v1",
                     "thought_id": "cron:unready",
                     "summary": "机器人暂时断开连接。",
+                    "expression": "concerned",
                 },
                 voice=DEFAULT_VOICE,
                 speech_preparer=prepare,

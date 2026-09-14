@@ -20,6 +20,7 @@ from gateway.interaction_service import (
     validate_bind_safety,
 )
 from gateway.direct_conversation import DirectConversationError
+from gateway.interaction_runtime import InteractionRuntimeError
 
 
 class RecordingApp:
@@ -315,18 +316,20 @@ class InteractionServiceTests(unittest.TestCase):
                 "partial speech",
                 metrics={
                     "tts_first_pcm_ready_ms": 1000,
-                    "attention_completed_ms": 1100,
+                    "expression_completed_ms": 1100,
                     "gateway_first_audio_frame_sent_ms": 1200,
                     "streamed_audio_frames": 1,
                 },
             )
-            answer = json.dumps(
-                {"turn_id": turn_id, "answer": "answer"}
-            ).encode()
+            answer = json.dumps({
+                "turn_id": turn_id,
+                "expression": "concerned",
+                "speech": "answer",
+            }).encode()
             with patch(
-                "gateway.interaction_service.speak_direct_answer",
+                "gateway.interaction_service.perform_direct_answer",
                 new=AsyncMock(side_effect=error),
-            ) as speak, patch(
+            ) as perform, patch(
                 "gateway.interaction_service.emit_direct_turn_metrics",
                 side_effect=reports.append,
             ):
@@ -345,13 +348,17 @@ class InteractionServiceTests(unittest.TestCase):
                     body=answer,
                 )
 
-            return failed, repeated, reports, speak
+            return failed, repeated, reports, perform, turn_id
 
-        failed, repeated, reports, speak = asyncio.run(exercise())
+        failed, repeated, reports, perform, turn_id = asyncio.run(exercise())
 
         self.assertEqual(failed[0]["status"], 503)
         self.assertEqual(repeated[0]["status"], 409)
-        speak.assert_awaited_once()
+        perform.assert_awaited_once()
+        self.assertEqual(
+            perform.await_args.args[1:4],
+            (turn_id, "concerned", "answer"),
+        )
         self.assertEqual(reports[0]["status"], "body_unavailable")
         self.assertEqual(
             reports[0]["metrics"]["gateway_first_audio_frame_sent_ms"],

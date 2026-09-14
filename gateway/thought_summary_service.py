@@ -7,6 +7,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
+from gateway.expression_names import OFFER_EXPRESSIONS
 from gateway.pending_thought import (
     PendingThoughtError,
     decode_prepared_audio,
@@ -22,7 +23,9 @@ from gateway.speech_preparation import (
     prepare_speech,
 )
 
-_ALLOWED_FIELDS = frozenset(("version", "thought_id", "summary"))
+_ALLOWED_FIELDS = frozenset(
+    ("version", "thought_id", "summary", "expression")
+)
 _REQUIRED_FIELDS = _ALLOWED_FIELDS
 _MAX_SUMMARY_CHARS = 1_000
 SpeechPreparer = Callable[[str, str], Awaitable[str]]
@@ -38,6 +41,7 @@ class ThoughtSummary:
     version: str
     thought_id: str
     summary: str
+    expression: str
 
 
 def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
@@ -60,10 +64,14 @@ def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
     summary = summary.strip()
     if not summary or len(summary) > _MAX_SUMMARY_CHARS:
         raise ThoughtSummaryError("summary must be bounded spoken text")
+    expression = payload["expression"]
+    if not isinstance(expression, str) or expression not in OFFER_EXPRESSIONS:
+        raise ThoughtSummaryError("expression must be a supported offer name")
     return ThoughtSummary(
         version="v1",
         thought_id=thought_id,
         summary=summary,
+        expression=expression,
     )
 
 
@@ -119,6 +127,7 @@ async def handle_summary_request(
                 "thought_id": request.thought_id,
                 "decision": "offer",
                 "audio_base64": audio_base64,
+                "expression": request.expression,
             }
         )
     except InteractionRuntimeError:

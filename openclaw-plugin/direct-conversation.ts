@@ -4,9 +4,11 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 import {
   prepareDirectSpeech,
+  type DirectSpeech,
   type LlmCompleter,
 } from "./spoken-text.ts";
-import type { NvidiaAudioTranscriber } from "./projection-client.ts";
+import type { ExpressionName } from "./expression.ts";
+import type { AudioTranscriber } from "./projection-client.ts";
 
 export type DirectConversationConfig = {
   voiceUrl: string;
@@ -15,7 +17,7 @@ export type DirectConversationConfig = {
   telegramTarget: string;
   agentId: string;
   complete: LlmCompleter;
-  transcribe: NvidiaAudioTranscriber;
+  transcribe: AudioTranscriber;
   pollMs: number;
   timeoutMs: number;
 };
@@ -59,13 +61,15 @@ const SILENT_REPLY_TOKEN = "NO_REPLY";
 const OPENCLAW_STREAM_ERROR_FALLBACK_TEXT =
   "[assistant turn failed before producing content]";
 
-export async function prepareDirectAnswerSpeech(
+export async function prepareDirectAnswer(
   complete: LlmCompleter,
   answer: string,
-): Promise<string> {
+): Promise<DirectSpeech> {
   return (
-    (await prepareDirectSpeech(complete, answer)) ??
-    PROJECTION_FAILURE_SPEECH
+    (await prepareDirectSpeech(complete, answer)) ?? {
+      speech: PROJECTION_FAILURE_SPEECH,
+      expression: "idle",
+    }
   );
 }
 
@@ -259,16 +263,10 @@ export class DirectConversationService {
     let stage = "transcription";
     let failedStage: string | undefined;
     try {
-      const storePath = this.api.runtime.agent.session.resolveStorePath(
-        this.api.config.session?.store,
-        { agentId: this.config.agentId },
-      );
-      const transcript = (await measure(metrics, stage, () =>
+      const transcription = await measure(metrics, stage, () =>
         this.config.transcribe(capture.audio_base64),
-      )).trim();
-      if (!transcript) {
-        throw new Error("XC Body voice transcription was empty");
-      }
+      );
+      const transcript = transcription.transcript;
       stage = "question_delivery";
       const questionDelivery = measure(metrics, stage, () =>
         this.sendTelegram(`🎙️ Louis via XC Body: ${transcript}`),
@@ -277,6 +275,26 @@ export class DirectConversationService {
           `XC Body transcript mirror failed: ${String(error)}`,
         );
       });
+      if (transcription.route === "expression_only") {
+        metrics.values.plugin_total_before_answer_ms = Math.round(
+          performance.now() - started,
+        );
+        stage = "answer_post";
+        await Promise.all([
+          questionDelivery,
+          this.answer(
+            capture.turn_id,
+            transcription.expression,
+            null,
+            metrics,
+          ),
+        ]);
+        return;
+      }
+      const storePath = this.api.runtime.agent.session.resolveStorePath(
+        this.api.config.session?.store,
+        { agentId: this.config.agentId },
+      );
       const agentRun = this.api.runtime.agent.session.runWithWorkAdmission(
         { storePath, sessionKey: this.config.sessionKey },
         async (abortSignal) => {
@@ -317,7 +335,7 @@ export class DirectConversationService {
               extraSystemPrompt: [
                 "This user turn was transcribed from XC Body.",
                 "Reply normally to Louis in the existing session.",
-                "Do not mention this transport unless it matters to the answer.",
+                "Do not mention this transport unless it matters.",
               ].join(" "),
               timeoutMs: this.api.runtime.agent.resolveAgentTimeoutMs(
                 this.api.config,
@@ -334,7 +352,10 @@ export class DirectConversationService {
       const answer = resolveDirectAnswer(result, this.config.telegramTarget);
       stage = "projection";
       const speechPreparation = measure(metrics, stage, () =>
-        prepareDirectAnswerSpeech(this.config.complete, answer.text),
+        prepareDirectAnswer(
+          this.config.complete,
+          answer.text,
+        ),
       ).catch((error) => {
         failedStage ??= "projection";
         throw error;
@@ -346,24 +367,19 @@ export class DirectConversationService {
         failedStage ??= "answer_delivery";
         throw error;
       });
-      const [speech] = await Promise.all([speechPreparation, answerDelivery]);
+      const [prepared] = await Promise.all([
+        speechPreparation,
+        answerDelivery,
+      ]);
       metrics.values.plugin_total_before_answer_ms = Math.round(
         performance.now() - started,
       );
       stage = "answer_post";
-      await requestJson(
-        endpoint(this.config.voiceUrl, "answer"),
-        this.config.token,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            turn_id: capture.turn_id,
-            answer: speech,
-            metrics,
-          }),
-          signal: AbortSignal.timeout(this.config.timeoutMs),
-        },
+      await this.answer(
+        capture.turn_id,
+        prepared.expression,
+        prepared.speech,
+        metrics,
       );
     } catch (error) {
       metrics.values.plugin_total_before_answer_ms = Math.round(
@@ -373,6 +389,29 @@ export class DirectConversationService {
       await this.abandon(capture.turn_id, metrics);
       throw error;
     }
+  }
+
+  private async answer(
+    turnId: string,
+    expression: ExpressionName,
+    speech: string | null,
+    metrics: DirectTurnMetrics,
+  ): Promise<void> {
+    await requestJson(
+      endpoint(this.config.voiceUrl, "answer"),
+      this.config.token,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          turn_id: turnId,
+          expression,
+          speech,
+          metrics,
+        }),
+        signal: AbortSignal.timeout(this.config.timeoutMs),
+      },
+    );
   }
 
   private async abandon(

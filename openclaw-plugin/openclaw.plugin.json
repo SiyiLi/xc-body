@@ -1,8 +1,8 @@
 {
   "id": "xc-body-native",
   "name": "XC Body Native Integration",
-  "description": "Offers selected OpenClaw background completions through XC Body.",
-  "version": "0.2.3",
+  "description": "Connects OpenClaw conversation and offers to XC Body.",
+  "version": "0.3.0",
   "activation": {
     "onStartup": true
   },

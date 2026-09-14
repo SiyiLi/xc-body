@@ -7,7 +7,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from gateway.interaction_runtime import (
     InteractionRuntimeError,
-    StackChanInteractionBody,
+    XcBodyInteractionBody,
 )
 from stackchan_mcp.capture_server import (
     GATEWAY_KEY,
@@ -85,7 +85,7 @@ class PcmHttpContractTests(unittest.IsolatedAsyncioTestCase):
             send_pcm_stream.call_args.kwargs["expected_session_id"],
             "device-session-1",
         )
-        body = StackChanInteractionBody(
+        body = XcBodyInteractionBody(
             lambda _name, _arguments: {"ok": True},
             streaming_url="http://127.0.0.1:8766/pcm",
             playback_token="pcm-token",
@@ -162,7 +162,7 @@ class PcmHttpContractTests(unittest.IsolatedAsyncioTestCase):
             json.loads(payload),
             {"ok": False, "error": "Device disconnected", **metrics},
         )
-        body = StackChanInteractionBody(
+        body = XcBodyInteractionBody(
             lambda _name, _arguments: {"ok": True},
             streaming_url="http://127.0.0.1:8766/pcm",
             playback_token="pcm-token",

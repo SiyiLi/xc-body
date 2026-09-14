@@ -13,7 +13,7 @@ from gateway.direct_conversation import (
     _PCM_PROGRESS_TIMEOUT_SECONDS,
     VoiceMailbox,
     build_direct_turn_report,
-    speak_direct_answer,
+    perform_direct_answer,
 )
 from gateway.interaction_runtime import InteractionRuntimeError
 from gateway.speech_preparation import (
@@ -55,6 +55,30 @@ _SHORT_MP3 = base64.b64decode(
 
 
 class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expression_only_turn_skips_speech_generation(self):
+        class Runtime:
+            def __init__(self):
+                self.expressions = []
+
+            async def perform_expression(self, expression):
+                self.expressions.append(expression)
+
+        runtime = Runtime()
+        with patch(
+            "gateway.direct_conversation.stream_speech_pcm"
+        ) as synthesize:
+            metrics = await perform_direct_answer(
+                runtime,
+                "robot:expression-only",
+                "embarrassed",
+                None,
+                "voice",
+            )
+
+        self.assertEqual(runtime.expressions, ["embarrassed"])
+        synthesize.assert_not_called()
+        self.assertIn("expression_completed_ms", metrics)
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "requires ffmpeg")
     async def test_pcm_is_playable_before_tts_eos(self):
         release_eos = asyncio.Event()
@@ -117,9 +141,11 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.audio = b""
 
-            async def tell_direct_stream(self, turn_id, pcm):
+            async def tell_direct_stream(self, turn_id, expression, pcm):
                 if turn_id != "robot:1":
                     raise AssertionError("unexpected turn ID")
+                if expression != "pleased":
+                    raise AssertionError("unexpected expression")
                 attention_started.set()
                 await release_attention.wait()
                 await asyncio.to_thread(pcm.wait_for_playable)
@@ -144,7 +170,13 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             new=synthesize,
         ):
             task = asyncio.create_task(
-                speak_direct_answer(runtime, "robot:1", "answer", "voice")
+                perform_direct_answer(
+                    runtime,
+                    "robot:1",
+                    "pleased",
+                    "answer",
+                    "voice",
+                )
             )
             await attention_started.wait()
             await pcm_ready.wait()
@@ -210,7 +242,7 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.opened_pcm = False
 
-            async def tell_direct_stream(self, _turn_id, pcm):
+            async def tell_direct_stream(self, _turn_id, _expression, pcm):
                 await allow_attention.wait()
                 await asyncio.to_thread(pcm.wait_for_playable)
                 self.opened_pcm = True
@@ -228,7 +260,13 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             new=synthesize,
         ):
             task = asyncio.create_task(
-                speak_direct_answer(runtime, "robot:1", "answer", "voice")
+                perform_direct_answer(
+                    runtime,
+                    "robot:1",
+                    "curious",
+                    "answer",
+                    "voice",
+                )
             )
             await failure_reported.wait()
             allow_attention.set()
@@ -243,13 +281,13 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_failure_preserves_tts_and_playback_metrics(self):
         class Runtime:
-            async def tell_direct_stream(self, _turn_id, pcm):
+            async def tell_direct_stream(self, _turn_id, _expression, pcm):
                 await asyncio.to_thread(pcm.wait_for_playable)
                 next(pcm.iter_pcm_chunks())
                 raise InteractionRuntimeError(
                     "stream audio: RuntimeError",
                     metrics={
-                        "attention_completed_ms": 1100,
+                        "expression_completed_ms": 1100,
                         "gateway_first_audio_frame_sent_ms": 1200,
                         "streamed_audio_frames": 1,
                     },
@@ -264,9 +302,10 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             new=synthesize,
         ):
             with self.assertRaises(DirectConversationError) as raised:
-                await speak_direct_answer(
+                await perform_direct_answer(
                     Runtime(),
                     "robot:1",
+                    "concerned",
                     "answer",
                     "voice",
                 )
@@ -284,7 +323,7 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
         cleanup_finished = asyncio.Event()
 
         class Runtime:
-            async def tell_direct_stream(self, _turn_id, _pcm):
+            async def tell_direct_stream(self, _turn_id, _expression, _pcm):
                 await producer_started.wait()
                 raise InteractionRuntimeError("motion failed")
 
@@ -311,8 +350,12 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(DirectConversationError):
                 await asyncio.wait_for(
-                    speak_direct_answer(
-                        Runtime(), "robot:1", "answer", "voice"
+                    perform_direct_answer(
+                        Runtime(),
+                        "robot:1",
+                        "curious",
+                        "answer",
+                        "voice",
                     ),
                     timeout=0.5,
                 )

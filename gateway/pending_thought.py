@@ -1,4 +1,4 @@
-"""Milestone 2 knock-wait-tell state machine."""
+"""One-offer presentation, consent, and playback state machine."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Literal, Protocol, cast
 
+from gateway.expression_names import OFFER_EXPRESSIONS
+
 Decision = Literal["ignore", "remember", "offer"]
 _ALLOWED_FIELDS = frozenset(
-    ("version", "thought_id", "decision", "audio_base64")
+    ("version", "thought_id", "decision", "audio_base64", "expression")
 )
 _REQUIRED_FIELDS = frozenset(("version", "thought_id", "decision"))
 _DECISIONS = frozenset(("ignore", "remember", "offer"))
@@ -38,6 +40,7 @@ class PendingThought:
     thought_id: str
     decision: Decision
     audio_base64: str | None = None
+    expression: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,9 +50,9 @@ class ThoughtOutcome:
     state: Literal["expired", "ignored", "remembered", "waiting", "told"]
 
 
-class KnockPort(Protocol):
-    def knock(self, thought_id: str) -> None:
-        """Offer one thought silently without receiving prepared audio."""
+class ExpressionPort(Protocol):
+    def perform_expression(self, expression: str) -> object:
+        """Run one selected expression through physical completion."""
 
 
 class TellPort(Protocol):
@@ -204,6 +207,7 @@ def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
     if not isinstance(decision, str) or decision not in _DECISIONS:
         raise PendingThoughtError(f"unsupported decision: {decision!r}")
     audio_base64 = payload.get("audio_base64")
+    expression = payload.get("expression")
     if decision == "offer":
         if (
             not isinstance(audio_base64, str)
@@ -218,30 +222,38 @@ def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
                 "offer requires non-empty audio_base64 of at most 1048576 chars"
             )
         decode_prepared_audio(audio_base64)
-    elif "audio_base64" in payload:
+        if (
+            not isinstance(expression, str)
+            or expression not in OFFER_EXPRESSIONS
+        ):
+            raise PendingThoughtError(
+                "offer requires one supported non-idle expression"
+            )
+    elif "audio_base64" in payload or "expression" in payload:
         raise PendingThoughtError(
-            "audio_base64 is permitted only when decision is 'offer'"
+            "audio_base64 and expression are permitted only for offers"
         )
     return PendingThought(
         version="v1",
         thought_id=thought_id,
         decision=cast(Decision, decision),
         audio_base64=audio_base64,
+        expression=cast(str | None, expression),
     )
 
 
-class KnockWaitTell:
-    """Hold one offer; suppress IDs retained in bounded process memory."""
+class OfferFlow:
+    """Present and hold one offer; suppress IDs in bounded process memory."""
 
     def __init__(
         self,
-        knock_port: KnockPort,
+        expression_port: ExpressionPort,
         tell_port: TellPort,
         *,
         offer_display_port: OfferDisplayPort | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
-        self._knock_port = knock_port
+        self._expression_port = expression_port
         self._tell_port = tell_port
         self._offer_display_port = offer_display_port
         self._clock = clock
@@ -271,7 +283,9 @@ class KnockWaitTell:
                 return self._record(thought, "ignored")
             try:
                 self._set_offer_display_pending(True)
-                self._knock_port.knock(thought.thought_id)
+                self._expression_port.perform_expression(
+                    cast(str, thought.expression)
+                )
             except Exception:
                 self._set_offer_display_pending(False)
                 self._record(thought, "ignored")

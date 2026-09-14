@@ -14,7 +14,7 @@ from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
-from gateway.pending_thought import KnockWaitTell
+from gateway.pending_thought import OfferFlow
 from gateway.stackchan_event_session import create_stackchan_client_session
 
 ToolCaller = Callable[[str, Mapping[str, object]], object]
@@ -59,7 +59,7 @@ def _stream_playback_metrics(playback: Mapping[str, object]) -> dict[str, int]:
 
 
 class XcBodyInteractionBody:
-    """Synchronous knock/tell ports backed by an injected MCP tool caller."""
+    """Synchronous offer and conversation operations over one body lane."""
 
     def __init__(
         self,
@@ -102,13 +102,6 @@ class XcBodyInteractionBody:
         with self._operation_lock:
             self.set_offer_pending(offer_pending)
 
-    def knock(self, thought_id: str) -> None:
-        """Run the firmware-owned silent knock through physical completion."""
-
-        with self._operation_lock:
-            self._require_ready()
-            self._call("perform_knock", {"behavior_id": thought_id})
-
     def tell(self, thought_id: str, audio_base64: str) -> None:
         """Play prepared audio after firmware reports acknowledgment."""
 
@@ -116,30 +109,33 @@ class XcBodyInteractionBody:
             self._require_ready()
             self._play_audio(audio_base64, thought_id)
 
+    def perform_expression(self, expression: str) -> Mapping[str, object]:
+        """Run one firmware-owned named expression in the body lane."""
+
+        with self._operation_lock:
+            return self._perform_expression_locked(expression)
+
     def tell_direct_stream(
         self,
         turn_id: str,
+        expression: str,
         pcm: Any,
     ) -> dict[str, int]:
-        """Run attention, then hold the body lane through PCM playback."""
+        """Run one expression, then hold the lane through PCM playback."""
 
         with self._operation_lock:
-            self._require_ready()
+            started = time.monotonic()
+            self._perform_expression_locked(expression)
+            expression_ms = round((time.monotonic() - started) * 1000)
+            expression_completed_ms = time.time_ns() // 1_000_000
             session_id = self._device_session_id
             if session_id is None:
                 raise InteractionRuntimeError(
                     "device session is unavailable"
                 )
-            started = time.monotonic()
-            self._call(
-                "perform_behavior",
-                {"behavior_id": turn_id, "kind": "attention"},
-            )
-            attention_ms = round((time.monotonic() - started) * 1000)
-            attention_completed_ms = time.time_ns() // 1_000_000
             metrics = {
-                "attention_ms": attention_ms,
-                "attention_completed_ms": attention_completed_ms,
+                "expression_ms": expression_ms,
+                "expression_completed_ms": expression_completed_ms,
             }
             try:
                 pcm.wait_for_playable()
@@ -177,6 +173,16 @@ class XcBodyInteractionBody:
             )
             metrics.update(_stream_playback_metrics(playback))
             return metrics
+
+    def _perform_expression_locked(
+        self,
+        expression: str,
+    ) -> Mapping[str, object]:
+        self._require_ready()
+        return self._call(
+            "perform_expression",
+            {"expression": expression},
+        )
 
     def set_offer_pending(self, pending: bool) -> None:
         """Best-effort hint controlling the firmware idle screensaver."""
@@ -356,7 +362,7 @@ class InteractionRuntime:
         self._playback_url = playback_url
         self._streaming_url = streaming_url
         self._playback_token = playback_token
-        self.machine: KnockWaitTell | None = None
+        self.machine: OfferFlow | None = None
         self.body: XcBodyInteractionBody | None = None
         self._caller: SessionToolCaller | None = None
 
@@ -397,16 +403,31 @@ class InteractionRuntime:
     async def tell_direct_stream(
         self,
         turn_id: str,
+        expression: str,
         pcm: Any,
     ) -> dict[str, int]:
-        """Keep direct attention and streamed playback in one body lane."""
+        """Keep direct expression and streamed playback in one body lane."""
 
         if self.machine is None or self.body is None:
             raise InteractionRuntimeError("runtime session is not initialized")
         return await asyncio.to_thread(
             self.body.tell_direct_stream,
             turn_id,
+            expression,
             pcm,
+        )
+
+    async def perform_expression(
+        self,
+        expression: str,
+    ) -> Mapping[str, object]:
+        """Run one named expression without blocking the service loop."""
+
+        if self.machine is None or self.body is None:
+            raise InteractionRuntimeError("runtime session is not initialized")
+        return await asyncio.to_thread(
+            self.body.perform_expression,
+            expression,
         )
 
     async def consider_thought(
@@ -434,7 +455,7 @@ class InteractionRuntime:
                 streaming_url=self._streaming_url,
                 playback_token=self._playback_token,
             )
-            self.machine = KnockWaitTell(
+            self.machine = OfferFlow(
                 self.body,
                 self.body,
                 offer_display_port=self.body,

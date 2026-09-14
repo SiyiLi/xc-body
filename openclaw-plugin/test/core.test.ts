@@ -29,7 +29,13 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       completions += 1;
-      return { text: "你的私人医疗报告已经整理完成。" };
+      return {
+        text: JSON.stringify({
+          decision: "offer",
+          speech: "你的私人医疗报告已经整理完成。",
+          expression: "pleased",
+        }),
+      };
     },
     async submit(payload) {
       submitted.push(payload);
@@ -55,6 +61,7 @@ test("submits one private Chinese offer and deduplicates its run", async () => {
       version: "v1",
       thought_id: createThoughtId("subagent", "run-42"),
       summary: "你的私人医疗报告已经整理完成。",
+      expression: "pleased",
     },
   ]);
 });
@@ -64,7 +71,11 @@ test("speech-friendly offer preserves its original language", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: "构建已经完成。",
+        text: JSON.stringify({
+          decision: "offer",
+          speech: "构建已经完成。",
+          expression: "pleased",
+        }),
       };
     },
     async submit(payload) {
@@ -104,7 +115,11 @@ test("remote rejection stores only an operational outcome", async () => {
   const integration = new CompletionIntegration({
     async complete() {
       return {
-        text: privateSummary,
+        text: JSON.stringify({
+          decision: "offer",
+          speech: privateSummary,
+          expression: "concerned",
+        }),
       };
     },
     async submit() {
@@ -135,6 +150,7 @@ test("authenticated submission validates responses and retries briefly", async (
     version: "v1" as const,
     thought_id: "cron:abc",
     summary: "任务完成。",
+    expression: "pleased" as const,
   };
 
   assert.equal(

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://xc-body.local/contracts/pending-thought.v1.schema.json",
-  "title": "XC Body Milestone 2 Pending Thought",
-  "description": "A background result classified for embodied follow-up.",
+  "title": "XC Body Pending Offer",
+  "description": "A background result prepared for embodied follow-up.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -34,6 +34,19 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 1048576
+    },
+    "expression": {
+      "description": "Selected physical cue completed before the offer becomes pending.",
+      "type": "string",
+      "enum": [
+        "agree",
+        "pleased",
+        "curious",
+        "concerned",
+        "surprised",
+        "embarrassed",
+        "mischievous"
+      ]
     }
   },
   "allOf": [
@@ -50,13 +63,23 @@
       },
       "then": {
         "required": [
-          "audio_base64"
+          "audio_base64",
+          "expression"
         ]
       },
       "else": {
         "not": {
-          "required": [
-            "audio_base64"
+          "anyOf": [
+          {
+            "required": [
+              "audio_base64"
+            ]
+          },
+          {
+            "required": [
+              "expression"
+            ]
+          }
           ]
         }
       }

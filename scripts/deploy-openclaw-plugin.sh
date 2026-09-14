@@ -93,9 +93,14 @@ config=$(python3 - \
 import json
 import sys
 
-token, summary_url, voice_url, session_key, telegram_target, api_key_file = (
-    sys.argv[1:]
-)
+(
+    token,
+    summary_url,
+    voice_url,
+    session_key,
+    telegram_target,
+    api_key_file,
+) = sys.argv[1:]
 config = {
     "summaryUrl": summary_url,
     "token": token,

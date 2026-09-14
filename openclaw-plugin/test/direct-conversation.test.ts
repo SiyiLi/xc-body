@@ -214,14 +214,16 @@ test("orders transcript and result delivery without gating the agent", async () 
     resolveAnswerDeliveryStarted = resolve;
   });
   let questionCount = 0;
+  let transcriptionCount = 0;
+  let agentRuns = 0;
   let agentOptions: Record<string, unknown> | undefined;
   const delivered: string[] = [];
   const warnings: string[] = [];
   const originalFetch = globalThis.fetch;
-  let answerPosts = 0;
-  globalThis.fetch = async (input) => {
+  const answerPayloads: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
     if (String(input).endsWith("/answer")) {
-      answerPosts += 1;
+      answerPayloads.push(JSON.parse(String(init?.body)));
     }
     return new Response("{}", { status: 200 });
   };
@@ -279,6 +281,7 @@ test("orders transcript and result delivery without gating the agent", async () 
           return 1_000;
         },
         async runEmbeddedAgent(options: Record<string, unknown>) {
+          agentRuns += 1;
           agentOptions ??= options;
           resolveAgentStarted?.();
           return { payloads: [{ text: "- 直接回答。" }], meta: {} };
@@ -292,7 +295,20 @@ test("orders transcript and result delivery without gating the agent", async () 
     sessionKey: "agent:main:telegram:direct:12345",
     telegramTarget: TELEGRAM_TARGET,
     agentId: "main",
-    transcribe: async () => "测试问题",
+    transcribe: async () => {
+      transcriptionCount += 1;
+      return transcriptionCount === 3
+        ? {
+            transcript: "给我看看你尴尬的表情",
+            route: "expression_only",
+            expression: "embarrassed",
+          }
+        : {
+            transcript: "测试问题",
+            route: "conversation",
+            expression: null,
+          };
+    },
     complete: async () => {
       resolveProjectionStarted?.();
       const text = await projection;
@@ -326,12 +342,17 @@ test("orders transcript and result delivery without gating the agent", async () 
       "projection or answer delivery did not start",
     );
     assert.deepEqual(delivered, ["🎙️ Louis via XC Body: 测试问题"]);
-    resolveProjection?.("直接回答。");
+    resolveProjection?.(JSON.stringify({
+      speech: "直接回答。",
+      expression: "pleased",
+    }));
     await within(projectionFinished, "projection did not finish");
-    assert.equal(answerPosts, 0);
+    assert.equal(answerPayloads.length, 0);
     resolveAnswerDelivery?.();
     await firstTurn;
-    assert.equal(answerPosts, 1);
+    assert.equal(answerPayloads.length, 1);
+    assert.equal(answerPayloads[0]?.speech, "直接回答。");
+    assert.equal(answerPayloads[0]?.expression, "pleased");
     assert.deepEqual(delivered, [
       "🎙️ Louis via XC Body: 测试问题",
       "- 直接回答。",
@@ -349,6 +370,15 @@ test("orders transcript and result delivery without gating the agent", async () 
     assert.deepEqual(warnings, [
       "XC Body transcript mirror failed: Error: Telegram unavailable",
     ]);
+
+    await handle({
+      turn_id: "robot:expression-only",
+      audio_base64: "YXVkaW8=",
+    });
+    assert.equal(agentRuns, 2);
+    assert.equal(answerPayloads.length, 3);
+    assert.equal(answerPayloads[2]?.speech, null);
+    assert.equal(answerPayloads[2]?.expression, "embarrassed");
   } finally {
     globalThis.fetch = originalFetch;
   }
