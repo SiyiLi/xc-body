@@ -120,10 +120,11 @@ assets package repairs it. A blank face is not a substitute for an expression.
 ## USB Calibration
 
 The existing USB commands preview, save, show, and reset both the seven named
-recipes and `touch`. `expression-recipes/touch.json` is the checked-in
-calibration input for the ordinary `touch` recipe. Preview returns immediate
-admission and remains transient; the firmware runner executes an admitted
-recipe independently. Save persists the validated recipe in NVS.
+recipes and `touch`. `expression-recipes/touch.json` is both the built-in
+default and the checked-in calibration input for the ordinary `touch` recipe.
+Preview returns immediate admission and remains transient; the firmware runner
+executes an admitted recipe independently. Save persists the validated recipe
+in NVS and overrides the built-in touch default.
 Routine app OTA preserves NVS. A stored schema-1 recipe for one of the original
 seven expressions is migrated in memory to the equivalent single-animation
 schema so previously approved motor calibration is retained.

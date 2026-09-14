@@ -47,8 +47,9 @@ integrity failure and blocks that expression before motor movement.
 
 StackChan's expression, listening, and speaking GIFs, idle-screen fonts, and
 RGB565A8 weather icons are packaged in that assets partition. They are not
-linked into the application slots. Expression recipes, including `touch`, are
-stored in NVS through USB calibration.
+linked into the application slots. Expression recipes are stored in NVS
+through USB calibration. The checked-in `touch.json` is also embedded as the
+built-in touch default; a USB-saved `touch` recipe overrides it.
 
 For local recovery, flash the StackChan application and generated assets
 together:

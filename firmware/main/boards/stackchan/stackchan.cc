@@ -55,6 +55,11 @@ static inline bool ServoWritePosOk(int r) { return r >= 0; }
 
 #define TAG "StackChanBoard"
 
+extern const uint8_t stackchan_touch_recipe_start[] asm(
+    "_binary_touch_json_start");
+extern const uint8_t stackchan_touch_recipe_end[] asm(
+    "_binary_touch_json_end");
+
 namespace {
 
 constexpr char kPublicIpLocationUrl[] =
@@ -5431,12 +5436,33 @@ private:
         }
     }
 
+    bool LoadTouchRecipe(StackChanExpressionRecipe& recipe) {
+        const auto stored = LoadStackChanExpressionRecipe("touch", recipe);
+        if (stored == StackChanExpressionLoadStatus::OK) {
+            return true;
+        }
+        if (stored == StackChanExpressionLoadStatus::INVALID) {
+            return false;
+        }
+
+        const size_t size = static_cast<size_t>(
+            stackchan_touch_recipe_end - stackchan_touch_recipe_start);
+        cJSON* root = cJSON_ParseWithLength(
+            reinterpret_cast<const char*>(stackchan_touch_recipe_start),
+            size);
+        std::string error;
+        const bool valid = ParseStackChanExpressionRecipe(root, recipe) &&
+            ValidateStackChanExpressionRecipeForName(
+                "touch", recipe, error);
+        cJSON_Delete(root);
+        return valid;
+    }
+
     bool StartTouchReaction(
             TouchEvent touch_event,
             uint64_t duration_ms) {
         StackChanExpressionRecipe recipe;
-        if (LoadStackChanExpressionRecipe("touch", recipe) !=
-                StackChanExpressionLoadStatus::OK) {
+        if (!LoadTouchRecipe(recipe)) {
             ESP_LOGW(TAG, "Touch reaction recipe is unavailable");
             return false;
         }
