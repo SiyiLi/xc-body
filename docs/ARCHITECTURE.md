@@ -10,8 +10,8 @@ OpenClaw host                         Cloud rendezvous
 ┌──────────────────────┐             ┌────────────────────────────┐
 │ OpenClaw             │──HTTPS─────▶│ Caddy                      │
 │ - completion plugin  │             │ - public TLS               │
-│ - managed MCP client │             │ - authenticated routes     │
-└──────────────────────┘             │                            │
+└──────────────────────┘             │ - authenticated routes     │
+                                     │                            │
                                      │ XC Body runtime image      │
 StackChan K151/CoreS3                │ - gateway service          │
 ┌──────────────────────┐             │ - pending-thought service  │
@@ -19,9 +19,12 @@ StackChan K151/CoreS3                │ - gateway service          │
 └──────────────────────┘             └────────────────────────────┘
 ```
 
-Caddy terminates public TLS at the configured rendezvous origin. The gateway,
-avatar, playback, summary, and XC Body MCP routes are proxied internally. Caddy
-also
+The OpenClaw plugin uses authenticated summary and voice HTTP routes. In the
+deployed path, the pending-thought service owns the MCP connection to the
+gateway.
+
+Caddy terminates public TLS at the configured rendezvous origin. Gateway,
+playback, summary, and XC Body MCP routes are proxied internally. Caddy also
 serves versioned OTA app images and the current manifest from the read-only
 `/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
 host unrelated workloads, so XC Body has its own containers, credentials,
@@ -63,9 +66,9 @@ MCP session, and owns the knock, wait, acknowledgment, and playback state.
 ### Semantic embodiment layer
 
 The manual embodiment boundary validates the versioned intent contract and
-maps supported intentions to immutable physical recipes. A complete recipe is
-calibrated before the first device call. Expressive recipes make a mandatory
-safe-return-to-idle attempt, including when the expression fails.
+maps supported intentions to saved firmware expression names. Firmware owns
+their GIF, movement, timing, and safe return. The complete semantic mapping is
+validated before the first device call.
 
 OpenClaw cannot choose servo angles, speed, hold duration, LED sequences, or
 whether idle return occurs.
@@ -73,9 +76,9 @@ whether idle return occurs.
 ### StackChan gateway
 
 `stackchan_mcp/` owns authenticated device WSS, loopback Streamable HTTP MCP,
-allowed-host checks, command serialization, status, avatar transfer, playback,
-and hardware tools. The semantic and pending-thought services use this shared
-device boundary instead of defining another device protocol.
+allowed-host checks, command serialization, status, playback, and hardware
+tools. The semantic and pending-thought services use this shared device
+boundary instead of defining another device protocol.
 
 When its private QWeather configuration is complete, the gateway reads
 firmware's cached approximate public-IP coordinates, polls current conditions,
@@ -95,28 +98,43 @@ The firmware drives the display, servos, LEDs, audio, touch events, and USB
 maintenance channel. Deterministic firmware behaviors own expression timing,
 head movement, local reaction ordering, and idle restoration.
 
-The firmware also owns the Milestone 4 idle screen timing and LVGL rendering.
-The existing appliance UI update selects settings, transient interaction,
-pending-offer avatar, idle screen, or ordinary avatar in that order. The idle
-screen can appear only while the reviewed avatar is visible and the robot is
-otherwise idle. LCD or head touch hides it immediately and restarts its timer
-without consuming the interaction. Display dimming and sleep remain separate
+Expression coordination does not execute servo ticks, GIF frames, or audio
+samples. The head runner receives the complete trajectory and owns its fixed
+clock, endpoint checks, abort, and measured safe return. The face player uses
+the existing low-priority LVGL task and publishes only changed image regions.
+The existing audio-output task remains the sole audio executor. Audio and head
+deadlines take priority over visual deadlines; a late GIF frame may wait, but
+it cannot run catch-up work inside either real-time executor. The neutral first
+frame is prepared first; the head runner confirms the initial pose and torque
+before the animation and trajectory begin.
+
+The firmware also owns idle presence, optional listening animation, speaking
+animation, the Milestone 4 idle screen timing, and LVGL rendering. Listening
+art is display-only and missing art falls back to static idle without affecting
+recording. Settings and non-appliance states suppress the face. The idle screen
+can cover the face only while the robot is otherwise idle. Its first LCD or
+head interaction is consumed to restore idle presence; the next interaction
+follows the established action. Display dimming and sleep remain separate
 `PowerSaveTimer` behavior.
 
 The USB channel reports status, updates the saved gateway URL and token, queues
 verified firmware metadata, streams logs, and requests an application reboot.
-It has no network listener and never returns the saved token.
+It also parses expression calibration requests and immediately reports whether
+the board-owned runner admitted a transient preview. The runner then executes
+independently. The USB channel has no network listener and never returns the
+saved token. Production tools select only a saved expression name and cannot
+supply motor parameters.
 
 ## Runtime Flows
 
 ### Manual embodiment
 
-1. OpenClaw submits a versioned semantic intention.
-2. XC Body validates the contract and complete local calibration.
-3. The service restores and verifies the reviewed avatar for the device
-   session.
-4. The adapter invokes the deterministic face and motion recipe.
-5. Every expressive recipe attempts the exact reviewed idle return.
+1. OpenClaw submits a versioned semantic intention, whether selected from a
+   user request or the model's own judgment.
+2. XC Body validates the contract and complete semantic-to-expression mapping.
+3. The service verifies that the same initialized device session remains ready.
+4. The adapter invokes one saved firmware expression by name.
+5. The firmware runner restores the reviewed idle pose before completion.
 
 ### Completion offer
 
@@ -124,10 +142,16 @@ It has no network listener and never returns the saved token.
 2. The shared fast-model projection classifies it as `offer` or `skip`.
 3. An accepted short plain result crosses authenticated HTTPS unchanged;
    long or formatted results use the bounded Chinese projection.
-4. The VM prepares and validates Opus before creating pending state.
+4. The VM prepares and validates Opus, then asks firmware to suppress the idle
+   screensaver while the offer transition runs.
 5. Firmware performs one silent knock and returns to idle.
-6. A deliberate head pat or head stroke acknowledges the current offer.
-7. The VM sends the prepared audio for playback and clears the offer only
+6. Only after the knock completes does the VM create pending state. A failed
+   knock clears the display hint and drops the offer.
+7. When direct attention and speech are inactive, a deliberate head pat or
+   stroke starts the local touch reaction. Its successful safe return emits a
+   touch event. The VM acknowledges its current offer or discards the event
+   when no offer exists.
+8. The VM sends the prepared audio for playback and clears the offer only
    after success.
 
 The knock never receives prepared audio. No text-to-`say` fallback exists.
@@ -150,8 +174,9 @@ eventual direct answer.
 5. The gateway reuses its servo lane, correlated completion waiter, timeout,
    and recovery path. Direct PCM playback starts only after the firmware
    reports physical settle and neutral return.
-6. The pending offer, if any, is untouched and its base view is restored after
-   either success or failure.
+6. The pending offer, if any, is untouched. Head touch is ignored during
+   direct attention and speech; after they end, a new successful touch
+   reaction may acknowledge the offer.
 7. Each owner contributes content-free phase timings under the existing turn
    ID. The pending service emits one JSON timeline when a turn is answered or
    explicitly abandoned.
@@ -184,9 +209,10 @@ rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
    while writing the inactive app partition.
 4. On the new app's first boot, firmware proves the installed assets bytes and
    internal structure against the matching manifest. A mismatch triggers one
-   bounded, in-place verified assets download and reloads the reviewed avatar.
-   Power loss is non-atomic for this single assets partition; static fallback
-   keeps the app bootable and a later boot retries.
+   bounded, in-place verified assets download. Power loss is non-atomic for
+   this single assets partition; the app remains bootable only for repair and
+   a later boot retries. A missing, corrupt, or undecodable named expression
+   GIF fails that behavior before motor movement.
 5. The bootloader starts the new slot pending verification. Firmware marks it
    valid only after the authenticated gateway completes MCP tool discovery;
    otherwise it remains eligible for rollback.
@@ -205,28 +231,31 @@ without USB when an immediate update is needed. USB remains a recovery fallback.
    connection event, and serves cache reads immediately. The gateway waits one
    device-check interval for each new session, then refreshes QWeather and
    continues hourly before pushing changed data.
-2. After 60 seconds without interaction, firmware may replace the avatar and
-   appliance status row with the local clock, date, weather icon, provider
+2. After 60 seconds without interaction, firmware may cover idle presence and
+   the appliance status row with the local clock, date, weather icon, provider
    summary, and temperature.
 3. The idle-view fonts and RGB565A8 weather icons are mapped from the assets
    partition rather than linked into either application slot.
-4. A pending offer suppresses the overlay. The pending-thought runtime
-   synchronizes this gate when an offer starts, completes, expires, or the
-   device reconnects.
+4. The pending-thought runtime asks firmware to suppress the overlay during an
+   offer transition and pending wait, and restores that display hint after a
+   device reconnect.
 5. Settings, transient behavior, listening, and speaking suppress the idle
-   screen. Any LCD or head touch restores the avatar before the existing
-   interaction continues. The independent power policy may still dim or sleep
-   the display.
+   screen. The first LCD or head touch restores idle presence and is consumed;
+   a later interaction performs its normal action. The independent power
+   policy may still dim or sleep the display.
 
-## Avatar and Readiness Boundary
+## Expression and Readiness Boundary
 
-Semantic readiness is bound to the connected device session and the exact
-reviewed avatar checksum. A valid but different payload is rejected. Command
-success alone is not proof that a face is physically visible.
+Semantic readiness is bound to the connected and initialized device session.
+When the session changes, readiness becomes false until the service observes
+the replacement session. A still-valid in-process offer is retained during
+this recovery.
 
-When the robot session changes, readiness becomes false. The service reloads
-and checksum-verifies the reviewed avatar before accepting body work in the
-new session. A still-valid in-process offer is retained during this recovery.
+Expression assets ship in the firmware assets partition. Motor recipes are
+selected by name and stored in NVS through USB. The gateway never transfers
+face layers, checksums a runtime face package, or accepts raw recipe data.
+The named GIF and motor recipe are one expression: a named-asset load or decode
+failure is a critical release fault, not a blank-face fallback.
 
 ## State and Recovery
 

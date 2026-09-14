@@ -7,6 +7,7 @@ extern "C" {
 
 #include <lvgl.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct _gd_Palette {
@@ -55,7 +56,8 @@ gd_GIF * gd_open_gif_file(const char * fname);
 
 gd_GIF * gd_open_gif_data(const void * data);
 
-void gd_render_frame(gd_GIF * gif, uint8_t * buffer);
+bool gd_render_frame(
+    gd_GIF * gif, uint8_t * buffer, lv_area_t * changed_area);
 
 int gd_get_frame(gd_GIF * gif);
 void gd_rewind(gd_GIF * gif);

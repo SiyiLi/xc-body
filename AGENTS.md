@@ -23,14 +23,15 @@ presence.
 
 Keep Milestone 5 constrained to:
 
-- six named expressions plus neutral ambient presence selected by projection;
+- seven named expressions plus idle ambient presence;
 - deterministic face and head recipes with reviewed servo limits;
-- replacement of the direct turn's existing attention behavior only;
-- sparse neutral ambient behavior with strict activity budgets;
+- replacement of direct attention and the background-offer knock with fixed
+  `curious`;
+- sparse idle ambient behavior with strict activity budgets;
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
-- explicit user requests to show one supported expression.
+- trusted upstream semantic intentions to show one supported expression.
 
 Do not add expressions to background offers, model-generated motion parameters,
 camera input, autonomous semantic moods, constant servo activity, or more
@@ -63,6 +64,8 @@ configuration that has not been inspected.
 - Think before coding and state assumptions.
 - Prefer the smallest implementation that advances the active milestone and
   preserves its reference validation scenarios.
+- Simplify the underlying logic before adding protection around it. Do not use
+  complex code to protect logic that can be made simpler.
 - Give each invariant one owner. Trust guarantees already enforced by upstream
   or downstream modules; do not duplicate their validation, ordering, queues,
   retries, or state.
@@ -80,10 +83,10 @@ configuration that has not been inspected.
 - Before committing firmware runtime changes, inspect the published OTA
   manifest and bump `PROJECT_VER` from its firmware version. Never derive the
   next firmware version from checked-in source.
-- Keep every first-party release on the same major/minor version line across
-  firmware, gateway, and the OpenClaw plugin. Their patch versions advance
-  independently from their deployed versions. External dependency and protocol
-  schema versions are not part of this rule.
+- Bump only the first-party release artifact changed by the commit. Do not
+  change untouched firmware, gateway, or OpenClaw plugin versions solely to
+  align release metadata; derive each changed version from its own published
+  or deployed artifact.
 - Keep secrets and personal assets out of Git.
 - Preserve unrelated user changes.
 - Do not modify `xc-buddy` from this repository.
@@ -95,12 +98,28 @@ configuration that has not been inspected.
 - Do not commit unless the user requests it or explicitly approves the prepared
   commit story.
 
+## Review Rules
+
+- Report a bug only when a normal supported flow gives the user a wrong result.
+  Show the trigger, current code path, and visible result.
+- Corrupt release assets are fatal. Log the failure and safely return the head;
+  do not add fallbacks, retries, or extra validation to keep running.
+- USB calibration and conversation are separate. Do not report problems that
+  require using both at once unless a normal flow does that.
+- Executable code and inspected runtime are the source of truth for current
+  behavior. Markdown alone is not evidence; correct it when it disagrees.
+- Do not treat theoretical parser or recovery hardening as a feature bug. Add
+  it only when the user asks for it or a normal flow proves it is needed.
+
 ## Validation Standard
 
 - Keep first-party Python at 88 columns or fewer.
 - Keep Markdown prose at 80 columns or fewer. URLs, commands, and diagrams may
   exceed the limit when wrapping would reduce clarity.
 - Run the repository line-length check before reporting success.
+- Do not build firmware during review or surgical-fix iterations. Build only
+  during an explicitly authorized flash or OTA workflow, unless the user
+  separately requests a build.
 - Every implementation change must identify the active milestone behavior it
   advances.
 - Prefer fake-device or contract tests before touching hardware.

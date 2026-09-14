@@ -79,9 +79,7 @@ MAX_DURATION_MS = 30000
 #: transition; 50 ms is well above typical scheduling latency.
 LISTEN_START_TRANSITION_DELAY_S = 0.05
 
-LISTENING_FACE = "thinking"
-IDLE_FACE = "idle"
-LISTEN_MOTIONS = {"none", "face-only", "look-up"}
+LISTEN_MOTIONS = {"none", "look-up"}
 BEAT_MODE_OWNER = "beat_mode"
 BEAT_MODE_OWNER_PREFIX = f"{BEAT_MODE_OWNER}:"
 
@@ -98,11 +96,11 @@ MAX_LOOK_UP_PITCH = 85.0
 
 def _validate_motion_args(
     arguments: dict[str, Any],
-) -> tuple[Literal["none", "face-only", "look-up"], float]:
+) -> tuple[Literal["none", "look-up"], float]:
     motion = arguments.get("motion", "none")
     if not isinstance(motion, str) or motion not in LISTEN_MOTIONS:
         raise ValueError(
-            "'motion' must be one of 'none', 'face-only', or 'look-up'; "
+            "'motion' must be one of 'none' or 'look-up'; "
             f"got {motion!r}"
         )
 
@@ -127,7 +125,7 @@ def _validate_motion_args(
 
 async def _shield_listen_motion_cleanup(
     gateway: "Gateway",
-    motion: Literal["none", "face-only", "look-up"],
+    motion: Literal["none", "look-up"],
     saved_angles: tuple[float, float] | None,
     *,
     succeeded: bool,
@@ -222,10 +220,6 @@ def _extract_head_angles(result: Any) -> tuple[float, float]:
     return float(yaw), float(pitch)
 
 
-async def _set_avatar(gateway: "Gateway", face: str) -> None:
-    await _call_device_tool(gateway, "self.display.set_avatar", {"face": face})
-
-
 async def _set_head_angles(gateway: "Gateway", *, yaw: float, pitch: float) -> None:
     await _call_device_tool(
         gateway,
@@ -236,20 +230,15 @@ async def _set_head_angles(gateway: "Gateway", *, yaw: float, pitch: float) -> N
 
 async def _begin_listen_motion(
     gateway: "Gateway",
-    motion: Literal["none", "face-only", "look-up"],
+    motion: Literal["none", "look-up"],
     look_up_pitch: float,
 ) -> tuple[float, float] | None:
     if motion == "none":
         return None
-    if motion == "face-only":
-        await _set_avatar(gateway, LISTENING_FACE)
-        return None
-
     result = await _call_device_tool(gateway, "self.robot.get_head_angles", {})
     yaw, pitch = _extract_head_angles(result)
     try:
         await _set_head_angles(gateway, yaw=yaw, pitch=look_up_pitch)
-        await _set_avatar(gateway, LISTENING_FACE)
     except Exception as forward_exc:
         cleanup_error = await _shield_listen_motion_cleanup(
             gateway,
@@ -259,10 +248,8 @@ async def _begin_listen_motion(
         )
         if cleanup_error is not None:
             # Forward setup failed AND rollback also failed — the
-            # device may still be in the look-up pose. Chain the
-            # cleanup error onto the forward exception so the caller
-            # sees both physical-state concerns instead of just the
-            # forward avatar / motion error.
+            # device may still be in the look-up pose. Chain the cleanup
+            # error onto the forward exception.
             raise forward_exc from cleanup_error
         raise
     return yaw, pitch
@@ -270,28 +257,18 @@ async def _begin_listen_motion(
 
 async def _finish_listen_motion(
     gateway: "Gateway",
-    motion: Literal["none", "face-only", "look-up"],
+    motion: Literal["none", "look-up"],
     saved_angles: tuple[float, float] | None,
     *,
     succeeded: bool,
 ) -> None:
     if motion == "none":
         return
-    if motion == "face-only":
-        await _set_avatar(gateway, IDLE_FACE)
-        return
     if succeeded or saved_angles is None:
         return
 
     yaw, pitch = saved_angles
-    try:
-        await _set_head_angles(gateway, yaw=yaw, pitch=pitch)
-    finally:
-        # Restore the avatar regardless of whether the pitch rollback
-        # succeeded — otherwise a failed ``set_head_angles`` would
-        # leave the device visibly stuck on the ``thinking`` face
-        # even though the listen itself already failed.
-        await _set_avatar(gateway, IDLE_FACE)
+    await _set_head_angles(gateway, yaw=yaw, pitch=pitch)
 
 
 async def listen_and_transcribe(

@@ -88,10 +88,9 @@ public:
      */
     void Schedule(std::function<void()>&& callback);
 
-    /**
-     * Alert with status, message, emotion and optional sound
-     */
-    void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
+    /** Alert with status, message, and optional sound. */
+    void Alert(const char* status, const char* message,
+               const std::string_view& sound = "");
     void DismissAlert();
 
     void AbortSpeaking(AbortReason reason);
@@ -130,14 +129,10 @@ public:
         const char* event_type,
         const char* subtype,
         uint64_t duration_ms,
-        const char* behavior_id = nullptr);
-    void ResumePreparedAudioPlayback();
+        const char* behavior_id = nullptr,
+        const char* detail = nullptr);
+    void ResumeDeferredAudioPlayback();
 
-    // Phase 4.5 avatar: thread-safe generic WS text frame send.
-    // Wraps Protocol::SendText through the main-task Schedule for the
-    // same thread-safety reasons as SendMcpMessage. Intended for board-
-    // initiated notifications such as avatar_set_loaded.
-    void SendJsonString(const std::string& json_str);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
@@ -169,7 +164,6 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
-    std::atomic<bool> firmware_upgrade_in_progress_{false};
     std::mutex prepared_audio_transfer_mutex_;
     std::string prepared_audio_transfer_id_;
 
@@ -207,6 +201,7 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
+    void RestartSystem();
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

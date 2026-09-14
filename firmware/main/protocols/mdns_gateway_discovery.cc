@@ -117,7 +117,7 @@ std::optional<std::vector<MdnsGatewayCandidate>> DiscoverStackchanGateway(uint32
         // Cast size_t to unsigned int and use %u to stay nano-printf-safe
         // (newlib-nano in ESP-IDF does not handle %zu; the misaligned arg
         // would then read the size_t as a string pointer and crash). Same
-        // pattern as firmware/main/boards/stackchan/avatar_set_fetcher.cc.
+        // pattern as other firmware HTTP clients.
         ESP_LOGI(TAG,
                  "mDNS gateway browse complete: raw_results=%d accepted_instances=%d candidates=%u addresses=%s",
                  result_count,

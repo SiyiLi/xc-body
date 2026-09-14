@@ -33,15 +33,10 @@ class UpstreamStackChanClient:
             )
         return payload
 
-    def set_avatar(self, face: str) -> Mapping[str, object]:
-        return self._call("set_avatar", {"face": face})
-
-    def move_head(
-        self, yaw: float, pitch: float, speed: float
-    ) -> Mapping[str, object]:
+    def perform_expression(self, expression: str) -> Mapping[str, object]:
         return self._call(
-            "move_head",
-            {"yaw": yaw, "pitch": pitch, "speed": speed},
+            "perform_expression",
+            {"expression": expression},
         )
 
     def _call(

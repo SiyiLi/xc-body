@@ -1,25 +1,22 @@
 import asyncio
-import io
 import json
 import sys
 import threading
 import types
 import unittest
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.embodiment import ExpressionAndIdleError, IntentRequestError
-from stackchan.avatar_verification import REVIEWED_AVATAR_CHECKSUM
+from gateway.embodiment import IntentRequestError
 from gateway.semantic_service import (
-    SemanticServiceError,
     create_service_server,
     main,
     run_service_streams,
 )
+from stackchan.adapter import ClientOperationError
 
 
-VALID_CHECKSUM = REVIEWED_AVATAR_CHECKSUM
 VALID_STATUS = {
     "connected": True,
     "initialized": True,
@@ -41,27 +38,11 @@ class SemanticServiceTests(unittest.TestCase):
             ["idle", "curious", "pleased", "concerned"],
         )
 
-    def test_main_reports_missing_avatar_path(self):
-        stderr = io.StringIO()
-        environment = {
-            "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
-            "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
-        }
-
-        with redirect_stderr(stderr):
-            exit_code = main([], environ=environment)
-
-        self.assertEqual(exit_code, 1)
-        payload = json.loads(stderr.getvalue())
-        self.assertEqual(payload["error"], "RunnerConfigError")
-        self.assertIn("avatar archive path is required", payload["message"])
-
     def test_main_runs_import_safe_service_boundary(self):
         service = AsyncMock()
         environment = {
             "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
-            "XC_BODY_AVATAR_ARCHIVE_PATH": "/state/native.rgb565le",
         }
 
         with patch("gateway.semantic_service.run_stdio_service", service):
@@ -71,9 +52,8 @@ class SemanticServiceTests(unittest.TestCase):
         (config,) = service.await_args.args
         self.assertEqual(config.url, "https://daemon.invalid/mcp")
         self.assertNotIn("test-token", repr(config))
-        self.assertEqual(config.avatar_path, "/state/native.rgb565le")
 
-    def test_stream_runner_loads_avatar_once_before_downstream(self):
+    def test_stream_runner_checks_device_before_downstream(self):
         events = []
 
         class Session:
@@ -92,11 +72,7 @@ class SemanticServiceTests(unittest.TestCase):
 
             async def call_tool(self, name, arguments):
                 events.append(("upstream-call", name, arguments))
-                payload = (
-                    VALID_STATUS
-                    if name == "get_status"
-                    else {"ok": True, "checksum": VALID_CHECKSUM}
-                )
+                payload = VALID_STATUS
                 return SimpleNamespace(
                     content=[
                         SimpleNamespace(
@@ -131,85 +107,22 @@ class SemanticServiceTests(unittest.TestCase):
                     "up-write",
                     "down-read",
                     "down-write",
-                    avatar_path="/state/native.rgb565le",
                 )
             )
 
         calls = [event for event in events if event[0] == "upstream-call"]
         self.assertEqual(
             [call[1] for call in calls],
-            ["get_status", "load_avatar_set", "get_status"],
-        )
-        load_call = calls[1]
-        self.assertEqual(
-            load_call[2],
-            {
-                "archive_path": "/state/native.rgb565le",
-                "mode": "layered-320x240",
-                "timeout": 120,
-            },
+            ["get_status"],
         )
         self.assertLess(
-            events.index(load_call),
+            events.index(calls[0]),
             next(
                 index
                 for index, event in enumerate(events)
                 if event[0] == "downstream-run"
             ),
         )
-        self.assertEqual(events[-1], "upstream-exit")
-
-    def test_invalid_avatar_load_fails_before_server_run(self):
-        events = []
-
-        class Session:
-            def __init__(self, read, write):
-                events.append(("session", read, write))
-
-            async def __aenter__(self):
-                events.append("upstream-enter")
-                return self
-
-            async def __aexit__(self, *args):
-                events.append("upstream-exit")
-
-            async def initialize(self):
-                events.append("upstream-initialize")
-
-            async def call_tool(self, name, arguments):
-                events.append(("upstream-call", name, arguments))
-                if name == "get_status":
-                    return VALID_STATUS
-                return {
-                    "structuredContent": {
-                        "ok": False,
-                        "error": "device checksum mismatch",
-                    }
-                }
-
-        server_factory = Mock()
-        with (
-            fake_mcp_client(Session),
-            patch(
-                "gateway.semantic_service.create_service_server",
-                server_factory,
-            ),
-            self.assertRaisesRegex(
-                SemanticServiceError,
-                "device checksum mismatch",
-            ),
-        ):
-            asyncio.run(
-                run_service_streams(
-                    "up-read",
-                    "up-write",
-                    "down-read",
-                    "down-write",
-                    avatar_path="/state/native.rgb565le",
-                )
-            )
-
-        server_factory.assert_not_called()
         self.assertEqual(events[-1], "upstream-exit")
 
     def test_stream_shutdown_drains_active_recipe_before_upstream_close(self):
@@ -238,7 +151,7 @@ class SemanticServiceTests(unittest.TestCase):
                 del arguments
                 if name == "get_status":
                     return VALID_STATUS
-                return {"ok": True, "checksum": VALID_CHECKSUM}
+                return {"ok": True}
 
         class Server:
             def __init__(self, executor):
@@ -295,7 +208,6 @@ class SemanticServiceTests(unittest.TestCase):
                     "up-write",
                     "down-read",
                     "down-write",
-                    avatar_path="/state/native.rgb565le",
                 )
             )
 
@@ -353,10 +265,7 @@ class SemanticServiceTests(unittest.TestCase):
             server = create_service_server(Mock())
         errors = (
             IntentRequestError("bad intent"),
-            ExpressionAndIdleError(
-                RuntimeError("expression failed"),
-                RuntimeError("idle failed"),
-            ),
+            ClientOperationError("perform_expression", "failed"),
         )
 
         for error in errors:

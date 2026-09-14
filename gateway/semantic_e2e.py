@@ -8,7 +8,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -21,18 +20,12 @@ from gateway.embodiment import (
     parse_intent_request,
     planned_steps_for,
 )
-from stackchan.adapter import StackChanAdapter, VisibleFaceVerificationError
-from stackchan.avatar_verification import (
-    AvatarVerificationError,
-    require_ready_device_session,
-    require_reviewed_avatar_load,
-)
-from stackchan.calibration import measured_k151_cores3_calibration
+from stackchan.adapter import StackChanAdapter, StackChanAdapterError
+from gateway.pending_thought_runtime import ready_device_session_id
 from stackchan.upstream_client import ToolCaller, UpstreamStackChanClient
 
 URL_ENV = "XC_BODY_STACKCHAN_MCP_URL"
 TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
-AVATAR_PATH_ENV = "XC_BODY_AVATAR_ARCHIVE_PATH"
 
 
 class RunnerInputError(ValueError):
@@ -51,7 +44,6 @@ class RunnerExecutionError(RuntimeError):
 class RunnerConfig:
     url: str
     token: str = field(repr=False)
-    avatar_path: str = field(default="", repr=False)
 
 
 def _is_loopback(hostname: str | None) -> bool:
@@ -94,35 +86,24 @@ def load_config(
     *,
     url: str | None = None,
     environ: Mapping[str, str] | None = None,
-    require_avatar: bool = False,
 ) -> RunnerConfig:
     """Load endpoint and token without providing deployment-specific defaults."""
 
     values = os.environ if environ is None else environ
     endpoint = values.get(URL_ENV, "") if url is None else url
     token = values.get(TOKEN_ENV, "")
-    avatar_path = values.get(AVATAR_PATH_ENV, "")
     endpoint = endpoint.strip()
     token = token.strip()
-    avatar_path = avatar_path.strip()
     if not endpoint:
         raise RunnerConfigError(f"daemon URL is required via --url or {URL_ENV}")
     if not token:
         raise RunnerConfigError(f"daemon token is required via {TOKEN_ENV}")
-    if require_avatar and not avatar_path:
-        raise RunnerConfigError(
-            f"avatar archive path is required via {AVATAR_PATH_ENV}"
-        )
     parsed = urlparse(endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RunnerConfigError("daemon URL must be an absolute HTTP(S) URL")
     if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
         raise RunnerConfigError("non-loopback daemon URLs must use HTTPS")
-    return RunnerConfig(
-        url=endpoint,
-        token=token,
-        avatar_path=avatar_path,
-    )
+    return RunnerConfig(url=endpoint, token=token)
 
 
 class SessionToolCaller:
@@ -145,62 +126,35 @@ def _execute_sync(
     call_tool: ToolCaller,
     *,
     verified_session_id: str | None = None,
-    sleep=time.sleep,
 ) -> dict[str, object]:
     client = UpstreamStackChanClient(call_tool)
     device = StackChanAdapter(
         client,
-        measured_k151_cores3_calibration(),
         verified_session_id=verified_session_id,
-        sleep=sleep,
     )
     recipe = embody(payload, device)
     return {"ok": True, "intent": recipe.intent, "returned_to_idle": True}
 
 
-def _preflight_production_calibration(payload: Mapping[str, object]) -> None:
-    calibration = measured_k151_cores3_calibration()
+def _preflight_expression_mapping(payload: Mapping[str, object]) -> None:
     request = parse_intent_request(payload)
-    StackChanAdapter.preflight_calibration(
-        calibration,
-        planned_steps_for(request),
-    )
+    StackChanAdapter.preflight(planned_steps_for(request))
 
 
-async def _restore_reviewed_avatar(session: Any, avatar_path: str) -> str:
-    """Restore the reviewed payload and bind it to one device session."""
-
+async def _require_ready_device(session: Any) -> str:
+    """Return the connected, initialized device session."""
     try:
-        initial_status = await session.call_tool(
-            "get_status",
-            arguments={},
-        )
-        session_id = require_ready_device_session(initial_status)
-        loaded = await session.call_tool(
-            "load_avatar_set",
-            arguments={
-                "archive_path": avatar_path,
-                "mode": "layered-320x240",
-                "timeout": 120,
-            },
-        )
-        require_reviewed_avatar_load(loaded)
-        verified_status = await session.call_tool(
-            "get_status",
-            arguments={},
-        )
-        verified_session_id = require_ready_device_session(verified_status)
-        if verified_session_id != session_id:
-            raise AvatarVerificationError(
-                "StackChan device session changed during avatar restore"
-            )
-        return verified_session_id
-    except AvatarVerificationError as exc:
-        raise RunnerExecutionError(str(exc)) from exc
+        status = await session.call_tool("get_status", arguments={})
     except Exception as exc:
         raise RunnerExecutionError(
-            f"native avatar restore call failed ({type(exc).__name__})"
+            f"device readiness check failed ({type(exc).__name__})"
         ) from exc
+    session_id = ready_device_session_id(status)
+    if session_id is None:
+        raise RunnerExecutionError(
+            "StackChan device is not connected and initialized"
+        )
+    return session_id
 
 
 async def _run_with_mcp(
@@ -229,10 +183,7 @@ async def _run_with_mcp(
                 read_stream, write_stream = streams[:2]
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
-                    verified_session_id = await _restore_reviewed_avatar(
-                        session,
-                        config.avatar_path,
-                    )
+                    verified_session_id = await _require_ready_device(session)
                     loop = asyncio.get_running_loop()
                     caller = SessionToolCaller(session, loop)
                     return await asyncio.to_thread(
@@ -258,12 +209,8 @@ def run(
     """Validate all local inputs before opening the daemon session."""
 
     payload = parse_request(raw_request)
-    _preflight_production_calibration(payload)
-    config = load_config(
-        url=url,
-        environ=environ,
-        require_avatar=True,
-    )
+    _preflight_expression_mapping(payload)
+    config = load_config(url=url, environ=environ)
     return asyncio.run(_run_with_mcp(payload, config))
 
 
@@ -294,7 +241,7 @@ def main(
         RunnerInputError,
         RunnerConfigError,
         RunnerExecutionError,
-        VisibleFaceVerificationError,
+        StackChanAdapterError,
     ) as exc:
         error = {"ok": False, "error": type(exc).__name__, "message": str(exc)}
         print(json.dumps(error, sort_keys=True), file=sys.stderr)

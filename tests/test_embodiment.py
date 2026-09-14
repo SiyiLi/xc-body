@@ -2,7 +2,6 @@ import unittest
 
 
 from gateway.embodiment import (
-    ExpressionAndIdleError,
     IntentRequestError,
     embody,
     parse_intent_request,
@@ -51,19 +50,16 @@ class SemanticCoreTests(unittest.TestCase):
                     embody(payload, device)
                 self.assertEqual(device.calls, [])
 
-    def test_each_expressive_intent_ends_in_idle(self):
+    def test_each_intent_uses_one_firmware_owned_operation(self):
         expected_calls = {
             "curious": [
                 ("attentive", "restrained_side_glance"),
-                ("neutral", "relaxed_center"),
             ],
             "pleased": [
                 ("happy", "single_small_nod"),
-                ("neutral", "relaxed_center"),
             ],
             "concerned": [
                 ("concerned", "restrained_head_tilt"),
-                ("neutral", "relaxed_center"),
             ],
         }
 
@@ -73,7 +69,7 @@ class SemanticCoreTests(unittest.TestCase):
                 embody({"version": "v1", "intent": intent}, device)
                 self.assertEqual(device.calls, calls)
 
-    def test_device_step_failure_still_attempts_idle_and_propagates(self):
+    def test_device_failure_does_not_start_a_second_operation(self):
         device = RecordingDevice(fail_on_calls=(1,))
 
         with self.assertRaisesRegex(RuntimeError, "device step failed"):
@@ -81,24 +77,8 @@ class SemanticCoreTests(unittest.TestCase):
 
         self.assertEqual(
             device.calls,
-            [
-                ("attentive", "restrained_side_glance"),
-                ("neutral", "relaxed_center"),
-            ],
+            [("attentive", "restrained_side_glance")],
         )
-
-    def test_expression_and_idle_failures_are_both_preserved(self):
-        device = RecordingDevice(fail_on_calls=(1, 2))
-
-        with self.assertRaises(ExpressionAndIdleError) as raised:
-            embody({"version": "v1", "intent": "curious"}, device)
-
-        self.assertEqual(device.calls, [
-            ("attentive", "restrained_side_glance"),
-            ("neutral", "relaxed_center"),
-        ])
-        self.assertRegex(str(raised.exception.expression_error), "device step")
-        self.assertRegex(str(raised.exception.idle_error), "device step")
 
     def test_explicit_idle_performs_only_idle_behavior(self):
         device = RecordingDevice()

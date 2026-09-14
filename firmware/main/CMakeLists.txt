@@ -207,16 +207,6 @@ elseif(CONFIG_BOARD_TYPE_STACKCHAN)
     set(BOARD_TYPE "stackchan")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
-    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
-    set(STACKCHAN_AVATAR_ASSET
-        "${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan/assets/xc-body-layered.rgb565le")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-        "${STACKCHAN_AVATAR_ASSET}")
-    file(SHA256 "${STACKCHAN_AVATAR_ASSET}" STACKCHAN_AVATAR_SHA256)
-    if(NOT STACKCHAN_AVATAR_SHA256 STREQUAL
-       "daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7")
-        message(FATAL_ERROR "StackChan reviewed avatar checksum mismatch")
-    endif()
     set(DEFAULT_ASSETS_EXTRA_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan/assets")
 elseif(CONFIG_BOARD_TYPE_M5STACK_CORE_TAB5)
@@ -836,20 +826,6 @@ else()
 endif()
 
 if(CONFIG_BOARD_TYPE_STACKCHAN)
-    set(STACKCHAN_BOARD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/boards/stackchan)
-    set(STACKCHAN_LOCAL_AVATAR_CC ${STACKCHAN_BOARD_DIR}/avatar_images.local.cc)
-    set(STACKCHAN_LOCAL_AVATAR_H ${STACKCHAN_BOARD_DIR}/avatar_images.local.h)
-    if(EXISTS ${STACKCHAN_LOCAL_AVATAR_CC})
-        if(NOT EXISTS ${STACKCHAN_LOCAL_AVATAR_H})
-            message(FATAL_ERROR
-                "Found ${STACKCHAN_LOCAL_AVATAR_CC} but ${STACKCHAN_LOCAL_AVATAR_H} is missing. "
-                "Regenerate both files with scripts/avatar_convert/convert_avatars.py."
-            )
-        endif()
-        list(REMOVE_ITEM BOARD_SOURCES ${STACKCHAN_BOARD_DIR}/avatar_images.cc)
-        message(STATUS "Using StackChan local avatar override: ${STACKCHAN_LOCAL_AVATAR_CC}")
-    endif()
-
     list(APPEND BOARD_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/../components/feetech_scs/feetech_scs.cpp")
     list(APPEND INCLUDE_DIRS
@@ -1022,8 +998,15 @@ if(CONFIG_STACKCHAN_MDNS_DISCOVERY)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__mdns)
 endif()
 
+set(MAIN_EMBED_FILES "")
+if(CONFIG_BOARD_TYPE_STACKCHAN)
+    list(APPEND MAIN_EMBED_FILES
+        "boards/stackchan/expression-recipes/touch.json")
+endif()
+
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES
+                        ${LANG_SOUNDS} ${COMMON_SOUNDS} ${MAIN_EMBED_FILES}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES

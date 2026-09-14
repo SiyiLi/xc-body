@@ -44,6 +44,11 @@ public:
     bool IsPlaying() const;
 
     /**
+     * Check whether playback stopped because GIF frame decoding failed.
+     */
+    bool HasDecodeFailure() const;
+
+    /**
      * Check if GIF was loaded successfully
      */
     bool IsLoaded() const;
@@ -76,9 +81,10 @@ public:
     uint16_t height() const;
 
     /**
-     * Set frame update callback
+     * Set frame update callback with image-relative changed pixels.
      */
-    void SetFrameCallback(std::function<void()> callback);
+    void SetFrameCallback(
+        std::function<void(const lv_area_t&)> callback);
 
 private:
     // GIF decoder instance
@@ -96,6 +102,7 @@ private:
     // Animation state
     bool playing_;
     bool loaded_;
+    bool decode_failed_;
     
     // Loop delay configuration
     uint32_t loop_delay_ms_;      // Delay between loops in milliseconds
@@ -103,7 +110,7 @@ private:
     uint32_t loop_wait_start_;    // Timestamp when loop wait started
     
     // Frame update callback
-    std::function<void()> frame_callback_;
+    std::function<void(const lv_area_t&)> frame_callback_;
     
     /**
      * Update to next frame

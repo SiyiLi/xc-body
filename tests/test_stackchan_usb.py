@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from scripts.stackchan_usb import UsbControlError, _firmware_from_manifest
+from scripts.stackchan_usb import (
+    UsbControlError,
+    _expression_recipe_request,
+    _firmware_from_manifest,
+    main,
+    _parser,
+    _receive_response,
+)
 
 
 class ManifestResponse(io.BytesIO):
@@ -62,6 +71,64 @@ class StackChanUsbManifestTests(unittest.TestCase):
                     5.0,
                 )
 
+
+class StackChanUsbExpressionTests(unittest.TestCase):
+    def test_builds_expression_recipe_request_from_json(self) -> None:
+        recipe = {"schema_version": 1, "steps": []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agree.json"
+            path.write_text(json.dumps(recipe), encoding="utf-8")
+            args = _parser().parse_args(
+                ["expression-preview", "agree", str(path)]
+            )
+            request = _expression_recipe_request(args)
+
+        self.assertEqual(
+            request,
+            {
+                "command": "expression_preview",
+                "name": "agree",
+                "recipe": recipe,
+            },
+        )
+
+    def test_receive_ignores_other_valid_command_responses(self) -> None:
+        abort = b'XC_BODY_RESPONSE {"command":"expression_abort","ok":true}\n'
+        admission = (
+            b'XC_BODY_RESPONSE {"command":"expression_preview",'
+            b'"ok":true,"outcome":"started"}\n'
+        )
+        with patch("scripts.stackchan_usb.select.select", return_value=([7], [], [])):
+            with patch("scripts.stackchan_usb.os.read", return_value=abort + admission):
+                response = _receive_response(
+                    7,
+                    "expression_preview",
+                    float("inf"),
+                    bytearray(),
+                )
+
+        self.assertEqual(response["outcome"], "started")
+
+    def test_preview_uses_one_immediate_request(self) -> None:
+        recipe = {"schema_version": 2, "animations": ["agree"], "steps": []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agree.json"
+            path.write_text(json.dumps(recipe), encoding="utf-8")
+            with patch(
+                "scripts.stackchan_usb._discover_port",
+                return_value="/dev/test",
+            ), patch(
+                "scripts.stackchan_usb._send_request",
+                return_value={"command": "expression_preview", "ok": True},
+            ) as send:
+                with patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(
+                        main(["expression-preview", "agree", str(path)]),
+                        0,
+                    )
+
+        self.assertEqual(send.call_args.args[0], "/dev/test")
+        self.assertEqual(send.call_args.args[1]["command"], "expression_preview")
 
 if __name__ == "__main__":
     unittest.main()

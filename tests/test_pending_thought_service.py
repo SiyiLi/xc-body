@@ -5,7 +5,6 @@ import sys
 import types
 import unittest
 from contextlib import contextmanager, redirect_stderr
-from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.pending_thought_runtime import PendingThoughtRuntime
@@ -19,7 +18,6 @@ from gateway.pending_thought_service import (
     prepare_pending_runtime,
     run_service_streams,
 )
-from stackchan.avatar_verification import REVIEWED_AVATAR_CHECKSUM
 
 
 _OPUS_PACKET = bytes.fromhex(
@@ -61,7 +59,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
         environment = {
             "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
-            "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
             "XC_BODY_PCM_URL": "http://127.0.0.1:8766/pcm",
             "XC_BODY_PLAYBACK_TOKEN": "playback-token",
@@ -77,10 +74,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
         self.assertEqual(config.url, "https://daemon.invalid/mcp")
         self.assertEqual(config.token, "test-token")
         self.assertNotIn("test-token", repr(config))
-        self.assertEqual(
-            config.avatar_path,
-            "/srv/xc-body/avatar.rgb565le",
-        )
         playback_config = service.await_args.args[1]
         self.assertEqual(
             playback_config.url,
@@ -98,7 +91,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
         environment = {
             "XC_BODY_STACKCHAN_MCP_URL": "https://daemon.invalid/mcp",
             "XC_BODY_STACKCHAN_MCP_TOKEN": "test-token",
-            "XC_BODY_AVATAR_ARCHIVE_PATH": "/srv/xc-body/avatar.rgb565le",
         }
 
         with redirect_stderr(stderr):
@@ -114,11 +106,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
             async def call_tool(self, name, arguments, **kwargs):
                 del arguments
                 del kwargs
-                if name == "load_avatar_set":
-                    return {
-                        "ok": True,
-                        "checksum": REVIEWED_AVATAR_CHECKSUM,
-                    }
                 return {
                     "connected": False,
                     "initialized": True,
@@ -131,83 +118,33 @@ class PendingThoughtServiceTests(unittest.TestCase):
             "not connected and initialized",
         ):
             asyncio.run(
-                prepare_pending_runtime(
-                    Session(),
-                    runtime,
-                    "/srv/xc-body/avatar.rgb565le",
-                )
+                prepare_pending_runtime(Session(), runtime)
             )
-        runtime.mark_avatar_ready.assert_not_called()
+        runtime.mark_device_ready.assert_not_called()
 
-    def test_runtime_preparation_rejects_reconnect_during_avatar_load(self):
-        class Session:
-            def __init__(self):
-                self.session_ids = iter(("device-session-1", "device-session-2"))
-
-            async def call_tool(self, name, arguments, **kwargs):
-                del arguments
-                del kwargs
-                if name == "load_avatar_set":
-                    return {
-                        "ok": True,
-                        "checksum": REVIEWED_AVATAR_CHECKSUM,
-                    }
-                return {
-                    "connected": True,
-                    "initialized": True,
-                    "session_id": next(self.session_ids),
-                }
-
-        runtime = Mock()
-        with self.assertRaisesRegex(
-            PendingThoughtServiceError,
-            "session changed during avatar restore",
-        ):
-            asyncio.run(
-                prepare_pending_runtime(
-                    Session(),
-                    runtime,
-                    "/srv/xc-body/avatar.rgb565le",
-                )
-            )
-        runtime.mark_avatar_ready.assert_not_called()
-
-    def test_reconnect_restores_avatar_without_replacing_pending_offer(self):
+    def test_reconnect_marks_device_ready_without_replacing_pending_offer(self):
         status = {
             "connected": True,
             "initialized": True,
             "session_id": "device-session-2",
         }
         session = AsyncMock()
-        session.call_tool.side_effect = [
-            status,
-            {"ok": True, "checksum": REVIEWED_AVATAR_CHECKSUM},
-            status,
-        ]
+        session.call_tool.return_value = status
         runtime = Mock()
         runtime.is_ready = AsyncMock(return_value=False)
-        runtime.reconcile_base_view = AsyncMock()
+        runtime.reconcile_offer_state = AsyncMock()
         machine = types.SimpleNamespace(pending_thought_id="cron:waiting")
         runtime.machine = machine
 
         restored = asyncio.run(
-            _restore_pending_runtime_if_needed(
-                session,
-                runtime,
-                "/srv/xc-body/avatar.rgb565le",
-            )
+            _restore_pending_runtime_if_needed(session, runtime)
         )
 
         self.assertTrue(restored)
         self.assertIs(runtime.machine, machine)
         self.assertEqual(machine.pending_thought_id, "cron:waiting")
-        runtime.mark_avatar_ready.assert_called_once_with("device-session-2")
-        self.assertEqual(
-            session.call_tool.call_args_list[1].kwargs[
-                "read_timeout_seconds"
-            ],
-            timedelta(seconds=150),
-        )
+        runtime.mark_device_ready.assert_called_once_with("device-session-2")
+        runtime.reconcile_offer_state.assert_awaited_once_with()
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
     def test_offer_gesture_posts_prepared_audio(self, urlopen):
@@ -233,11 +170,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
             async def call_tool(self, name, arguments, **kwargs):
                 del kwargs
                 upstream_calls.append((name, arguments))
-                if name == "load_avatar_set":
-                    return {
-                        "ok": True,
-                        "checksum": REVIEWED_AVATAR_CHECKSUM,
-                    }
                 if name == "get_status":
                     return {
                         "connected": True,
@@ -289,7 +221,6 @@ class PendingThoughtServiceTests(unittest.TestCase):
                     "down-read",
                     "down-write",
                     runtime=runtime,
-                    avatar_path="/srv/xc-body/avatar.rgb565le",
                 )
             )
 

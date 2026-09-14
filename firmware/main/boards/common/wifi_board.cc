@@ -184,7 +184,9 @@ void WifiBoard::StartWifiConfigMode() {
         hint += " (tap left OFF / right ON)";
 #endif
 
-        Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+        Application::GetInstance().Alert(
+            Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(),
+            Lang::Sounds::OGG_WIFICONFIG);
     });
 #elif CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
     auto &blufi = Blufi::GetInstance();

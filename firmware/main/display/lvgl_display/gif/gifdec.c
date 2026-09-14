@@ -657,15 +657,25 @@ read_image(gd_GIF * gif)
     return read_image_data(gif, interlace);
 }
 
-static void
-render_frame_rect(gd_GIF * gif, uint8_t * buffer)
+static bool
+render_frame_rect(gd_GIF * gif, uint8_t * buffer, lv_area_t * changed_area)
 {
     int i = gif->fy * gif->width + gif->fx;
+    bool changed = false;
+    lv_area_t dirty = {
+        .x1 = gif->width,
+        .y1 = gif->height,
+        .x2 = 0,
+        .y2 = 0,
+    };
 #ifdef GIFDEC_RENDER_FRAME
-    GIFDEC_RENDER_FRAME(&buffer[i * 4], gif->fw, gif->fh, gif->width,
-                        &gif->frame[i], gif->palette->colors,
-                        gif->gce.transparency ? gif->gce.tindex : 0x100);
-#else
+    if(changed_area == NULL) {
+        GIFDEC_RENDER_FRAME(&buffer[i * 4], gif->fw, gif->fh, gif->width,
+                            &gif->frame[i], gif->palette->colors,
+                            gif->gce.transparency ? gif->gce.tindex : 0x100);
+        return gif->fw > 0 && gif->fh > 0;
+    }
+#endif
     int j, k;
     uint8_t index, * color;
 
@@ -674,15 +684,35 @@ render_frame_rect(gd_GIF * gif, uint8_t * buffer)
             index = gif->frame[(gif->fy + j) * gif->width + gif->fx + k];
             color = &gif->palette->colors[index * 3];
             if(!gif->gce.transparency || index != gif->gce.tindex) {
-                buffer[(i + k) * 4 + 0] = *(color + 2);
-                buffer[(i + k) * 4 + 1] = *(color + 1);
-                buffer[(i + k) * 4 + 2] = *(color + 0);
-                buffer[(i + k) * 4 + 3] = 0xFF;
+                uint8_t * pixel = &buffer[(i + k) * 4];
+                if(changed_area == NULL) {
+                    pixel[0] = *(color + 2);
+                    pixel[1] = *(color + 1);
+                    pixel[2] = *(color + 0);
+                    pixel[3] = 0xFF;
+                    changed = true;
+                }
+                else if(pixel[0] != *(color + 2) ||
+                   pixel[1] != *(color + 1) ||
+                   pixel[2] != *(color + 0) || pixel[3] != 0xFF) {
+                    pixel[0] = *(color + 2);
+                    pixel[1] = *(color + 1);
+                    pixel[2] = *(color + 0);
+                    pixel[3] = 0xFF;
+                    changed = true;
+                    dirty.x1 = MIN(dirty.x1, gif->fx + k);
+                    dirty.y1 = MIN(dirty.y1, gif->fy + j);
+                    dirty.x2 = MAX(dirty.x2, gif->fx + k);
+                    dirty.y2 = MAX(dirty.y2, gif->fy + j);
+                }
             }
         }
         i += gif->width;
     }
-#endif
+    if(changed && changed_area != NULL) {
+        *changed_area = dirty;
+    }
+    return changed;
 }
 
 static void
@@ -717,7 +747,7 @@ dispose(gd_GIF * gif)
             break;
         default:
             /* Add frame non-transparent pixels to canvas. */
-            render_frame_rect(gif, gif->canvas);
+            render_frame_rect(gif, gif->canvas, NULL);
     }
 }
 
@@ -749,10 +779,10 @@ gd_get_frame(gd_GIF * gif)
     return 1;
 }
 
-void
-gd_render_frame(gd_GIF * gif, uint8_t * buffer)
+bool
+gd_render_frame(gd_GIF * gif, uint8_t * buffer, lv_area_t * changed_area)
 {
-    render_frame_rect(gif, buffer);
+    return render_frame_rect(gif, buffer, changed_area);
 }
 
 void
@@ -818,4 +848,3 @@ static void f_gif_close(gd_GIF * gif)
         lv_fs_close(&gif->fd);
     }
 }
-

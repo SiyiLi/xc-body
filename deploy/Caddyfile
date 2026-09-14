@@ -18,9 +18,6 @@
 		root * /srv/firmware
 		file_server
 	}
-	handle /avatar_set/* {
-		reverse_proxy gateway:8766
-	}
 	handle /opus {
 		reverse_proxy gateway:8766
 	}

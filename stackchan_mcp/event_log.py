@@ -73,7 +73,7 @@ def log_event(
         moment the gateway recorded the event and is what hook
         consumers should use for ``"how long ago"`` calculations.
     action
-        Optional human-axis avatar action to include in the JSONL payload.
+        Optional human-axis action to include in the JSONL payload.
     path
         Optional resolved log path from notify.yml. When omitted, the legacy
         ``STACKCHAN_EVENTS_PATH`` / default path resolution is used.

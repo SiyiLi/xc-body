@@ -5,179 +5,99 @@ from stackchan.adapter import (
     CalibrationError,
     ClientOperationError,
     DeviceUnavailableError,
-    HeadMove,
     StackChanAdapter,
-    StackChanCalibration,
 )
 
 
-# Synthetic, non-hardware calibration. Never use these values on a real device.
-def synthetic_calibration():
-    return StackChanCalibration(
-        faces={
-            "neutral": "face-neutral-test",
-            "attentive": "face-attentive-test",
-            "happy": "face-happy-test",
-            "concerned": "face-concerned-test",
-        },
-        motions={
-            "relaxed_center": (HeadMove(0, 43, 1),),
-            "restrained_side_glance": (HeadMove(2, 44, 3),),
-            "single_small_nod": (HeadMove(0, 45, 3),),
-            "restrained_head_tilt": (HeadMove(-2, 44, 3),),
-        },
-        verified_faces=frozenset(
-            {
-                "face-neutral-test",
-                "face-attentive-test",
-                "face-happy-test",
-                "face-concerned-test",
-            }
-        ),
-    )
-
-
 class FakeClient:
-    def __init__(
-        self,
-        connected=True,
-        fail_operation=None,
-        session_id=None,
-    ):
+    def __init__(self, connected=True, fail=False, session_id=None):
         self.connected = connected
-        self.fail_operation = fail_operation
+        self.fail = fail
         self.session_id = session_id
-        self.failure_raised = False
         self.calls = []
-
-    def _record(self, operation, *args):
-        self.calls.append((operation, *args))
-        if self.fail_operation == operation and not self.failure_raised:
-            self.failure_raised = True
-            raise RuntimeError("synthetic client failure")
-        return {"ok": True}
 
     def get_status(self):
         self.calls.append(("get_status",))
-        if self.fail_operation == "get_status" and not self.failure_raised:
-            self.failure_raised = True
-            raise RuntimeError("synthetic client failure")
         status = {"connected": self.connected}
         if self.session_id is not None:
-            status.update(
-                {"initialized": True, "session_id": self.session_id}
-            )
+            status.update({"initialized": True, "session_id": self.session_id})
         return status
 
-    def set_avatar(self, face):
-        return self._record("set_avatar", face)
-
-    def move_head(self, yaw, pitch, speed):
-        return self._record("move_head", yaw, pitch, speed)
+    def perform_expression(self, expression):
+        self.calls.append(("perform_expression", expression))
+        if self.fail:
+            raise RuntimeError("synthetic client failure")
+        return {"ok": True}
 
 
 class StackChanAdapterTests(unittest.TestCase):
-    def test_no_calibration_fails_before_client_calls(self):
+    def test_unknown_recipe_step_fails_before_device_calls(self):
         client = FakeClient()
         with self.assertRaises(CalibrationError):
-            StackChanAdapter(client, None).present(
-                face="happy",
-                motion="single_small_nod",
-            )
+            StackChanAdapter(client).present(face="unknown", motion="unknown")
         self.assertEqual(client.calls, [])
 
-    def test_invalid_calibration_value_fails_at_construction(self):
-        client = FakeClient()
-        with self.assertRaises(CalibrationError):
-            StackChanCalibration(
-                faces={},
-                motions={
-                    "relaxed_center": (HeadMove(0, 43, 0),),
-                },
-            )
-        self.assertEqual(client.calls, [])
-
-    def test_upstream_servo_limits_are_enforced(self):
-        for move in (HeadMove(-91, 43, 1), HeadMove(0, 86, 1)):
-            with self.subTest(move=move):
-                with self.assertRaises(CalibrationError):
-                    StackChanCalibration(
-                        faces={},
-                        motions={"relaxed_center": (move,)},
-                    )
-
-    def test_disconnected_status_prevents_face_and_motion_calls(self):
+    def test_disconnected_status_prevents_expression(self):
         client = FakeClient(connected=False)
         with self.assertRaises(DeviceUnavailableError):
-            StackChanAdapter(client, synthetic_calibration()).present(
+            StackChanAdapter(client).present(
                 face="attentive",
                 motion="restrained_side_glance",
             )
         self.assertEqual(client.calls, [("get_status",)])
 
-    def test_changed_verified_session_prevents_face_and_motion_calls(self):
+    def test_changed_session_prevents_expression(self):
         client = FakeClient(session_id="reconnected-session")
-        with self.assertRaisesRegex(
-            DeviceUnavailableError,
-            "reviewed avatar is not ready",
-        ):
+        with self.assertRaisesRegex(DeviceUnavailableError, "current session"):
             StackChanAdapter(
                 client,
-                synthetic_calibration(),
-                verified_session_id="loaded-session",
+                verified_session_id="ready-session",
             ).present(
                 face="attentive",
                 motion="restrained_side_glance",
             )
         self.assertEqual(client.calls, [("get_status",)])
 
-    def test_curious_maps_deterministically_and_returns_to_idle(self):
+    def test_curious_uses_saved_expression_and_returns_to_idle(self):
         client = FakeClient()
         embody(
             {"version": "v1", "intent": "curious"},
-            StackChanAdapter(client, synthetic_calibration()),
+            StackChanAdapter(client),
         )
         self.assertEqual(
             client.calls,
             [
                 ("get_status",),
-                ("set_avatar", "face-attentive-test"),
-                ("move_head", 2, 44, 3),
-                ("get_status",),
-                ("set_avatar", "face-neutral-test"),
-                ("move_head", 0, 43, 1),
+                ("perform_expression", "curious"),
             ],
         )
 
-    def test_complete_preflight_checks_idle_face_before_expression_calls(self):
-        calibration = synthetic_calibration()
-        expression_only = StackChanCalibration(
-            faces=calibration.faces,
-            motions=calibration.motions,
-            verified_faces=frozenset({"face-attentive-test"}),
-        )
+    def test_explicit_idle_uses_firmware_owned_restore(self):
         client = FakeClient()
-
-        with self.assertRaisesRegex(CalibrationError, "visible face verification"):
-            embody(
-                {"version": "v1", "intent": "curious"},
-                StackChanAdapter(client, expression_only),
-            )
-
-        self.assertEqual(client.calls, [])
-
-    def test_client_error_has_context_and_safe_return_is_attempted(self):
-        client = FakeClient(fail_operation="move_head")
-        with self.assertRaisesRegex(ClientOperationError, "move_head"):
-            embody(
-                {"version": "v1", "intent": "curious"},
-                StackChanAdapter(client, synthetic_calibration()),
-            )
-        get_status_calls = sum(
-            call[0] == "get_status" for call in client.calls
+        embody(
+            {"version": "v1", "intent": "idle"},
+            StackChanAdapter(client),
         )
-        self.assertEqual(get_status_calls, 2)
-        self.assertIn(("set_avatar", "face-neutral-test"), client.calls)
+        self.assertEqual(
+            client.calls,
+            [("get_status",), ("perform_expression", "idle")],
+        )
+
+    def test_expression_failure_does_not_start_a_second_operation(self):
+        client = FakeClient(fail=True)
+        with self.assertRaisesRegex(ClientOperationError, "perform_expression"):
+            embody(
+                {"version": "v1", "intent": "curious"},
+                StackChanAdapter(client),
+            )
+        self.assertEqual(
+            client.calls,
+            [
+                ("get_status",),
+                ("perform_expression", "curious"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

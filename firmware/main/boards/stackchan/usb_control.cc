@@ -12,6 +12,7 @@
 #include <wifi_manager.h>
 
 #include "application.h"
+#include "board.h"
 #include "device_state_machine.h"
 #include "ota.h"
 #include "settings.h"
@@ -24,6 +25,7 @@ constexpr size_t kMaxRequestBytes = 1024;
 constexpr uint32_t kTaskStackSize = 6144;
 constexpr UBaseType_t kTaskPriority = tskIDLE_PRIORITY + 1;
 const char* const kTag = "StackChanUsb";
+StackChanExpressionController* expression_controller = nullptr;
 
 bool IsString(const cJSON* value) {
     return value != nullptr && cJSON_IsString(value) &&
@@ -82,6 +84,27 @@ void SendResponse(cJSON* response) {
 void SendError(const char* command, const char* error) {
     auto response = NewResponse(command, false);
     cJSON_AddStringToObject(response, "error", error);
+    SendResponse(response);
+}
+
+void SendExpressionOutcome(
+        const char* command,
+        const std::string& name,
+        StackChanExpressionOutcome outcome,
+        const StackChanExpressionRecipe* recipe = nullptr) {
+    const bool completed = outcome == StackChanExpressionOutcome::COMPLETED;
+    auto response = NewResponse(command, completed);
+    cJSON_AddStringToObject(response, "name", name.c_str());
+    cJSON_AddStringToObject(
+        response, "outcome", StackChanExpressionOutcomeName(outcome));
+    if (!completed) {
+        cJSON_AddStringToObject(
+            response, "error", StackChanExpressionOutcomeName(outcome));
+    }
+    if (recipe != nullptr) {
+        cJSON_AddItemToObject(
+            response, "recipe", EncodeStackChanExpressionRecipe(*recipe));
+    }
     SendResponse(response);
 }
 
@@ -230,6 +253,10 @@ void SaveGatewayConfig(const cJSON* request) {
 }
 
 void ScheduleReboot() {
+    if (!Board::GetInstance().BeginFirmwareMaintenance()) {
+        SendError("reboot", "physical behavior is active");
+        return;
+    }
     SendResponse(NewResponse("reboot", true));
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().Reboot();
@@ -254,6 +281,10 @@ void ScheduleFirmwareUpdate(const cJSON* request) {
     std::string expected_version = version->valuestring;
     std::string expected_sha256 = sha256->valuestring;
     int expected_size = size->valueint;
+    if (!Board::GetInstance().BeginFirmwareMaintenance()) {
+        SendError("update", "physical behavior is active");
+        return;
+    }
     auto response = NewResponse("update", true);
     cJSON_AddStringToObject(response, "status", "queued");
     cJSON_AddBoolToObject(response, "completed", false);
@@ -286,6 +317,114 @@ void SetAutomaticOta(const cJSON* request) {
     SendResponse(response);
 }
 
+void HandleExpressionRequest(const cJSON* request, const char* command) {
+    const cJSON* name = cJSON_GetObjectItemCaseSensitive(request, "name");
+    if (!IsString(name) ||
+        !IsStackChanExpressionRecipeName(name->valuestring)) {
+        if (std::strcmp(command, "expression_preview") == 0) {
+            SendExpressionOutcome(
+                command,
+                IsString(name) ? name->valuestring : "",
+                StackChanExpressionOutcome::INVALID_RECIPE);
+        } else {
+            SendError(command, "unknown expression");
+        }
+        return;
+    }
+
+    std::string error;
+    if (std::strcmp(command, "expression_show") == 0) {
+        StackChanExpressionRecipe recipe;
+        const auto status = LoadStackChanExpressionRecipe(
+            name->valuestring, recipe);
+        if (status == StackChanExpressionLoadStatus::NOT_CALIBRATED) {
+            SendError(command, "expression is not calibrated");
+            return;
+        }
+        if (status != StackChanExpressionLoadStatus::OK) {
+            SendError(command, "stored expression recipe is invalid");
+            return;
+        }
+        auto response = NewResponse(command, true);
+        cJSON_AddStringToObject(response, "name", name->valuestring);
+        cJSON_AddItemToObject(
+            response, "recipe", EncodeStackChanExpressionRecipe(recipe));
+        SendResponse(response);
+        return;
+    }
+
+    if (std::strcmp(command, "expression_reset") == 0) {
+        ResetStackChanExpressionRecipe(name->valuestring);
+        auto response = NewResponse(command, true);
+        cJSON_AddStringToObject(response, "name", name->valuestring);
+        cJSON_AddStringToObject(response, "persistence", "nvs");
+        SendResponse(response);
+        return;
+    }
+
+    const cJSON* value =
+        cJSON_GetObjectItemCaseSensitive(request, "recipe");
+    StackChanExpressionRecipe recipe;
+    if (!ParseStackChanExpressionRecipe(value, recipe)) {
+        if (std::strcmp(command, "expression_preview") == 0) {
+            SendExpressionOutcome(
+                command,
+                name->valuestring,
+                StackChanExpressionOutcome::INVALID_RECIPE);
+        } else {
+            SendError(
+                command,
+                "recipe must use schema 2 with one animation and curve/pause steps");
+        }
+        return;
+    }
+    if (!ValidateStackChanExpressionRecipe(recipe, error)) {
+        if (std::strcmp(command, "expression_preview") == 0) {
+            SendExpressionOutcome(
+                command,
+                name->valuestring,
+                StackChanExpressionOutcome::INVALID_RECIPE);
+        } else {
+            SendError(command, error.c_str());
+        }
+        return;
+    }
+    if (std::strcmp(command, "expression_preview") == 0) {
+        if (expression_controller == nullptr) {
+            SendExpressionOutcome(
+                command,
+                name->valuestring,
+                StackChanExpressionOutcome::UNAVAILABLE);
+            return;
+        }
+        const auto outcome = expression_controller->StartExpressionPreview(
+            name->valuestring, recipe);
+        if (outcome != StackChanExpressionOutcome::STARTED) {
+            SendExpressionOutcome(command, name->valuestring, outcome);
+            return;
+        }
+        auto response = NewResponse(command, true);
+        cJSON_AddStringToObject(response, "name", name->valuestring);
+        cJSON_AddStringToObject(response, "outcome", "started");
+        cJSON_AddItemToObject(
+            response, "recipe", EncodeStackChanExpressionRecipe(recipe));
+        SendResponse(response);
+        return;
+    } else {
+        if (!SaveStackChanExpressionRecipe(
+                name->valuestring, recipe, error)) {
+            SendError(command, error.c_str());
+            return;
+        }
+    }
+    auto response = NewResponse(command, true);
+    cJSON_AddStringToObject(response, "name", name->valuestring);
+    cJSON_AddItemToObject(
+        response, "recipe", EncodeStackChanExpressionRecipe(recipe));
+    cJSON_AddStringToObject(response, "persistence", "nvs");
+    SendResponse(response);
+}
+
 void HandleRequest(const char* json) {
     cJSON* request = cJSON_Parse(json);
     if (request == nullptr || !cJSON_IsObject(request)) {
@@ -300,7 +439,6 @@ void HandleRequest(const char* json) {
         SendError("unknown", "command must be a string");
         return;
     }
-
     if (std::strcmp(command->valuestring, "status") == 0) {
         SendStatus();
     } else if (std::strcmp(command->valuestring, "configure") == 0) {
@@ -312,6 +450,12 @@ void HandleRequest(const char* json) {
     } else if (std::strcmp(
                    command->valuestring, "automatic_ota") == 0) {
         SetAutomaticOta(request);
+    } else if (
+        std::strcmp(command->valuestring, "expression_preview") == 0 ||
+        std::strcmp(command->valuestring, "expression_save") == 0 ||
+        std::strcmp(command->valuestring, "expression_show") == 0 ||
+        std::strcmp(command->valuestring, "expression_reset") == 0) {
+        HandleExpressionRequest(request, command->valuestring);
     } else {
         SendError(command->valuestring, "unsupported command");
     }
@@ -356,7 +500,8 @@ void UsbControlTask(void*) {
 
 }  // namespace
 
-void StartStackChanUsbControl() {
+void StartStackChanUsbControl(StackChanExpressionController* expressions) {
+    expression_controller = expressions;
     BaseType_t created = xTaskCreate(
         UsbControlTask,
         "stackchan_usb",

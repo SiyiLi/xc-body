@@ -10,7 +10,6 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
@@ -24,10 +23,6 @@ from gateway.pending_thought_runtime import (
 )
 from gateway.semantic_e2e import RunnerConfig, RunnerConfigError, load_config
 from gateway.stackchan_event_session import wait_for_stackchan_event_tasks
-from stackchan.avatar_verification import (
-    AvatarVerificationError,
-    require_reviewed_avatar_load,
-)
 
 _CONTRACT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -177,37 +172,11 @@ def _error_content(text_content: Any, message: str) -> Any:
 async def prepare_pending_runtime(
     session: Any,
     runtime: PendingThoughtRuntime,
-    avatar_path: str,
 ) -> None:
-    """Restore the reviewed avatar and bind it to the active device session."""
-
+    """Bind the runtime to the active initialized device session."""
     session_id = await _ready_session_id(session)
-    try:
-        loaded = await session.call_tool(
-            "load_avatar_set",
-            arguments={
-                "archive_path": avatar_path,
-                "mode": "layered-320x240",
-                "timeout": 120,
-            },
-            read_timeout_seconds=timedelta(seconds=150),
-        )
-        require_reviewed_avatar_load(loaded)
-    except AvatarVerificationError as exc:
-        raise PendingThoughtServiceError(str(exc)) from exc
-    except Exception as exc:
-        raise PendingThoughtServiceError(
-            "native avatar restore call failed "
-            f"({type(exc).__name__})"
-        ) from exc
-
-    verified_session_id = await _ready_session_id(session)
-    if verified_session_id != session_id:
-        raise PendingThoughtServiceError(
-            "StackChan device session changed during avatar restore"
-        )
-    runtime.mark_avatar_ready(verified_session_id)
-    await runtime.reconcile_base_view()
+    runtime.mark_device_ready(session_id)
+    await runtime.reconcile_offer_state()
 
 
 async def _ready_session_id(session: Any) -> str:
@@ -231,7 +200,6 @@ async def run_service_streams(
     downstream_read: Any,
     downstream_write: Any,
     *,
-    avatar_path: str,
     runtime: PendingThoughtRuntime | None = None,
 ) -> None:
     """Run the service over injected streams for production and tests."""
@@ -249,7 +217,6 @@ async def run_service_streams(
         await prepare_pending_runtime(
             upstream_session,
             active_runtime,
-            avatar_path,
         )
         try:
             await server.run(
@@ -286,7 +253,6 @@ async def run_stdio_service(
                 await run_service_streams(
                     *upstream_streams[:2],
                     *downstream_streams,
-                    avatar_path=config.avatar_path,
                     runtime=PendingThoughtRuntime(
                         playback_url=playback_config.url,
                         streaming_url=playback_config.streaming_url,
@@ -313,11 +279,7 @@ def main(
 ) -> int:
     args = _argument_parser().parse_args(argv)
     try:
-        config = load_config(
-            url=args.url,
-            environ=environ,
-            require_avatar=True,
-        )
+        config = load_config(url=args.url, environ=environ)
         playback_config = load_playback_config(environ)
         asyncio.run(run_stdio_service(config, playback_config))
     except (

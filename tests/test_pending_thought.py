@@ -127,7 +127,7 @@ class PendingThoughtTests(unittest.TestCase):
 
     def test_offer_waits_for_one_acknowledgment(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body, offer_state_port=body)
+        machine = KnockWaitTell(body, body, offer_display_port=body)
         payload_outcome = offer(machine)
         self.assertEqual(payload_outcome.state, "waiting")
         self.assertEqual(body.knocks, ["run:42"])
@@ -194,7 +194,12 @@ class PendingThoughtTests(unittest.TestCase):
     def test_offer_expires_after_thirty_minutes(self):
         now = [0.0]
         body = RecordingBody()
-        machine = KnockWaitTell(body, body, clock=lambda: now[0])
+        machine = KnockWaitTell(
+            body,
+            body,
+            offer_display_port=body,
+            clock=lambda: now[0],
+        )
         offer(machine, "expired")
 
         now[0] = 30 * 60
@@ -205,6 +210,7 @@ class PendingThoughtTests(unittest.TestCase):
         self.assertEqual(offer(machine, "fresh").state, "waiting")
         self.assertEqual(body.knocks, ["expired", "fresh"])
         self.assertEqual(body.tells, [])
+        self.assertEqual(body.offer_states, [True, False, True])
 
     @patch("gateway.pending_thought._MAX_RECORDED_OUTCOMES", 2)
     def test_eviction_preserves_pending_but_allows_old_completed_id(self):

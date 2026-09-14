@@ -124,12 +124,12 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& app = Application::GetInstance();
     auto& board = Board::GetInstance();
     auto codec = board.GetAudioCodec();
-    bool appliance_status_style;
+    bool application_status_bar;
 
     // Update mute icon
     {
         DisplayLockGuard lock(this);
-        appliance_status_style = appliance_status_style_;
+        application_status_bar = application_status_bar_;
         if (mute_label_ == nullptr) {
             return;
         }
@@ -145,7 +145,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     }
 
     // Update time
-    if (!appliance_status_style &&
+    if (!application_status_bar &&
         app.GetDeviceState() == kDeviceStateIdle) {
         if (last_status_update_time_ + std::chrono::seconds(10) <
             std::chrono::system_clock::now()) {
@@ -175,9 +175,13 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
             FONT_AWESOME_BATTERY_FULL, // 80-99%
             FONT_AWESOME_BATTERY_FULL, // 100%
         };
-        icon = charging && !appliance_status_style
+#if CONFIG_BOARD_TYPE_STACKCHAN
+        icon = levels[battery_level / 20];
+#else
+        icon = charging && !application_status_bar
             ? FONT_AWESOME_BATTERY_BOLT
             : levels[battery_level / 20];
+#endif
         if (battery_icon_ != icon) {
             battery_icon_ = icon;
             if (battery_label_ != nullptr) {
@@ -190,6 +194,12 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         }
         if (battery_label_ != nullptr) {
             lv_obj_remove_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_BOARD_TYPE_STACKCHAN
+            lv_obj_set_style_text_color(
+                battery_label_,
+                charging ? lv_color_hex(0x22C55E) : lv_color_white(),
+                0);
+#endif
         }
         if (appliance_battery_label_ != nullptr) {
             lv_obj_remove_flag(
@@ -254,14 +264,8 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
 void LvglDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 }
 
-void LvglDisplay::SetPowerSaveMode(bool on) {
-    if (on) {
-        SetChatMessage("system", "");
-        SetEmotion("sleepy");
-    } else {
-        SetChatMessage("system", "");
-        SetEmotion("neutral");
-    }
+void LvglDisplay::SetPowerSaveMode(bool) {
+    SetChatMessage("system", "");
 }
 
 bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {

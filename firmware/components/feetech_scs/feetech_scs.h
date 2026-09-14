@@ -39,6 +39,16 @@ public:
     // Goal position 0..1023, time 0..65535 ms, speed 0..65535 (0 = max).
     int WritePos(uint8_t id, uint16_t position, uint16_t time_ms, uint16_t speed);
 
+    // Send two position targets in one broadcast packet. The protocol does
+    // not return an ACK for synchronized writes.
+    int SyncWritePos(
+        uint8_t first_id,
+        uint16_t first_position,
+        uint8_t second_id,
+        uint16_t second_position,
+        uint16_t time_ms,
+        uint16_t speed);
+
     // Returns 0..1023 on success, -1 on timeout / checksum error.
     int ReadPos(uint8_t id);
 

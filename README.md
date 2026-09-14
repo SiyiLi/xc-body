@@ -28,21 +28,19 @@ turning it off should make the room feel a little emptier.
   completions, chooses `offer` or `skip`, and submits accepted summaries to the
   authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
-  submission retries, robot-session avatar restoration, supervisor recovery,
-  and connected idle display dimming. OpenClaw, route, robot, gateway, pending
+  submission retries, robot-session recovery, supervisor recovery, and
+  connected idle display dimming. OpenClaw, route, robot, gateway, pending
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   configured cloud rendezvous host; raw service ports remain private.
 - Milestone 4 direct conversation and appliance UX have physical acceptance.
   Exact candidate identifiers and the real-user acceptance record are in the
   milestone document.
-- Milestone 5 is active. It gives direct answers one of six deterministic
-  expressions; `agree` uses a restrained nod. `Neutral` is the fallback base
-  presence, combining the idle pose with sparse ambient life and local touch
-  reactions. The fixed direct projection selects the expression while
-  deterministic XC Body code owns physical execution. A USB-only calibration
-  loop previews and stores robot-specific motor recipes used by production
-  expressions. Background offers remain unchanged.
+- Milestone 5 is active. Its replacement candidate removes the layered avatar
+  and uses the saved expression runner for idle presence, direct attention,
+  offer knocks, touch reactions, and speaking animation. Direct and background
+  behavior remain fixed to `curious`; there is no projection redesign. The
+  replacement integration still requires end-to-end physical acceptance.
 - Milestone 6 is reserved for explicit bounded camera observation.
 
 The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current
@@ -66,7 +64,8 @@ uses the protected local key file.
 
 The CoreS3 USB channel reports status, updates the saved gateway configuration,
 queues verified firmware updates, streams logs, and requests a normal
-application reboot. It never returns the saved bearer token.
+application reboot. Milestone 5 also uses it to preview and persist bounded
+expression recipes. It never returns the saved bearer token.
 
 ```sh
 scripts/stackchan_usb.py status
@@ -77,7 +76,18 @@ scripts/stackchan_usb.py update \
   --manifest https://<public-host>/firmware/manifest.json
 scripts/stackchan_usb.py reboot
 scripts/stackchan_usb.py monitor --seconds 30
+scripts/stackchan_usb.py expression-preview agree \
+  firmware/main/boards/stackchan/expression-recipes/agree.json
+scripts/stackchan_usb.py expression-save agree \
+  firmware/main/boards/stackchan/expression-recipes/agree.json
+scripts/stackchan_usb.py expression-show agree
+scripts/stackchan_usb.py expression-reset agree
 ```
+
+Preview returns when firmware admits or rejects the recipe. Firmware executes
+an admitted preview and its safe return independently. Saving, resetting,
+rebooting, and physical preview motion each require their own explicit hardware
+authorization.
 
 Flashing firmware requires separate explicit permission.
 
@@ -85,7 +95,9 @@ Routine OTA starting with `0.1.2` requires only publishing a newer release and
 rebooting the robot. Starting with `0.1.8`, the same release also updates the
 assets partition when its verified manifest digest differs. Assets OTA is
 single-partition and therefore non-atomic under power loss; the application
-stays bootable with static fallback and retries on a later boot. The
+stays bootable only to repair the assets partition and retries on a later boot.
+A missing, corrupt, or undecodable named expression GIF is a critical assets
+integrity failure: named behavior fails before motion until it is repaired. The
 authenticated `upgrade_firmware` gateway tool provides a no-USB bridge from
 `0.1.1` and an emergency fallback. USB remains the local maintenance and
 recovery path.

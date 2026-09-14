@@ -18,7 +18,6 @@ RUNTIME_TAG=$REGISTRY_REPO:xc-body-$RUNTIME_VERSION
 CADDY_VERSION=2.11.4
 CADDY_TAG=$REGISTRY_REPO:caddy-$CADDY_VERSION
 CADDY_SOURCE=caddy:$CADDY_VERSION-alpine
-EXPECTED_AVATAR_SHA256=daa35ed17a716860f0415c053dbf3d59e6e421ad50556de5ccc58cae28af36f7
 STATE_DIR=$REPO/build/deploy
 SSH_OPTIONS=(
   -i "$IDENTITY"
@@ -70,10 +69,6 @@ EOF
 require_command() {
   command -v "$1" >/dev/null 2>&1 \
     || die "required command not found: $1" 64
-}
-
-sha256_file() {
-  shasum -a 256 "$1" | awk '{print $1}'
 }
 
 cleanup() {
@@ -296,10 +291,8 @@ copy_runtime_inputs() {
 
 prepare_context() {
   local context=$1 file_list=$2
-  mkdir -p "$context/app" "$context/avatar"
+  mkdir -p "$context/app"
   copy_runtime_inputs "$context" "$file_list"
-  python3 "$context/app/scripts/build_avatar_assets.py" \
-    --output-dir "$context/avatar" >/dev/null
 }
 
 build_and_push_runtime() {
@@ -374,10 +367,10 @@ login_vm_to_registry() {
 
 deploy_images() {
   local runtime_ref=$1 caddy_ref=$2 source_commit=$3
-  local avatar_sha256=$4 deployment_kind=$5 public_url=$6
+  local deployment_kind=$4 public_url=$5
   login_vm_to_registry
   ssh_vm bash -s -- \
-    "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
+    "$runtime_ref" "$caddy_ref" "$source_commit" \
     "$deployment_kind" "$public_url" < "$REPO/deploy/install.sh"
 }
 
@@ -475,11 +468,6 @@ build_root=$(mktemp -d /tmp/xc-body-image.XXXXXX)
 context=$build_root/context
 file_list=$build_root/files
 prepare_context "$context" "$file_list"
-avatar_sha256=$(sha256_file \
-  "$context/avatar/xc-body-layered.rgb565le")
-[ "$avatar_sha256" = "$EXPECTED_AVATAR_SHA256" ] \
-  || die "generated avatar does not match the reviewed payload" 65
-
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 build_and_push_runtime \
   "$context" "$source_commit" "$dirty" "$built_at"
@@ -490,13 +478,12 @@ runtime_ref=$RUNTIME_TAG@$runtime_digest
 caddy_ref=$CADDY_TAG@$caddy_digest
 
 deploy_images \
-  "$runtime_ref" "$caddy_ref" "$source_commit" "$avatar_sha256" \
+  "$runtime_ref" "$caddy_ref" "$source_commit" \
   "$deployment_kind" "$PUBLIC_URL"
 
 cat > "$STATE_DIR/last-deploy-state.txt" <<EOF
 status=$deployment_kind
 source_commit=$source_commit
-avatar_sha256=$avatar_sha256
 runtime_image=$runtime_ref
 caddy_image=$caddy_ref
 deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)

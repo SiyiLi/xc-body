@@ -26,6 +26,7 @@ constexpr uint8_t REG_MOVING           = 66;  // 0x42
 // Protocol instruction codes.
 constexpr uint8_t INST_READ  = 0x02;
 constexpr uint8_t INST_WRITE = 0x03;
+constexpr uint8_t INST_SYNC_WRITE = 0x83;
 
 // Hard physical limits enforced inside this driver. The caller is expected
 // to have already clamped to its own application limits, but we re-check
@@ -179,6 +180,48 @@ int FeetechScs::WritePos(uint8_t id, uint16_t position, uint16_t time_ms, uint16
         static_cast<uint8_t>(speed & 0xFF),
     };
     return write_reg(id, REG_GOAL_POSITION_L, params, 6);
+}
+
+int FeetechScs::SyncWritePos(
+    uint8_t first_id,
+    uint16_t first_position,
+    uint8_t second_id,
+    uint16_t second_position,
+    uint16_t time_ms,
+    uint16_t speed)
+{
+    if (!_ready) return -1;
+    first_position = std::min(first_position, HARD_POS_MAX);
+    second_position = std::min(second_position, HARD_POS_MAX);
+
+    constexpr uint8_t data_length = 6;
+    constexpr uint8_t servo_count = 2;
+    constexpr uint8_t packet_length =
+        (data_length + 1) * servo_count + 4;
+    uint8_t buf[22] = {
+        0xFF, 0xFF, 0xFE, packet_length, INST_SYNC_WRITE,
+        REG_GOAL_POSITION_L, data_length,
+    };
+    size_t offset = 7;
+    auto append_target = [&](uint8_t id, uint16_t position) {
+        buf[offset++] = id;
+        buf[offset++] = static_cast<uint8_t>((position >> 8) & 0xFF);
+        buf[offset++] = static_cast<uint8_t>(position & 0xFF);
+        buf[offset++] = static_cast<uint8_t>((time_ms >> 8) & 0xFF);
+        buf[offset++] = static_cast<uint8_t>(time_ms & 0xFF);
+        buf[offset++] = static_cast<uint8_t>((speed >> 8) & 0xFF);
+        buf[offset++] = static_cast<uint8_t>(speed & 0xFF);
+    };
+    append_target(first_id, first_position);
+    append_target(second_id, second_position);
+    buf[offset] = calc_checksum(buf, offset);
+    ++offset;
+
+    uart_flush_input(_uart);
+    const int written = uart_write_bytes(
+        _uart, reinterpret_cast<const char*>(buf), offset);
+    if (written != static_cast<int>(offset)) return -1;
+    return uart_wait_tx_done(_uart, pdMS_TO_TICKS(100)) == ESP_OK ? 0 : -1;
 }
 
 int FeetechScs::ReadPos(uint8_t id)

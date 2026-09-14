@@ -11,14 +11,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from gateway.embodiment import ExpressionAndIdleError, IntentRequestError
+from gateway.embodiment import IntentRequestError
 from gateway.semantic_e2e import (
     RunnerConfig,
     RunnerConfigError,
     RunnerExecutionError,
     SessionToolCaller,
     _execute_sync,
-    _restore_reviewed_avatar,
+    _require_ready_device,
     load_config,
 )
 from stackchan.adapter import StackChanAdapterError
@@ -133,11 +133,7 @@ def create_service_server(
             return [_error_content(TextContent, f"unknown tool: {name!r}")]
         try:
             result = await executor.execute(arguments or {})
-        except (
-            ExpressionAndIdleError,
-            IntentRequestError,
-            StackChanAdapterError,
-        ) as exc:
+        except (IntentRequestError, StackChanAdapterError) as exc:
             return [_error_content(TextContent, str(exc))]
         return [
             TextContent(
@@ -161,8 +157,6 @@ async def run_service_streams(
     upstream_write: Any,
     downstream_read: Any,
     downstream_write: Any,
-    *,
-    avatar_path: str,
 ) -> None:
     """Run the service over injected streams for production and tests."""
 
@@ -176,10 +170,7 @@ async def run_service_streams(
     async with ClientSession(upstream_read, upstream_write) as session:
         await session.initialize()
         try:
-            verified_session_id = await _restore_reviewed_avatar(
-                session,
-                avatar_path,
-            )
+            verified_session_id = await _require_ready_device(session)
         except RunnerExecutionError as exc:
             raise SemanticServiceError(str(exc)) from exc
         caller = SessionToolCaller(session, asyncio.get_running_loop())
@@ -218,7 +209,6 @@ async def run_stdio_service(config: RunnerConfig) -> None:
                     await run_service_streams(
                         *upstream_streams[:2],
                         *downstream_streams,
-                        avatar_path=config.avatar_path,
                     )
     except SemanticServiceError:
         raise
@@ -246,11 +236,7 @@ def main(
 ) -> int:
     args = _argument_parser().parse_args(argv)
     try:
-        config = load_config(
-            url=args.url,
-            environ=environ,
-            require_avatar=True,
-        )
+        config = load_config(url=args.url, environ=environ)
         asyncio.run(run_stdio_service(config))
     except (RunnerConfigError, SemanticServiceError) as exc:
         print(

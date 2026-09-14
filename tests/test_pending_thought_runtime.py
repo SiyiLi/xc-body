@@ -43,7 +43,7 @@ class RecordingCaller:
 
 def ready_body(caller, **kwargs):
     body = StackChanThoughtBody(caller, **kwargs)
-    body.mark_avatar_ready(_READY_STATUS["session_id"])
+    body.mark_device_ready(_READY_STATUS["session_id"])
     return body
 
 
@@ -91,10 +91,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-message-id"), "eval:42")
         self.assertEqual(
             caller.calls,
-            [
-                ("get_status", {}),
-                ("set_avatar", {"face": "idle"}),
-            ],
+            [("get_status", {})],
         )
 
     @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
@@ -121,16 +118,16 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             PendingThoughtRuntimeError,
-            "reviewed avatar is not ready",
+            "device is not ready",
         ):
             body.knock("eval:unverified")
         self.assertEqual(caller.calls, [])
 
-        body.mark_avatar_ready("device-session-1")
+        body.mark_device_ready("device-session-1")
         caller.status["session_id"] = "device-session-2"
         with self.assertRaisesRegex(
             PendingThoughtRuntimeError,
-            "reviewed avatar is not ready",
+            "device is not ready",
         ):
             body.knock("eval:reconnected")
         self.assertEqual(caller.calls, [("get_status", {})])
@@ -349,81 +346,6 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
         self.assertFalse(direct.is_alive())
         self.assertTrue(knock_finished.is_set())
-
-    def test_runtime_restores_base_view_after_stream_failure(self):
-        runtime = PendingThoughtRuntime()
-        runtime.machine = Mock(pending_thought_id=None)
-        runtime.body = Mock()
-        runtime.body.tell_direct_stream.side_effect = PendingThoughtRuntimeError(
-            "stream audio: RuntimeError",
-            metrics={"gateway_first_audio_frame_sent_ms": 1000},
-        )
-
-        with self.assertRaises(PendingThoughtRuntimeError):
-            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
-
-        runtime.body.restore_base_view.assert_called_once_with()
-
-    def test_restore_failure_preserves_stream_failure_metrics(self):
-        runtime = PendingThoughtRuntime()
-        runtime.machine = Mock(pending_thought_id=None)
-        runtime.body = Mock()
-        runtime.body.tell_direct_stream.side_effect = PendingThoughtRuntimeError(
-            "stream audio: ConnectionError",
-            metrics={
-                "gateway_first_audio_frame_sent_ms": 1000,
-                "streamed_audio_frames": 1,
-            },
-        )
-        runtime.body.restore_base_view.side_effect = RuntimeError(
-            "device unavailable"
-        )
-
-        with self.assertRaises(PendingThoughtRuntimeError) as raised:
-            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
-
-        self.assertEqual(
-            raised.exception.metrics["gateway_first_audio_frame_sent_ms"],
-            1000,
-        )
-        runtime.body.restore_base_view.assert_called_once_with()
-
-    def test_restore_failure_preserves_completed_stream_metrics(self):
-        runtime = PendingThoughtRuntime()
-        runtime.machine = Mock(pending_thought_id=None)
-        runtime.body = Mock()
-        metrics = {
-            "streamed_audio_frames": 5,
-            "playback_audio_ms": 300,
-            "gateway_first_audio_frame_sent_ms": 1000,
-            "gateway_playback_completed_ms": 1300,
-        }
-        runtime.body.tell_direct_stream.return_value = metrics
-        runtime.body.restore_base_view.side_effect = RuntimeError(
-            "restore failed"
-        )
-
-        with self.assertRaises(PendingThoughtRuntimeError) as raised:
-            asyncio.run(runtime.tell_direct_stream("robot:1", Mock()))
-
-        self.assertEqual(raised.exception.metrics, metrics)
-        runtime.body.restore_base_view.assert_called_once_with()
-
-    def test_base_view_cache_is_invalidated_for_replacement_session(self):
-        caller = RecordingCaller()
-        body = ready_body(caller)
-        body.set_base_view()
-        caller.calls.clear()
-
-        body.mark_avatar_ready("device-session-2")
-        caller.status["session_id"] = "device-session-2"
-        body.set_base_view()
-
-        self.assertEqual(
-            caller.calls,
-            [("set_avatar", {"face": "idle"})],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

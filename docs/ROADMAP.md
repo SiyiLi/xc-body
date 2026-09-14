@@ -23,34 +23,37 @@ performs a short attention movement, waits for physical settle, and then speaks
 the answer without the pending-offer consent cycle. Physical acceptance also
 measures and bounds the wait from stopping the recording to hearing speech.
 
-The device also adds a full-screen avatar with compact status icons, swipe-up
-volume settings, visible battery and charging state, and restrained
-power-aware standby. See [`MILESTONE_4.md`](MILESTONE_4.md) for the accepted
-contract and candidate record.
+The device also added the then-current full-screen presence with compact status
+icons, swipe-up volume settings, visible battery and charging state, and
+restrained power-aware standby. Milestone 5 replaces that renderer while
+preserving the accepted interaction behavior. See
+[`MILESTONE_4.md`](MILESTONE_4.md) for the historical acceptance record.
 
 ## Milestone 5: Expression and Presence
 
-Direct answers gain one of six named expressions. Each expression combines a
-deterministic face animation and reviewed head movement. The `agree` expression
-uses one restrained nod. `Neutral` is the fallback base presence, not a seventh
-expression.
+The legacy layered renderer is replaced by saved expressions. Each expression
+combines deterministic face animation and reviewed head movement. The `agree`
+expression uses one restrained nod. `idle` is neutral presence, not an eighth
+motor recipe.
 
 Active scope:
 
-- one fixed projection over the complete OpenClaw answer;
-- strict structured output containing optional speech and an expression name;
-- replacement of the direct turn's fixed attention behavior;
+- fixed `curious` replacement for direct attention and the offer knock;
+- one speaking GIF owned by the existing TTS lifecycle;
+- a USB-customizable `touch` recipe using the same expression schema;
 - deterministic physical recipes and exact safe return;
-- expression-only turns when OpenClaw explicitly requests no audio; and
-- a USB-only loop to preview and store robot-specific motor calibration.
+- a USB-only loop to preview and store robot-specific motor calibration; and
+- removal of the layered avatar, mouth, blink, fetch, and checksum lifecycle.
 
-After the expression path is stable, neutral presence may add sparse gaze or
+After the expression path is stable, idle presence may add sparse gaze or
 posture changes and local touch reactions. Rest remains normal, activity is
 strictly budgeted, and interaction or low-power state suspends ambient motion.
 These local behaviors create no OpenClaw or Telegram traffic.
 
-Background offers retain their existing behavior. See
-[`MILESTONE_5.md`](MILESTONE_5.md) for the active boundary.
+Direct conversation and background offers retain their existing lifecycle.
+Touch consent follows a successful local reaction and is ignored during direct
+attention and speech. See [`MILESTONE_5.md`](MILESTONE_5.md) for the active
+boundary.
 
 ## Milestone 6: Explicit Camera Observation
 

@@ -18,9 +18,6 @@ COPY app/gateway /opt/xc-body/gateway
 COPY app/stackchan /opt/xc-body/stackchan
 COPY app/contracts /opt/xc-body/contracts
 COPY app/deploy /opt/xc-body/deploy
-COPY --chmod=0444 avatar/xc-body-layered.rgb565le \
-    /opt/xc-body/xc-body-native-320.rgb565le
-
 ARG GIT_COMMIT=unknown
 ARG GIT_DIRTY=false
 ARG BUILT_AT=unknown

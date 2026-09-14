@@ -1,12 +1,14 @@
 #include "lvgl_gif.h"
 #include <esp_log.h>
+#include <algorithm>
 #include <cstring>
 
 #define TAG "LvglGif"
 
 LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
     : gif_(nullptr), timer_(nullptr), last_call_(0), playing_(false), loaded_(false),
-      loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0) {
+      decode_failed_(false), loop_delay_ms_(0), loop_waiting_(false),
+      loop_wait_start_(0) {
     if (!img_dsc || !img_dsc->data) {
         ESP_LOGE(TAG, "Invalid image descriptor");
         return;
@@ -31,7 +33,7 @@ LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
 
     // Render first frame
     if (gif_->canvas) {
-        gd_render_frame(gif_, gif_->canvas);
+        gd_render_frame(gif_, gif_->canvas, nullptr);
     }
 
     loaded_ = true;
@@ -66,6 +68,7 @@ void LvglGif::Start() {
     }
 
     if (timer_) {
+        decode_failed_ = false;
         playing_ = true;
         loop_waiting_ = false;  // Reset loop waiting state
         last_call_ = lv_tick_get();
@@ -93,11 +96,15 @@ void LvglGif::Resume() {
         return;
     }
 
-    if (timer_) {
-        playing_ = true;
-        lv_timer_resume(timer_);
-        ESP_LOGD(TAG, "GIF animation resumed");
+    if (!timer_) {
+        return;
     }
+
+    playing_ = true;
+    last_call_ = lv_tick_get();
+    lv_timer_resume(timer_);
+    lv_timer_reset(timer_);
+    ESP_LOGD(TAG, "GIF animation resumed");
 }
 
 void LvglGif::Stop() {
@@ -113,7 +120,7 @@ void LvglGif::Stop() {
         gd_rewind(gif_);
         // Render first frame without advancing
         if (gif_->canvas) {
-            gd_render_frame(gif_, gif_->canvas);
+            gd_render_frame(gif_, gif_->canvas, nullptr);
         }
         ESP_LOGD(TAG, "GIF animation stopped and rewound");
     }
@@ -121,6 +128,10 @@ void LvglGif::Stop() {
 
 bool LvglGif::IsPlaying() const {
     return playing_;
+}
+
+bool LvglGif::HasDecodeFailure() const {
+    return decode_failed_;
 }
 
 bool LvglGif::IsLoaded() const {
@@ -165,7 +176,8 @@ uint16_t LvglGif::height() const {
     return gif_->height;
 }
 
-void LvglGif::SetFrameCallback(std::function<void()> callback) {
+void LvglGif::SetFrameCallback(
+        std::function<void(const lv_area_t&)> callback) {
     frame_callback_ = callback;
 }
 
@@ -183,51 +195,79 @@ void LvglGif::NextFrame() {
         }
         // Loop delay completed, continue playing
         loop_waiting_ = false;
+        // An intentional pause is not playback lateness. Start the next
+        // cycle from the current tick instead of catching up the wait.
+        last_call_ = lv_tick_get();
         ESP_LOGD(TAG, "Loop delay completed, continuing GIF");
-    }
-
-    // Check if enough time has passed for the next frame
-    uint32_t elapsed = lv_tick_elaps(last_call_);
-    if (elapsed < gif_->gce.delay * 10) {
+        lv_area_t frame_area;
+        if (gif_->canvas &&
+            gd_render_frame(gif_, gif_->canvas, &frame_area) &&
+            frame_callback_) {
+            frame_callback_(frame_area);
+        }
         return;
     }
 
-    last_call_ = lv_tick_get();
+    // Check if enough time has passed for the next frame.
+    uint32_t delay_ms = gif_->gce.delay * 10;
+    uint32_t elapsed = lv_tick_elaps(last_call_);
+    if (elapsed < delay_ms) {
+        return;
+    }
 
-    // Save file position before getting next frame to detect loop
+    last_call_ += delay_ms;
+
+    // Decode at most one frame per LVGL callback. Playback keeps its absolute
+    // deadline, so later callbacks may catch up without one unbounded
+    // decode/render burst.
+    const bool restores_background =
+        gif_->gce.disposal == 2 && gif_->fw > 0 && gif_->fh > 0;
+    const lv_area_t disposal_area = {
+        .x1 = gif_->fx,
+        .y1 = gif_->fy,
+        .x2 = gif_->fx + gif_->fw - 1,
+        .y2 = gif_->fy + gif_->fh - 1,
+    };
     uint32_t pos_before = gif_->f_rw_p;
-
-    // Get next frame
     int has_next = gd_get_frame(gif_);
-    if (has_next == 0) {
-        // Animation truly finished (non-infinite loop)
+    if (has_next <= 0) {
         playing_ = false;
         if (timer_) {
             lv_timer_pause(timer_);
         }
-        ESP_LOGD(TAG, "GIF animation completed");
+        if (has_next < 0) {
+            decode_failed_ = true;
+            ESP_LOGE(TAG, "GIF animation decode failed");
+        } else {
+            ESP_LOGD(TAG, "GIF animation completed");
+        }
         return;
     }
 
-    // Detect loop by checking if file position jumped back (rewound to start)
-    // This works for looping GIFs regardless of when loop_count is set
+    // Detect a rewind before rendering the first frame of the next loop.
     if (loop_delay_ms_ > 0 && gif_->f_rw_p < pos_before) {
-        // File position decreased, meaning GIF looped back to beginning
-        // Start waiting before rendering this frame
         loop_waiting_ = true;
         loop_wait_start_ = lv_tick_get();
         ESP_LOGD(TAG, "GIF completed one cycle, waiting %lu ms before next loop", loop_delay_ms_);
         return;
     }
 
-    // Render current frame
-    if (gif_->canvas) {
-        gd_render_frame(gif_, gif_->canvas);
-        
-        // Call frame callback if set
-        if (frame_callback_) {
-            frame_callback_();
+    lv_area_t frame_area;
+    bool frame_changed = gif_->canvas &&
+        gd_render_frame(gif_, gif_->canvas, &frame_area);
+    if (restores_background) {
+        if (frame_changed) {
+            frame_area.x1 = std::min(frame_area.x1, disposal_area.x1);
+            frame_area.y1 = std::min(frame_area.y1, disposal_area.y1);
+            frame_area.x2 = std::max(frame_area.x2, disposal_area.x2);
+            frame_area.y2 = std::max(frame_area.y2, disposal_area.y2);
+        } else {
+            frame_area = disposal_area;
         }
+        frame_changed = true;
+    }
+    if (frame_changed && frame_callback_) {
+        frame_callback_(frame_area);
     }
 }
 

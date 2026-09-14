@@ -277,6 +277,51 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             1200,
         )
 
+    async def test_body_failure_does_not_wait_for_stuck_tts_cleanup(self):
+        producer_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        cleanup_finished = asyncio.Event()
+
+        class Runtime:
+            async def tell_direct_stream(self, _turn_id, _pcm):
+                await producer_started.wait()
+                raise PendingThoughtRuntimeError("motion failed")
+
+        async def synthesize(_answer, _voice, _sink, **_kwargs):
+            producer_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await release_cleanup.wait()
+                raise
+            finally:
+                cleanup_finished.set()
+
+        with self.assertLogs(
+            "gateway.direct_conversation", level="ERROR"
+        ) as logs, patch(
+            "gateway.direct_conversation.stream_speech_pcm",
+            new=synthesize,
+        ), patch(
+            "gateway.direct_conversation."
+            "_PRODUCER_CLEANUP_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            with self.assertRaises(DirectConversationError):
+                await asyncio.wait_for(
+                    speak_direct_answer(
+                        Runtime(), "robot:1", "answer", "voice"
+                    ),
+                    timeout=0.5,
+                )
+
+        self.assertTrue(cleanup_started.is_set())
+        self.assertIn("cleanup timed out", "\n".join(logs.output))
+        release_cleanup.set()
+        await asyncio.wait_for(cleanup_finished.wait(), timeout=0.5)
+
     async def test_mailbox_separates_capture_slot_from_active_turns(self):
         mailbox = VoiceMailbox()
 

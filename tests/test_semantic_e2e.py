@@ -1,4 +1,4 @@
-import importlib
+import asyncio
 import json
 import unittest
 
@@ -14,119 +14,62 @@ class SemanticE2eRunnerTests(unittest.TestCase):
             parse_request("idle")
 
     def test_config_uses_only_explicit_url_and_environment_token(self):
-        from gateway.semantic_e2e import (
-            AVATAR_PATH_ENV,
-            TOKEN_ENV,
-            URL_ENV,
-            load_config,
-        )
+        from gateway.semantic_e2e import TOKEN_ENV, URL_ENV, load_config
 
         config = load_config(
             url="http://127.0.0.1:8767/mcp",
-            environ={
-                TOKEN_ENV: "test-token",
-                AVATAR_PATH_ENV: "/state/native.rgb565le",
-            },
+            environ={TOKEN_ENV: "test-token"},
         )
         environment_config = load_config(
             environ={
                 URL_ENV: "https://daemon.invalid/mcp",
                 TOKEN_ENV: "environment-token",
-                AVATAR_PATH_ENV: "/state/native.rgb565le",
             }
         )
 
         self.assertEqual(config.url, "http://127.0.0.1:8767/mcp")
         self.assertEqual(config.token, "test-token")
         self.assertNotIn("test-token", repr(config))
-        self.assertEqual(config.avatar_path, "/state/native.rgb565le")
-        self.assertNotIn("native.rgb565le", repr(config))
         self.assertEqual(environment_config.url, "https://daemon.invalid/mcp")
 
     def test_config_rejects_plaintext_non_loopback_url(self):
-        from gateway.semantic_e2e import (
-            AVATAR_PATH_ENV,
-            TOKEN_ENV,
-            RunnerConfigError,
-            load_config,
-        )
+        from gateway.semantic_e2e import TOKEN_ENV, RunnerConfigError, load_config
 
         with self.assertRaisesRegex(RunnerConfigError, "must use HTTPS"):
             load_config(
                 url="http://daemon.invalid/mcp",
-                environ={
-                    TOKEN_ENV: "test-token",
-                    AVATAR_PATH_ENV: "/state/native.rgb565le",
-                },
+                environ={TOKEN_ENV: "test-token"},
             )
 
-    def test_avatar_restore_requires_exact_reviewed_digest(self):
+    def test_readiness_requires_connected_initialized_device(self):
         from gateway import semantic_e2e
-        from stackchan.avatar_verification import REVIEWED_AVATAR_CHECKSUM
 
         class Session:
-            def __init__(self, checksum, session_ids=None):
-                self.checksum = checksum
-                self.session_ids = iter(
-                    session_ids or ("device-session", "device-session")
-                )
+            def __init__(self, status):
+                self.status = status
                 self.calls = []
 
             async def call_tool(self, name, arguments):
                 self.calls.append((name, arguments))
-                if name == "get_status":
-                    return {
-                        "connected": True,
-                        "initialized": True,
-                        "session_id": next(self.session_ids),
-                    }
-                payload = {"ok": True, "checksum": self.checksum}
-                return {
-                    "content": [
-                        {"type": "text", "text": json.dumps(payload)}
-                    ],
-                    "isError": False,
-                }
+                return self.status
 
-        reviewed = Session(REVIEWED_AVATAR_CHECKSUM)
-        asyncio = importlib.import_module("asyncio")
-        verified_session_id = asyncio.run(
-            semantic_e2e._restore_reviewed_avatar(
-                reviewed,
-                "/state/native.rgb565le",
-            )
+        ready = Session(
+            {
+                "connected": True,
+                "initialized": True,
+                "session_id": "device-session",
+            }
         )
-        self.assertEqual(verified_session_id, "device-session")
         self.assertEqual(
-            [call[0] for call in reviewed.calls],
-            ["get_status", "load_avatar_set", "get_status"],
+            asyncio.run(semantic_e2e._require_ready_device(ready)),
+            "device-session",
         )
+        self.assertEqual(ready.calls, [("get_status", {})])
 
-        wrong = Session("sha256:" + ("a" * 64))
-        with self.assertRaisesRegex(
-            semantic_e2e.RunnerExecutionError,
-            "does not match",
-        ):
-            asyncio.run(
-                semantic_e2e._restore_reviewed_avatar(
-                    wrong,
-                    "/state/native.rgb565le",
-                )
-            )
-        changed = Session(
-            REVIEWED_AVATAR_CHECKSUM,
-            session_ids=("session-1", "session-2"),
-        )
-        with self.assertRaisesRegex(
-            semantic_e2e.RunnerExecutionError,
-            "session changed",
-        ):
-            asyncio.run(
-                semantic_e2e._restore_reviewed_avatar(
-                    changed,
-                    "/state/native.rgb565le",
-                )
-            )
+        unavailable = Session({"connected": False})
+        with self.assertRaises(semantic_e2e.RunnerExecutionError):
+            asyncio.run(semantic_e2e._require_ready_device(unavailable))
+
 
 if __name__ == "__main__":
     unittest.main()

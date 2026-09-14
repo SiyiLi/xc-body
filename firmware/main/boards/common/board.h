@@ -47,7 +47,6 @@ using NetworkEventCallback = std::function<void(NetworkEvent event, const std::s
 void* create_board();
 class AudioCodec;
 class Display;
-struct cJSON;
 class Board {
 private:
     Board(const Board&) = delete; // 禁用拷贝构造函数
@@ -83,26 +82,19 @@ public:
     virtual std::string GetSystemInfoJson();
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     virtual bool CanPowerSaveWithTransport() { return false; }
+    // Admission reserves the physical owner before a caller acknowledges.
+    // The scheduled maintenance operation must consume that reservation.
+    virtual bool BeginFirmwareMaintenance() { return true; }
+    virtual bool ConsumeFirmwareMaintenance() { return true; }
+    virtual void EndFirmwareMaintenance() {}
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
-    // Phase 4 audio (Issue #76): TTS playback hooks. Default no-op so non-
-    // stackchan boards are unaffected; boards with an avatar / mouth display
-    // override these to drive lip-sync animation while TTS audio is playing.
+    // TTS playback hooks. Default no-op for boards without a speaking visual.
     virtual void OnTtsStart() {}
-    virtual void OnTtsAudioFrame() {}
     virtual void OnTtsStop() {}
-    virtual bool IsTouchReactionActive() const { return false; }
+    virtual bool ShouldDeferAudioPlayback() const { return false; }
     virtual void OnAssetsUpdated() {}
     virtual void OnDeviceStateChanged(DeviceState state) { (void)state; }
-
-    // Phase 4.5 avatar (saiverse-stackchan-addon): dynamic avatar set fetch
-    // notification dispatched from Application::OnIncomingJson. The cJSON
-    // object carries url / token / mode / checksum / expected_size fields
-    // (see docs/intent/stackchan_avatar_pipeline.md §C-3 in the SAIVerse
-    // repository). Default no-op so non-stackchan boards are unaffected;
-    // StackChanBoard overrides to spawn a worker task that performs the
-    // HTTP fetch via AvatarSetFetcher and loads the result into avatar_set_.
-    virtual void OnAvatarSetFetch(const cJSON* root) { (void)root; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

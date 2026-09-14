@@ -21,7 +21,7 @@
 
 namespace {
 
-constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(5);
+constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(8);
 
 ListeningProfile ParseListenProfile(const cJSON* root) {
     auto profile = cJSON_GetObjectItem(root, "profile");
@@ -80,10 +80,16 @@ bool Application::SetDeviceState(DeviceState state) {
     return state_machine_.TransitionTo(state);
 }
 
-void Application::ResumePreparedAudioPlayback() {
-    if (audio_service_.ReleasePreparedAudioPlayback()) {
-        Board::GetInstance().OnTtsStart();
+void Application::ResumeDeferredAudioPlayback() {
+    if (GetDeviceState() != kDeviceStateSpeaking) {
+        return;
     }
+    auto& board = Board::GetInstance();
+    // Prepare the visual before waking the audio task. GIF setup is optional,
+    // but it must not compete with the first codec writes when it is present.
+    board.OnTtsStart();
+    audio_service_.ReleasePreparedAudioPlayback();
+    audio_service_.ReleaseDirectAudioPlayback();
 }
 
 void Application::Initialize() {
@@ -104,11 +110,6 @@ void Application::Initialize() {
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
-    };
-    callbacks.on_audio_output = [this]() {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
-            Board::GetInstance().OnTtsAudioFrame();
-        }
     };
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
@@ -174,13 +175,16 @@ void Application::Initialize() {
                 display->SetStatus(Lang::Strings::DETECTING_MODULE);
                 break;
             case NetworkEvent::ModemErrorNoSim:
-                Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_PIN);
+                Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR,
+                      Lang::Sounds::OGG_ERR_PIN);
                 break;
             case NetworkEvent::ModemErrorRegDenied:
-                Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_REG);
+                Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR,
+                      Lang::Sounds::OGG_ERR_REG);
                 break;
             case NetworkEvent::ModemErrorInitFailed:
-                Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR, "triangle_exclamation", Lang::Sounds::OGG_EXCLAMATION);
+                Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR,
+                      Lang::Sounds::OGG_EXCLAMATION);
                 break;
             case NetworkEvent::ModemErrorTimeout:
                 display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
@@ -220,7 +224,8 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+            Alert(Lang::Strings::ERROR, last_error_message_.c_str(),
+                  Lang::Sounds::OGG_EXCLAMATION);
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -396,9 +401,14 @@ void Application::CheckAssetsVersion() {
     std::string download_url = settings.GetString("download_url");
 
     if (!download_url.empty()) {
+        if (!board.BeginFirmwareMaintenance()) {
+            ESP_LOGW(TAG, "Assets update rejected during active maintenance");
+            return;
+        }
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
-        Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
+        Alert(Lang::Strings::LOADING_ASSETS, message,
+              Lang::Sounds::OGG_UPGRADE);
         
         // Wait for the audio service to be idle for 3 seconds
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -414,11 +424,14 @@ void Application::CheckAssetsVersion() {
             });
         });
 
+        board.EndFirmwareMaintenance();
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         vTaskDelay(pdMS_TO_TICKS(1000));
 
         if (!success) {
-            Alert(Lang::Strings::ERROR, Lang::Strings::DOWNLOAD_ASSETS_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+            Alert(Lang::Strings::ERROR,
+                  Lang::Strings::DOWNLOAD_ASSETS_FAILED,
+                  Lang::Sounds::OGG_EXCLAMATION);
             vTaskDelay(pdMS_TO_TICKS(2000));
             SetDeviceState(kDeviceStateActivating);
             return;
@@ -431,7 +444,6 @@ void Application::CheckAssetsVersion() {
         board.OnAssetsUpdated();
     }
     display->SetChatMessage("system", "");
-    display->SetEmotion("microchip_ai");
 }
 
 void Application::CheckNewVersion() {
@@ -462,6 +474,14 @@ void Application::CheckNewVersion() {
     }
 
     if (ota_->HasNewVersion()) {
+        auto& board = Board::GetInstance();
+        if (!board.BeginFirmwareMaintenance()) {
+            ESP_LOGW(
+                TAG,
+                "Automatic firmware upgrade rejected while physical "
+                "behavior is active");
+            return;
+        }
         UpgradeFirmware(
             ota_->GetFirmwareUrl(),
             ota_->GetFirmwareVersion(),
@@ -481,19 +501,15 @@ void Application::CheckNewVersion() {
         return;
     }
 
-    bool expected = false;
-    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
-            expected, true)) {
-        ESP_LOGW(TAG, "Another XC Body update is already in progress");
+    auto& board = Board::GetInstance();
+    if (!board.BeginFirmwareMaintenance()) {
+        ESP_LOGW(TAG, "Assets update rejected during active maintenance");
         return;
     }
-
-    auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     Alert(
         Lang::Strings::OTA_UPGRADE,
         Lang::Strings::LOADING_ASSETS,
-        "cloud_arrow_down",
         Lang::Sounds::OGG_UPGRADE);
     SetDeviceState(kDeviceStateUpgrading);
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -513,7 +529,7 @@ void Application::CheckNewVersion() {
             // to that same blocked task leaves the screen frozen at 0%.
             display->SetChatMessage("system", buffer);
         });
-    firmware_upgrade_in_progress_.store(false);
+    board.EndFirmwareMaintenance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
     if (!success) {
         ESP_LOGW(
@@ -619,16 +635,22 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "play") == 0) {
                 Schedule([this, &board]() {
-                    bool defer_playback = board.IsTouchReactionActive();
+                    bool defer_playback =
+                        board.ShouldDeferAudioPlayback();
+                    if (!defer_playback) {
+                        board.OnTtsStart();
+                    }
                     if (!audio_service_.CommitPreparedAudio(defer_playback)) {
                         ESP_LOGE(TAG, "Prepared audio transfer incomplete");
+                        if (!defer_playback) {
+                            board.OnTtsStop();
+                        }
                         SetDeviceState(kDeviceStateIdle);
                         return;
                     }
-                    if (!defer_playback) {
-                        board.OnTtsStart();
-                    } else if (!board.IsTouchReactionActive()) {
-                        ResumePreparedAudioPlayback();
+                    if (defer_playback &&
+                        !board.ShouldDeferAudioPlayback()) {
+                        ResumeDeferredAudioPlayback();
                     }
                 });
             } else if (strcmp(state->valuestring, "start") == 0) {
@@ -637,10 +659,10 @@ void Application::InitializeProtocol() {
                 Schedule([this, &board]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
-                    // Phase 4 audio (Issue #76): drive avatar mouth animation
-                    // for the lifetime of this TTS utterance. Default no-op
-                    // for boards without a mouth display.
-                    board.OnTtsStart();
+                    // Release playback and start any board-coupled visual.
+                    if (!board.ShouldDeferAudioPlayback()) {
+                        ResumeDeferredAudioPlayback();
+                    }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 auto transfer_id = cJSON_GetObjectItem(root, "transfer_id");
@@ -765,15 +787,14 @@ void Application::InitializeProtocol() {
                         SetDeviceState(kDeviceStateIdle);
                         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
                     }
-                    // Phase 4 audio (Issue #76): stop the avatar mouth
-                    // animation unconditionally on tts.stop. A wake-word /
+                    // Stop the board playback visual unconditionally on
+                    // tts.stop. A wake-word /
                     // button interrupt can call AbortSpeaking() and move
                     // the device out of Speaking before the server's
                     // tts.stop arrives, in which case the previous-state
                     // guard above is false but the audio playback has
-                    // ended and the mouth animation must still stop.
-                    // OnTtsStop() is idempotent (no-op for boards without
-                    // an avatar / when lip-sync is already stopped).
+                    // ended and the playback visual must still stop.
+                    // OnTtsStop() is idempotent for boards without one.
                     board.OnTtsStop();
                     if (!requested_drain_id.empty() && protocol_) {
                         cJSON* result = cJSON_CreateObject();
@@ -860,13 +881,6 @@ void Application::InitializeProtocol() {
                     display->SetChatMessage("user", message.c_str());
                 });
             }
-        } else if (strcmp(type->valuestring, "llm") == 0) {
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(emotion)) {
-                Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
-                    display->SetEmotion(emotion_str.c_str());
-                });
-            }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
             if (cJSON_IsObject(payload)) {
@@ -878,9 +892,16 @@ void Application::InitializeProtocol() {
                 ESP_LOGI(TAG, "System command: %s", command->valuestring);
                 if (strcmp(command->valuestring, "reboot") == 0) {
                     // Do a reboot if user requests a OTA update
-                    Schedule([this]() {
-                        Reboot();
-                    });
+                    if (!board.BeginFirmwareMaintenance()) {
+                        ESP_LOGW(
+                            TAG,
+                            "Reboot rejected while physical behavior is "
+                            "active");
+                    } else {
+                        Schedule([this]() {
+                            Reboot();
+                        });
+                    }
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
@@ -888,18 +909,12 @@ void Application::InitializeProtocol() {
         } else if (strcmp(type->valuestring, "alert") == 0) {
             auto status = cJSON_GetObjectItem(root, "status");
             auto message = cJSON_GetObjectItem(root, "message");
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
-                Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::OGG_VIBRATION);
+            if (cJSON_IsString(status) && cJSON_IsString(message)) {
+                Alert(status->valuestring, message->valuestring,
+                      Lang::Sounds::OGG_VIBRATION);
             } else {
-                ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+                ESP_LOGW(TAG, "Alert command requires status and message");
             }
-        } else if (strcmp(type->valuestring, "avatar_set_fetch") == 0) {
-            // Phase 4.5 avatar (saiverse-stackchan-addon): dispatch to the
-            // current board for HTTP fetch + SHA256 verify + AvatarSet adoption.
-            // Non-stackchan boards default to a no-op (Board::OnAvatarSetFetch).
-            // See docs/intent/stackchan_avatar_pipeline.md §C-3 (SAIVerse).
-            board.OnAvatarSetFetch(root);
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
@@ -939,7 +954,8 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     }};
 
     // This sentence uses 9KB of SRAM, so we need to wait for it to finish
-    Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_ACTIVATION);
+    Alert(Lang::Strings::ACTIVATION, message.c_str(),
+          Lang::Sounds::OGG_ACTIVATION);
 
     for (const auto& digit : code) {
         auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
@@ -950,11 +966,11 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     }
 }
 
-void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
-    ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
+void Application::Alert(const char* status, const char* message,
+                        const std::string_view& sound) {
+    ESP_LOGW(TAG, "Alert %s: %s", status, message);
     auto display = Board::GetInstance().GetDisplay();
     display->SetStatus(status);
-    display->SetEmotion(emotion);
     display->SetChatMessage("system", message);
     if (!sound.empty()) {
         audio_service_.PlaySound(sound);
@@ -965,7 +981,6 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
         display->SetChatMessage("system", "");
     }
 }
@@ -1276,13 +1291,13 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    board.OnDeviceStateChanged(new_state);
     
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();  // Clear messages first
-            display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            display->ClearChatMessages();
             audio_service_.EnableRawCapture(false);
             audio_service_.EnableVoiceProcessing(false);
             listening_profile_ = ListeningProfileAfterStop(listening_profile_);
@@ -1290,12 +1305,10 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
 
             // Make sure the selected listening source is running
             bool is_raw_profile = listening_profile_ == kListeningProfileRaw;
@@ -1363,7 +1376,6 @@ void Application::HandleStateChangedEvent() {
             // Do nothing
             break;
     }
-    board.OnDeviceStateChanged(new_state);
 }
 
 void Application::Schedule(std::function<void()>&& callback) {
@@ -1391,7 +1403,7 @@ ListeningMode Application::GetDefaultListeningMode() const {
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
 }
 
-void Application::Reboot() {
+void Application::RestartSystem() {
     ESP_LOGI(TAG, "Rebooting...");
     // Disconnect the audio channel
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
@@ -1404,19 +1416,27 @@ void Application::Reboot() {
     esp_restart();
 }
 
+void Application::Reboot() {
+    auto& board = Board::GetInstance();
+    if (!board.ConsumeFirmwareMaintenance()) {
+        ESP_LOGW(TAG, "Reboot rejected without a maintenance reservation");
+        return;
+    }
+    RestartSystem();
+}
+
 bool Application::UpgradeFirmware(
     const std::string& url,
     const std::string& version,
     const std::string& expected_sha256,
     size_t expected_size) {
-    bool expected = false;
-    if (!firmware_upgrade_in_progress_.compare_exchange_strong(
-            expected, true)) {
-        ESP_LOGW(TAG, "Firmware upgrade already in progress");
+    auto& board = Board::GetInstance();
+    if (!board.ConsumeFirmwareMaintenance()) {
+        ESP_LOGW(
+            TAG,
+            "Firmware upgrade rejected without a maintenance reservation");
         return false;
     }
-
-    auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto previous_state = GetDeviceState();
 
@@ -1430,7 +1450,8 @@ bool Application::UpgradeFirmware(
     }
     ESP_LOGI(TAG, "Starting firmware upgrade from URL: %s", upgrade_url.c_str());
 
-    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download", Lang::Sounds::OGG_UPGRADE);
+    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING,
+          Lang::Sounds::OGG_UPGRADE);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     SetDeviceState(kDeviceStateUpgrading);
@@ -1461,24 +1482,25 @@ bool Application::UpgradeFirmware(
         });
 
     if (!upgrade_success) {
-        firmware_upgrade_in_progress_.store(false);
         // Upgrade failed, restart audio service and continue running
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); // Restore power save level
-        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED,
+              Lang::Sounds::OGG_EXCLAMATION);
         vTaskDelay(pdMS_TO_TICKS(3000));
         SetDeviceState(
             previous_state == kDeviceStateActivating
                 ? kDeviceStateActivating
                 : kDeviceStateIdle);
+        board.EndFirmwareMaintenance();
         return false;
     } else {
         // Upgrade success, reboot immediately
         ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
         display->SetChatMessage("system", "Upgrade successful, rebooting...");
         vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause to show message
-        Reboot();
+        RestartSystem();
         return true;
     }
 }
@@ -1554,12 +1576,14 @@ void Application::SendStackChanEvent(
     const char* event_type,
     const char* subtype,
     uint64_t duration_ms,
-    const char* behavior_id) {
+    const char* behavior_id,
+    const char* detail) {
     std::string event_type_str = event_type ? event_type : "";
     std::string subtype_str = subtype ? subtype : "";
     std::string behavior_id_str = behavior_id ? behavior_id : "";
+    std::string detail_str = detail ? detail : "";
     Schedule([this, event_type_str, subtype_str, duration_ms,
-              behavior_id_str]() {
+              behavior_id_str, detail_str]() {
         if (!protocol_ || !protocol_->IsTransportConnected()) {
             return;
         }
@@ -1578,6 +1602,9 @@ void Application::SendStackChanEvent(
             cJSON_AddStringToObject(
                 root, "behavior_id", behavior_id_str.c_str());
         }
+        if (!detail_str.empty()) {
+            cJSON_AddStringToObject(root, "detail", detail_str.c_str());
+        }
 
         char* str = cJSON_PrintUnformatted(root);
         if (str != nullptr) {
@@ -1585,17 +1612,6 @@ void Application::SendStackChanEvent(
             cJSON_free(str);
         }
         cJSON_Delete(root);
-    });
-}
-
-void Application::SendJsonString(const std::string& json_str) {
-    // Thread-safe generic WS text frame send. Used by board-initiated
-    // notifications such as avatar_set_loaded (Phase 4.5 avatar). Mirrors
-    // SendMcpMessage's main-task Schedule pattern for protocol safety.
-    Schedule([this, json_str]() {
-        if (protocol_) {
-            protocol_->SendText(json_str);
-        }
     });
 }
 

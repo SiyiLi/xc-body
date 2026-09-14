@@ -73,55 +73,33 @@ class StackChanThoughtBody:
         self._playback_url = playback_url
         self._streaming_url = streaming_url
         self._playback_token = playback_token
-        self._verified_session_id: str | None = None
-        self._base_view: str | None = None
+        self._device_session_id: str | None = None
         self._operation_lock = RLock()
-        self._synced_offer_pending: bool | None = None
 
-    def mark_avatar_ready(self, session_id: str) -> None:
-        """Bind reviewed-avatar verification to one device session."""
+    def mark_device_ready(self, session_id: str) -> None:
+        """Bind readiness to one initialized device session."""
 
         if not isinstance(session_id, str) or not session_id:
             raise PendingThoughtRuntimeError(
-                "reviewed avatar verification requires a device session"
+                "device readiness requires a device session"
             )
-        if session_id != self._verified_session_id:
-            self._base_view = None
-            self._synced_offer_pending = None
-        self._verified_session_id = session_id
+        self._device_session_id = session_id
 
     def is_ready(self) -> bool:
-        """Return whether the verified avatar is active in this session."""
+        """Return whether the initialized device session is still active."""
 
-        if self._verified_session_id is None:
+        if self._device_session_id is None:
             return False
         try:
             status = self._call("get_status", {})
         except PendingThoughtRuntimeError:
             return False
-        return ready_device_session_id(status) == self._verified_session_id
+        return ready_device_session_id(status) == self._device_session_id
 
-    def set_base_view(self) -> None:
-        """Keep the idle avatar visible without redundant device calls."""
-
-        with self._operation_lock:
-            if self._base_view == "avatar":
-                return
-            self._call("set_avatar", {"face": "idle"})
-            self._base_view = "avatar"
-
-    def restore_base_view(self) -> None:
-        """Force the base view after a transient interaction ends."""
+    def reconcile_offer_state(self, offer_pending: bool) -> None:
+        """Align the firmware screensaver gate with pending state."""
 
         with self._operation_lock:
-            self._base_view = None
-            self.set_base_view()
-
-    def reconcile_base_view(self, offer_pending: bool) -> None:
-        """Align the avatar and pending-offer gate as one body operation."""
-
-        with self._operation_lock:
-            self.set_base_view()
             self.set_offer_pending(offer_pending)
 
     def knock(self, thought_id: str) -> None:
@@ -129,7 +107,6 @@ class StackChanThoughtBody:
 
         with self._operation_lock:
             self._require_ready()
-            self._base_view = "avatar"
             self._call("perform_knock", {"behavior_id": thought_id})
 
     def tell(self, thought_id: str, audio_base64: str) -> None:
@@ -138,8 +115,6 @@ class StackChanThoughtBody:
         with self._operation_lock:
             self._require_ready()
             self._play_audio(audio_base64, thought_id)
-            self._base_view = None
-            self.set_base_view()
 
     def tell_direct_stream(
         self,
@@ -150,12 +125,11 @@ class StackChanThoughtBody:
 
         with self._operation_lock:
             self._require_ready()
-            session_id = self._verified_session_id
+            session_id = self._device_session_id
             if session_id is None:
                 raise PendingThoughtRuntimeError(
-                    "reviewed avatar session is unavailable"
+                    "device session is unavailable"
                 )
-            self._base_view = "avatar"
             started = time.monotonic()
             self._call(
                 "perform_behavior",
@@ -201,23 +175,18 @@ class StackChanThoughtBody:
             metrics["playback_request_ms"] = round(
                 (time.monotonic() - started) * 1000
             )
-            self._base_view = None
             metrics.update(_stream_playback_metrics(playback))
             return metrics
 
     def set_offer_pending(self, pending: bool) -> None:
-        """Best-effort synchronization of the firmware screensaver gate."""
+        """Best-effort hint controlling the firmware idle screensaver."""
 
         with self._operation_lock:
-            if self._synced_offer_pending == pending:
-                return
             try:
                 self._require_ready()
                 self._call("set_offer_pending", {"pending": pending})
             except PendingThoughtRuntimeError as exc:
                 logger.warning("offer-state synchronization failed: %s", exc)
-                return
-            self._synced_offer_pending = pending
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
         self._play_audio_bytes(base64.b64decode(audio_base64), thought_id)
@@ -329,7 +298,7 @@ class StackChanThoughtBody:
     def _require_ready(self) -> None:
         if not self.is_ready():
             raise PendingThoughtRuntimeError(
-                "reviewed avatar is not ready for the current device session"
+                "device is not ready for the current session"
             )
 
     def _call(
@@ -391,12 +360,12 @@ class PendingThoughtRuntime:
         self.body: StackChanThoughtBody | None = None
         self._caller: SessionToolCaller | None = None
 
-    def mark_avatar_ready(self, session_id: str) -> None:
-        """Record that startup restored the reviewed avatar."""
+    def mark_device_ready(self, session_id: str) -> None:
+        """Record the initialized device session."""
 
         if self.body is None:
             raise PendingThoughtRuntimeError("runtime session is not initialized")
-        self.body.mark_avatar_ready(session_id)
+        self.body.mark_device_ready(session_id)
 
     async def is_ready(self) -> bool:
         """Check readiness without blocking the service event loop."""
@@ -406,7 +375,7 @@ class PendingThoughtRuntime:
         return await asyncio.to_thread(self.body.is_ready)
 
     async def pending_thought_id(self) -> str | None:
-        """Return the current unexpired offer without device side effects."""
+        """Return the current unexpired offer."""
 
         if self.machine is None:
             return None
@@ -414,13 +383,13 @@ class PendingThoughtRuntime:
             lambda: self.machine.pending_thought_id
         )
 
-    async def reconcile_base_view(self) -> str | None:
-        """Expire stale offers and explicitly align the device base view."""
+    async def reconcile_offer_state(self) -> str | None:
+        """Expire stale offers and restore the firmware display hint."""
 
         pending_id = await self.pending_thought_id()
         if self.body is not None:
             await asyncio.to_thread(
-                self.body.reconcile_base_view,
+                self.body.reconcile_offer_state,
                 pending_id is not None,
             )
         return pending_id
@@ -434,30 +403,11 @@ class PendingThoughtRuntime:
 
         if self.machine is None or self.body is None:
             raise PendingThoughtRuntimeError("runtime session is not initialized")
-        try:
-            result = await asyncio.to_thread(
-                self.body.tell_direct_stream,
-                turn_id,
-                pcm,
-            )
-        except BaseException:
-            try:
-                await asyncio.to_thread(self.body.restore_base_view)
-            except Exception as exc:
-                logger.warning(
-                    "direct stream cleanup failed (%s)",
-                    type(exc).__name__,
-                )
-            raise
-        else:
-            try:
-                await asyncio.to_thread(self.body.restore_base_view)
-            except Exception as exc:
-                raise PendingThoughtRuntimeError(
-                    "direct stream cleanup failed",
-                    metrics=result,
-                ) from exc
-            return result
+        return await asyncio.to_thread(
+            self.body.tell_direct_stream,
+            turn_id,
+            pcm,
+        )
 
     async def consider_thought(
         self, payload: Mapping[str, object]
@@ -487,7 +437,7 @@ class PendingThoughtRuntime:
             self.machine = KnockWaitTell(
                 self.body,
                 self.body,
-                offer_state_port=self.body,
+                offer_display_port=self.body,
             )
         session = create_stackchan_client_session(
             read_stream,
