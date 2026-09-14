@@ -244,6 +244,9 @@ this recovery.
 Expression assets ship in the firmware assets partition. Motor recipes are
 selected by name and stored in NVS through USB. The gateway never transfers
 face layers, checksums a runtime face package, or accepts raw recipe data.
+The deterministic asset generator gives every packaged GIF the same canonical
+opaque background and preserves efficient delta frames. A transition redraws
+the complete face once; subsequent frames redraw only their changed regions.
 The named GIF and motor recipe are one expression: a named-asset load or decode
 failure is a critical release fault, not a blank-face fallback.
 

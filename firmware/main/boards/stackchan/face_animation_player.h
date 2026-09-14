@@ -38,7 +38,6 @@ private:
         bool play);
     bool EnsureFaceObjectLocked();
     void InvalidateFaceAreaLocked(const lv_area_t& relative_area);
-    void RecordDirtyAreaLocked(const lv_area_t& area);
     static bool SameImageLayout(
         const lv_img_dsc_t* first,
         const lv_img_dsc_t* second);
@@ -49,6 +48,4 @@ private:
     bool image_source_installed_ = false;
     std::unique_ptr<LvglGif> gif_;
     bool paused_by_screensaver_ = false;
-    bool dirty_area_valid_ = false;
-    lv_area_t dirty_area_ = {};
 };

@@ -106,6 +106,9 @@ assets package repairs it. A blank face is not a substitute for an expression.
 - The application view owns the expression and application status bar. The
   configuration and OTA view owns the generic system content and status row.
   Switching views hides the complete inactive pair; their layers never mix.
+- The deterministic asset generator gives every face GIF the same canonical
+  opaque background and preserves efficient delta frames. A transition redraws
+  the complete face once; later frames redraw only their changed regions.
 - XC Body does not construct generic emoji widgets. A blank face is the
   fallback only for a display-only state; it never substitutes for a named
   expression whose GIF is missing or invalid.
