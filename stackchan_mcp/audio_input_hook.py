@@ -18,9 +18,8 @@ Configuration:
 
 - ``STACKCHAN_AUDIO_HOOK_URL`` — HTTP(S) URL of the receiver. The
   device-driven capture path is silently disabled when unset.
-- ``STACKCHAN_AUDIO_HOOK_TOKEN`` — Bearer token; falls back to
-  ``STACKCHAN_TOKEN`` so a single-token setup works without extra
-  configuration.
+- ``XC_BODY_INTERACTION_HTTP_TOKEN`` — Bearer token for Interaction; falls
+  back to ``STACKCHAN_TOKEN`` for a single-token deployment.
 
 The capture path is opt-in by design: stackchan-mcp's primary listen
 model is MCP-client-driven (the ``listen()`` tool), and device-driven

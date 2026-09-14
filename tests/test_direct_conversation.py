@@ -15,7 +15,7 @@ from gateway.direct_conversation import (
     build_direct_turn_report,
     speak_direct_answer,
 )
-from gateway.pending_thought_runtime import PendingThoughtRuntimeError
+from gateway.interaction_runtime import InteractionRuntimeError
 from gateway.speech_preparation import (
     EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
     EDGE_TTS_RECEIVE_TIMEOUT_SECONDS,
@@ -246,7 +246,7 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
             async def tell_direct_stream(self, _turn_id, pcm):
                 await asyncio.to_thread(pcm.wait_for_playable)
                 next(pcm.iter_pcm_chunks())
-                raise PendingThoughtRuntimeError(
+                raise InteractionRuntimeError(
                     "stream audio: RuntimeError",
                     metrics={
                         "attention_completed_ms": 1100,
@@ -286,7 +286,7 @@ class DirectConversationTests(unittest.IsolatedAsyncioTestCase):
         class Runtime:
             async def tell_direct_stream(self, _turn_id, _pcm):
                 await producer_started.wait()
-                raise PendingThoughtRuntimeError("motion failed")
+                raise InteractionRuntimeError("motion failed")
 
         async def synthesize(_answer, _voice, _sink, **_kwargs):
             producer_started.set()

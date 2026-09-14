@@ -83,7 +83,7 @@ async def prepare_speech(summary: str, voice: str) -> str:
         import edge_tts
     except ImportError as exc:
         raise SpeechPreparationError(
-            "edge-tts is not installed in the pending service environment"
+            "edge-tts is not installed in the Interaction service environment"
         ) from exc
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -170,7 +170,7 @@ async def stream_speech_pcm(
         import edge_tts
     except ImportError as exc:
         raise SpeechPreparationError(
-            "edge-tts is not installed in the pending service environment"
+            "edge-tts is not installed in the Interaction service environment"
         ) from exc
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:

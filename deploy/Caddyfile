@@ -9,7 +9,7 @@
 		}
 	}
 	handle_path /xc-body/* {
-		reverse_proxy pending:8770
+		reverse_proxy interaction:8770
 	}
 	handle_path /firmware/* {
 		root * /srv/firmware

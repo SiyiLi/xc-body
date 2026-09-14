@@ -50,7 +50,7 @@ value() {
     END { print found }
   ' "$env_file"
 }
-token=$(value XC_BODY_PENDING_HTTP_TOKEN)
+token=$(value XC_BODY_INTERACTION_HTTP_TOKEN)
 [ -n "$token" ] || token=$(value STACKCHAN_TOKEN)
 [ -n "$token" ] || token=$(value BEARER_TOKEN)
 [ -n "$token" ]

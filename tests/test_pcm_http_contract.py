@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntimeError,
-    StackChanThoughtBody,
+from gateway.interaction_runtime import (
+    InteractionRuntimeError,
+    StackChanInteractionBody,
 )
 from stackchan_mcp.capture_server import (
     GATEWAY_KEY,
@@ -85,14 +85,14 @@ class PcmHttpContractTests(unittest.IsolatedAsyncioTestCase):
             send_pcm_stream.call_args.kwargs["expected_session_id"],
             "device-session-1",
         )
-        body = StackChanThoughtBody(
+        body = StackChanInteractionBody(
             lambda _name, _arguments: {"ok": True},
             streaming_url="http://127.0.0.1:8766/pcm",
             playback_token="pcm-token",
         )
         connection = _Connection(payload)
         with patch(
-            "gateway.pending_thought_runtime.http.client.HTTPConnection",
+            "gateway.interaction_runtime.http.client.HTTPConnection",
             return_value=connection,
         ):
             accepted = body._play_pcm_stream(
@@ -162,17 +162,17 @@ class PcmHttpContractTests(unittest.IsolatedAsyncioTestCase):
             json.loads(payload),
             {"ok": False, "error": "Device disconnected", **metrics},
         )
-        body = StackChanThoughtBody(
+        body = StackChanInteractionBody(
             lambda _name, _arguments: {"ok": True},
             streaming_url="http://127.0.0.1:8766/pcm",
             playback_token="pcm-token",
         )
         connection = _Connection(payload)
         with patch(
-            "gateway.pending_thought_runtime.http.client.HTTPConnection",
+            "gateway.interaction_runtime.http.client.HTTPConnection",
             return_value=connection,
         ):
-            with self.assertRaises(PendingThoughtRuntimeError) as raised:
+            with self.assertRaises(InteractionRuntimeError) as raised:
                 body._play_pcm_stream(
                     iter((b"pcm",)),
                     "robot:1",

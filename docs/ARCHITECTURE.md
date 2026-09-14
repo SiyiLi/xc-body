@@ -14,25 +14,26 @@ OpenClaw host                         Cloud rendezvous
                                      │                            │
                                      │ XC Body runtime image      │
 StackChan K151/CoreS3                │ - gateway service          │
-┌──────────────────────┐             │ - pending-thought service  │
+┌──────────────────────┐             │ - Interaction service      │
 │ XC Body firmware     │──WSS───────▶│ - summary and playback     │
 └──────────────────────┘             └────────────────────────────┘
 ```
 
 The OpenClaw plugin uses authenticated summary and voice HTTP routes. In the
-deployed path, the pending-thought service owns the MCP connection to the
+deployed path, the Interaction service owns the private MCP connection to the
 gateway.
 
-Caddy terminates public TLS at the configured rendezvous origin. Gateway,
-playback, summary, and XC Body MCP routes are proxied internally. Caddy also
-serves versioned OTA app images and the current manifest from the read-only
-`/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
-host unrelated workloads, so XC Body has its own containers, credentials,
-lifecycle, health checks, and resource limits.
+Caddy terminates public TLS for robot WSS, Interaction HTTP, and OTA files.
+Interaction reaches Gateway MCP and audio directly over the private Docker
+network. Caddy also serves versioned OTA app images and the current manifest
+from the read-only `/data/xc-body/firmware` mount. Raw service ports remain
+private. The VM may host unrelated workloads, so XC Body has its own
+containers, credentials, lifecycle, health checks, and resource limits.
 
-Gateway and pending-service stdout and stderr remain available through Docker
-and are also persisted across container replacement in
-`/data/xc-body/logs/gateway.log` and `/data/xc-body/logs/pending.log`.
+Gateway and Interaction stdout and stderr remain available through Docker and
+are also persisted across container replacement in
+`/data/xc-body/logs/gateway.log` and
+`/data/xc-body/logs/interaction.log`.
 
 ## Component Ownership
 
@@ -52,33 +53,24 @@ deduplicates the same run across hook boundaries. Spoken projection uses the
 fixed model with reasoning and thinking disabled. It does not own speech
 encoding, robot motion, pending-offer state, or device connectivity.
 
-### Pending-thought service
+### Interaction service
 
 The VM summary boundary keeps plaintext in request scope, prepares normalized
 16 kHz mono Opus for pending offers, validates the packet profile, and submits
 the existing pending-thought contract. Direct answers use the existing PCM
 streaming path after attention settles. Plaintext is not stored or logged.
 
-One process-owned runtime keeps at most one pending offer. It exposes only
-`consider_thought`, receives StackChan events through one persistent upstream
-MCP session, and owns the knock, wait, acknowledgment, and playback state.
+One process-owned runtime keeps at most one pending offer, receives StackChan
+events through one persistent private MCP session, and serializes direct and
+offer use of the body. It exposes authenticated HTTP only for the OpenClaw
+plugin's summary and direct-conversation paths.
 
-### Semantic embodiment layer
+### XC Body gateway
 
-The manual embodiment boundary validates the versioned intent contract and
-maps supported intentions to saved firmware expression names. Firmware owns
-their GIF, movement, timing, and safe return. The complete semantic mapping is
-validated before the first device call.
-
-OpenClaw cannot choose servo angles, speed, hold duration, LED sequences, or
-whether idle return occurs.
-
-### StackChan gateway
-
-`stackchan_mcp/` owns authenticated device WSS, loopback Streamable HTTP MCP,
+`stackchan_mcp/` owns authenticated device WSS, private Streamable HTTP MCP,
 allowed-host checks, command serialization, status, playback, and hardware
-tools. The semantic and pending-thought services use this shared device
-boundary instead of defining another device protocol.
+tools. The Interaction service uses this shared device boundary instead of
+defining another device protocol.
 
 When its private QWeather configuration is complete, the gateway reads
 firmware's cached approximate public-IP coordinates, polls current conditions,
@@ -127,15 +119,6 @@ supply motor parameters.
 
 ## Runtime Flows
 
-### Manual embodiment
-
-1. OpenClaw submits a versioned semantic intention, whether selected from a
-   user request or the model's own judgment.
-2. XC Body validates the contract and complete semantic-to-expression mapping.
-3. The service verifies that the same initialized device session remains ready.
-4. The adapter invokes one saved firmware expression by name.
-5. The firmware runner restores the reviewed idle pose before completion.
-
 ### Completion offer
 
 1. The OpenClaw plugin observes a successful eligible completion.
@@ -164,12 +147,12 @@ eventual direct answer.
 ### Direct conversation
 
 1. Existing firmware touch and device-driven capture submit one bounded Opus
-   recording to the pending service mailbox.
+   recording to the Interaction service mailbox.
 2. The native OpenClaw plugin claims it, sends the captured Ogg to fixed-model
    audio transcription, and admits one user turn into the configured existing
    session.
-3. The final visible answer returns to the pending service exactly once.
-4. The pending runtime requests a deterministic firmware-owned `attention`
+3. The final visible answer returns to the Interaction service exactly once.
+4. The Interaction runtime requests a deterministic firmware-owned `attention`
    behavior through the shared StackChan gateway behavior boundary.
 5. The gateway reuses its servo lane, correlated completion waiter, timeout,
    and recovery path. Direct PCM playback starts only after the firmware
@@ -178,7 +161,7 @@ eventual direct answer.
    direct attention and speech; after they end, a new successful touch
    reaction may acknowledge the offer.
 7. Each owner contributes content-free phase timings under the existing turn
-   ID. The pending service emits one JSON timeline when a turn is answered or
+   ID. Interaction emits one JSON timeline when a turn is answered or
    explicitly abandoned.
 
 Direct conversation is permanently bound to one fixed Telegram private chat.
@@ -192,7 +175,7 @@ the normal background-offer path independently.
 Extract completed timelines from production logs with:
 
 ```sh
-rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
+rg '"event":"xc_body.direct_turn"' server-logs/interaction.log |
   tail -n 1 | jq .
 ```
 
@@ -236,7 +219,7 @@ without USB when an immediate update is needed. USB remains a recovery fallback.
    summary, and temperature.
 3. The idle-view fonts and RGB565A8 weather icons are mapped from the assets
    partition rather than linked into either application slot.
-4. The pending-thought runtime asks firmware to suppress the overlay during an
+4. The Interaction runtime asks firmware to suppress the overlay during an
    offer transition and pending wait, and restores that display hint after a
    device reconnect.
 5. Settings, transient behavior, listening, and speaking suppress the idle

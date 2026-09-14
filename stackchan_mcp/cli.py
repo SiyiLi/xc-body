@@ -52,8 +52,8 @@ Environment variables:
                            is packed into Ogg/Opus and POSTed here.
                            Leave unset to keep the gateway's behaviour
                            unchanged from MCP-driven listen() only.
-  STACKCHAN_AUDIO_HOOK_TOKEN
-                           Bearer token for the audio hook endpoint;
+  XC_BODY_INTERACTION_HTTP_TOKEN
+                           Bearer token for the Interaction capture endpoint;
                            falls back to STACKCHAN_TOKEN.
   HOST                     Bind address for the ESP32 WebSocket server
                            (default 0.0.0.0).
@@ -582,11 +582,11 @@ def _run_preflight() -> int:
         print(
             f"  STACKCHAN_AUDIO_HOOK_URL  {_redact_url_secrets(audio_hook_url)}"
         )
-        if os.getenv("STACKCHAN_AUDIO_HOOK_TOKEN"):
-            print("  STACKCHAN_AUDIO_HOOK_TOKEN set (***redacted***)")
+        if os.getenv("XC_BODY_INTERACTION_HTTP_TOKEN"):
+            print("  XC_BODY_INTERACTION_HTTP_TOKEN set (***redacted***)")
         else:
             print(
-                "  STACKCHAN_AUDIO_HOOK_TOKEN not set "
+                "  XC_BODY_INTERACTION_HTTP_TOKEN not set "
                 "(will reuse STACKCHAN_TOKEN)"
             )
     else:

@@ -12,9 +12,9 @@ from gateway.pending_thought import (
     decode_prepared_audio,
     validate_thought_id,
 )
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntime,
-    PendingThoughtRuntimeError,
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
 )
 from gateway.speech_preparation import (
     DEFAULT_VOICE,
@@ -80,7 +80,7 @@ def load_summary_voice(
 
 
 async def handle_summary_request(
-    runtime: PendingThoughtRuntime,
+    runtime: InteractionRuntime,
     payload: Mapping[str, object],
     *,
     voice: str,
@@ -121,7 +121,7 @@ async def handle_summary_request(
                 "audio_base64": audio_base64,
             }
         )
-    except PendingThoughtRuntimeError:
+    except InteractionRuntimeError:
         return 503, {"ok": False, "error": "body_unavailable"}
     except PendingThoughtError:
         return 409, {"ok": False, "error": "offer_rejected"}

@@ -12,9 +12,9 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from threading import Condition
 
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntime,
-    PendingThoughtRuntimeError,
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
 )
 from gateway.speech_preparation import (
     EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
@@ -488,7 +488,7 @@ def emit_direct_turn_metrics(report: Mapping[str, object]) -> None:
 
 
 async def speak_direct_answer(
-    runtime: PendingThoughtRuntime,
+    runtime: InteractionRuntime,
     turn_id: str,
     answer: str,
     voice: str,
@@ -529,7 +529,7 @@ async def speak_direct_answer(
         pcm.abort()
         await _cancel_producer(producer)
         metrics = pcm.metrics()
-        if isinstance(exc, PendingThoughtRuntimeError):
+        if isinstance(exc, InteractionRuntimeError):
             metrics.update(exc.metrics)
         if isinstance(exc, DirectConversationError):
             metrics.update(exc.metrics)

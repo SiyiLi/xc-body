@@ -44,7 +44,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images |
-       --restart-gateway | --restart-pending | --configure-weather |
+       --restart-gateway | --restart-interaction | --configure-weather |
        --trigger-ota VERSION
 
 Build linux/amd64 production images, push them to the configured registry,
@@ -55,7 +55,7 @@ explicitly authorized deployment from uncommitted runtime inputs.
 --cleanup-images removes unused images from the XC Body repository on the
 rendezvous VM. Images referenced by any container are preserved.
 
---restart-gateway and --restart-pending restart only the named production
+--restart-gateway and --restart-interaction restart only the named production
 service. They do not rebuild images or restart the proxy.
 
 --configure-weather updates the private QWeather host and key from
@@ -101,8 +101,8 @@ docker inspect xc-body-proxy \
 sed -n '1,160p' /data/xc-body/deploy/Caddyfile
 echo "[status] gateway"
 docker logs --tail 35 xc-body-gateway 2>&1 || true
-echo "[status] pending"
-docker logs --tail 50 xc-body-pending 2>&1 || true
+echo "[status] interaction"
+docker logs --tail 50 xc-body-interaction 2>&1 || true
 REMOTE
 }
 
@@ -266,7 +266,7 @@ copy_runtime_inputs() {
 
   if [ "$candidate" = "1" ]; then
     git -C "$REPO" ls-files -z --cached --others --exclude-standard -- \
-      gateway stackchan stackchan_mcp contracts deploy scripts \
+      gateway stackchan_mcp contracts deploy scripts \
       pyproject.toml \
       | while IFS= read -r -d '' path; do
           [ -e "$REPO/$path" ] || [ -L "$REPO/$path" ] || continue
@@ -276,7 +276,7 @@ copy_runtime_inputs() {
       | tar -xf - -C "$context/app"
   else
     git -C "$REPO" archive HEAD \
-      gateway stackchan stackchan_mcp contracts deploy scripts \
+      gateway stackchan_mcp contracts deploy scripts \
       pyproject.toml \
       | tar -xf - -C "$context/app"
   fi
@@ -284,7 +284,7 @@ copy_runtime_inputs() {
   find "$context/app" -type f -exec chmod 0644 {} +
   chmod 0755 \
     "$context/app/deploy/install.sh" \
-    "$context/app/deploy/run-pending-thought-service.sh" \
+    "$context/app/deploy/run-interaction-service.sh" \
     "$context/app/deploy/run-service-with-persistent-log.sh"
 
 }
@@ -380,7 +380,7 @@ while [ "$#" -gt 0 ]; do
     --status) status_only=1 ;;
     --cleanup-images) cleanup_images_only=1 ;;
     --restart-gateway) restart_service=gateway ;;
-    --restart-pending) restart_service=pending ;;
+    --restart-interaction) restart_service=interaction ;;
     --configure-weather) configure_weather=1 ;;
     --trigger-ota)
       [ "$#" -ge 2 ] || die "--trigger-ota requires VERSION" 64
@@ -453,7 +453,7 @@ done
 source_commit=$(git -C "$REPO" rev-parse HEAD)
 
 dirty_paths=$(git -C "$REPO" status --porcelain --untracked-files=all -- \
-  gateway stackchan stackchan_mcp contracts deploy scripts pyproject.toml)
+  gateway stackchan_mcp contracts deploy scripts pyproject.toml)
 dirty=false
 if [ -n "$dirty_paths" ]; then
   dirty=true

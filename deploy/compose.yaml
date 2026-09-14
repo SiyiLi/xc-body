@@ -24,7 +24,7 @@ services:
       MCP_HTTP_ALLOWED_HOSTS: gateway
       PYTHONPATH: /opt/xc-body
       STACKCHAN_NOTIFY_CONFIG: /opt/xc-body/deploy/notify.yml
-      STACKCHAN_AUDIO_HOOK_URL: http://pending:8770/voice/v1/capture
+      STACKCHAN_AUDIO_HOOK_URL: http://interaction:8770/voice/v1/capture
       VISION_URL: ${XC_BODY_PUBLIC_URL:?}/capture
       XDG_CONFIG_HOME: /state/config
     entrypoint:
@@ -52,8 +52,8 @@ services:
       timeout: 6s
       retries: 12
 
-  pending:
-    container_name: xc-body-pending
+  interaction:
+    container_name: xc-body-interaction
     image: ${XC_BODY_RUNTIME_IMAGE:?}
     restart: unless-stopped
     depends_on:
@@ -63,8 +63,8 @@ services:
       - gateway.env
     entrypoint:
       - /opt/xc-body/deploy/run-service-with-persistent-log.sh
-      - pending.log
-      - /opt/xc-body/deploy/run-pending-thought-service.sh
+      - interaction.log
+      - /opt/xc-body/deploy/run-interaction-service.sh
     expose:
       - "8770"
     networks:

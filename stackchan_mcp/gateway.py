@@ -101,12 +101,11 @@ class Gateway:
     def audio_hook_token(self) -> str:
         """Bearer token expected by the audio hook endpoint.
 
-        STACKCHAN_AUDIO_HOOK_TOKEN can be set separately. Falls back to
-        STACKCHAN_TOKEN so a single-token setup works out of the box.
+        XC_BODY_INTERACTION_HTTP_TOKEN owns the private Interaction capture
+        route. A single-token deployment falls back to the gateway token.
         """
         return (
-            os.getenv("STACKCHAN_AUDIO_HOOK_TOKEN")
-            or os.getenv("XC_BODY_PENDING_HTTP_TOKEN")
+            os.getenv("XC_BODY_INTERACTION_HTTP_TOKEN")
             or os.getenv("STACKCHAN_TOKEN")
             or os.getenv("BEARER_TOKEN")
             or ""

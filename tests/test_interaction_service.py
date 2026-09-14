@@ -4,25 +4,22 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.pending_thought_http_service import (
-    AUTH_FAILURE_MESSAGE,
+from gateway.interaction_service import (
     DOWNSTREAM_TOKEN_ENV,
+    GATEWAY_TOKEN_ENV,
+    GATEWAY_URL_ENV,
+    InteractionServiceError,
+    PlaybackConfig,
     _BearerAuthApp,
-    _maintain_pending_runtime,
+    _maintain_interaction_runtime,
     _readiness_payload,
+    _validate_service_url,
     build_app,
     load_downstream_token,
     main,
     validate_bind_safety,
 )
 from gateway.direct_conversation import DirectConversationError
-from gateway.pending_thought_service import (
-    PlaybackConfig,
-    PendingThoughtServiceError,
-    validate_playback_url,
-)
-from gateway.semantic_e2e import TOKEN_ENV as UPSTREAM_TOKEN_ENV
-from gateway.semantic_e2e import URL_ENV as UPSTREAM_URL_ENV
 
 
 class RecordingApp:
@@ -67,24 +64,28 @@ async def call_app(
     return messages
 
 
-class PendingThoughtHTTPServiceTests(unittest.TestCase):
-    def test_mcp_requires_exact_downstream_bearer(self):
-        inner = RecordingApp()
-        app = _BearerAuthApp(inner, "downstream-secret")
-
-        missing = asyncio.run(call_app(app, "/mcp"))
-        wrong = asyncio.run(
-            call_app(app, "/mcp", "Bearer upstream-secret")
+class InteractionServiceTests(unittest.TestCase):
+    def test_legacy_mcp_route_is_not_exposed(self):
+        app = build_app(
+            SimpleNamespace(
+                url="https://stackchan.invalid/mcp",
+                token="upstream-secret",
+            ),
+            PlaybackConfig(
+                url="http://127.0.0.1:8766/opus",
+                streaming_url="http://127.0.0.1:8766/pcm",
+                token="playback-secret",
+            ),
+            host="127.0.0.1",
+            downstream_token="downstream-secret",
+            voice="zh-CN-XiaoxiaoNeural",
         )
-        accepted = asyncio.run(
+
+        response = asyncio.run(
             call_app(app, "/mcp", "Bearer downstream-secret")
         )
 
-        self.assertEqual(missing[0]["status"], 401)
-        self.assertEqual(wrong[0]["status"], 401)
-        self.assertEqual(missing[1]["body"].decode(), AUTH_FAILURE_MESSAGE)
-        self.assertEqual(accepted[0]["status"], 204)
-        self.assertEqual(len(inner.calls), 1)
+        self.assertEqual(response[0]["status"], 404)
 
     def test_health_is_public_liveness_without_pending_metadata(self):
         inner = RecordingApp()
@@ -143,7 +144,7 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
                 validate_bind_safety(host, "")
             validate_bind_safety(host, "downstream-secret")
         with self.assertRaisesRegex(
-            PendingThoughtServiceError,
+            InteractionServiceError,
             DOWNSTREAM_TOKEN_ENV,
         ):
             validate_bind_safety("0.0.0.0", "")
@@ -187,15 +188,15 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
 
         async def exercise():
             with patch(
-                "gateway.pending_thought_http_service."
-                "_restore_pending_runtime_if_needed",
+                "gateway.interaction_service."
+                "_restore_interaction_runtime_if_needed",
                 new=AsyncMock(side_effect=[False, asyncio.CancelledError]),
             ), patch(
-                "gateway.pending_thought_http_service.asyncio.sleep",
+                "gateway.interaction_service.asyncio.sleep",
                 new=AsyncMock(),
             ):
                 with self.assertRaises(asyncio.CancelledError):
-                    await _maintain_pending_runtime(
+                    await _maintain_interaction_runtime(
                         config,
                         runtime,
                         httpx,
@@ -215,28 +216,28 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
             "http://gateway:8766/opus",
             "https://playback.invalid/opus",
         ):
-            validate_playback_url(url)
+            _validate_service_url(url, "playback")
 
         with self.assertRaisesRegex(
-            PendingThoughtServiceError,
+            InteractionServiceError,
             "must use HTTPS",
         ):
-            validate_playback_url("http://playback.invalid/opus")
+            _validate_service_url("http://playback.invalid/opus", "playback")
         with self.assertRaisesRegex(
-            PendingThoughtServiceError,
+            InteractionServiceError,
             "absolute HTTP",
         ):
-            validate_playback_url("file:///tmp/audio")
+            _validate_service_url("file:///tmp/audio", "playback")
 
     def test_downstream_token_does_not_fall_back_to_upstream_token(self):
         self.assertEqual(
-            load_downstream_token({UPSTREAM_TOKEN_ENV: "upstream-secret"}),
+            load_downstream_token({GATEWAY_TOKEN_ENV: "upstream-secret"}),
             "",
         )
         self.assertEqual(
             load_downstream_token(
                 {
-                    UPSTREAM_TOKEN_ENV: "upstream-secret",
+                    GATEWAY_TOKEN_ENV: "upstream-secret",
                     DOWNSTREAM_TOKEN_ENV: " downstream-secret ",
                 }
             ),
@@ -246,8 +247,8 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
     def test_main_loads_environment_and_passes_separate_boundary_tokens(self):
         service = AsyncMock()
         environment = {
-            UPSTREAM_URL_ENV: "https://stackchan.invalid/mcp",
-            UPSTREAM_TOKEN_ENV: "upstream-secret",
+            GATEWAY_URL_ENV: "https://stackchan.invalid/mcp",
+            GATEWAY_TOKEN_ENV: "upstream-secret",
             DOWNSTREAM_TOKEN_ENV: "downstream-secret",
             "XC_BODY_PLAYBACK_URL": "http://127.0.0.1:8766/opus",
             "XC_BODY_PCM_URL": "http://127.0.0.1:8766/pcm",
@@ -256,7 +257,7 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
         }
 
         with patch(
-            "gateway.pending_thought_http_service.run_http_service",
+            "gateway.interaction_service.run_http_service",
             service,
         ):
             exit_code = main([], environ=environment)
@@ -323,10 +324,10 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
                 {"turn_id": turn_id, "answer": "answer"}
             ).encode()
             with patch(
-                "gateway.pending_thought_http_service.speak_direct_answer",
+                "gateway.interaction_service.speak_direct_answer",
                 new=AsyncMock(side_effect=error),
             ) as speak, patch(
-                "gateway.pending_thought_http_service.emit_direct_turn_metrics",
+                "gateway.interaction_service.emit_direct_turn_metrics",
                 side_effect=reports.append,
             ):
                 failed = await call_app(

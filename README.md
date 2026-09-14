@@ -29,7 +29,7 @@ turning it off should make the room feel a little emptier.
   authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
   submission retries, robot-session recovery, supervisor recovery, and
-  connected idle display dimming. OpenClaw, route, robot, gateway, pending
+  connected idle display dimming. OpenClaw, route, robot, gateway, Interaction
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   configured cloud rendezvous host; raw service ports remain private.
@@ -156,8 +156,7 @@ Read [`AGENTS.md`](AGENTS.md) before changing the repository. It owns the
 phase-aware read order, including when an active or historical milestone is
 relevant.
 
-The machine-readable boundaries are the
-[`embodiment intent contract`][intent-contract] and
+The machine-readable offer boundary is the
 [`pending-thought contract`][pending-thought-contract].
 
 ## Repository Layout
@@ -167,15 +166,13 @@ contracts/      Versioned OpenClaw-to-body contracts
 deploy/         VM image, Compose, proxy, and install definitions
 docs/           Current architecture and milestone acceptance
 firmware/       XC Body CoreS3 firmware
-gateway/        Semantic and pending-thought orchestration
+gateway/        Interaction and pending-offer orchestration
 openclaw-plugin/ Native OpenClaw completion integration
 scripts/        Checks, deployment controllers, and maintenance tools
-stackchan/      Deterministic recipes, calibration, and device adapter
-stackchan_mcp/  StackChan gateway
+stackchan_mcp/  XC Body gateway
 tests/          Standard-library contract and behavior tests
 ```
 
 Do not modify `xc-buddy` from this repository.
 
-[intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json
