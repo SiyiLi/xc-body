@@ -21,10 +21,10 @@ services:
       - /tmp:size=64m,mode=1777
     environment:
       HOME: /state
-      MCP_HTTP_ALLOWED_HOSTS: ${XC_BODY_PUBLIC_HOST:?}
+      MCP_HTTP_ALLOWED_HOSTS: gateway
       PYTHONPATH: /opt/xc-body
       STACKCHAN_NOTIFY_CONFIG: /opt/xc-body/deploy/notify.yml
-      STACKCHAN_AUDIO_HOOK_URL: ${XC_BODY_PUBLIC_URL:?}/xc-body/voice/v1/capture
+      STACKCHAN_AUDIO_HOOK_URL: http://pending:8770/voice/v1/capture
       VISION_URL: ${XC_BODY_PUBLIC_URL:?}/capture
       XDG_CONFIG_HOME: /state/config
     entrypoint:
@@ -61,8 +61,6 @@ services:
         condition: service_healthy
     env_file:
       - gateway.env
-    environment:
-      XC_BODY_PUBLIC_URL: ${XC_BODY_PUBLIC_URL:?}
     entrypoint:
       - /opt/xc-body/deploy/run-service-with-persistent-log.sh
       - pending.log

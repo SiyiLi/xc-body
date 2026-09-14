@@ -207,11 +207,12 @@ class PendingThoughtHTTPServiceTests(unittest.TestCase):
         self.assertEqual(streamable_http_client.call_count, 2)
         self.assertEqual(runtime.create_session.call_count, 2)
 
-    def test_playback_url_allows_plaintext_only_on_loopback(self):
+    def test_playback_url_allows_plaintext_only_on_trusted_hosts(self):
         for url in (
             "http://localhost:8766/opus",
             "http://127.0.0.1:8766/opus",
             "http://[::1]:8766/opus",
+            "http://gateway:8766/opus",
             "https://playback.invalid/opus",
         ):
             validate_playback_url(url)

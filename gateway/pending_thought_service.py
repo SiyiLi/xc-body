@@ -46,8 +46,8 @@ class PlaybackConfig:
     token: str = field(repr=False)
 
 
-def _is_loopback_url_host(hostname: str | None) -> bool:
-    if hostname == "localhost":
+def _is_trusted_http_host(hostname: str | None) -> bool:
+    if hostname in {"localhost", "gateway"}:
         return True
     if hostname is None:
         return False
@@ -71,7 +71,7 @@ def validate_playback_url(url: str, name: str = PLAYBACK_URL_ENV) -> None:
         raise PendingThoughtServiceError(
             f"{name} must include a valid port"
         ) from exc
-    if parsed.scheme == "http" and not _is_loopback_url_host(parsed.hostname):
+    if parsed.scheme == "http" and not _is_trusted_http_host(parsed.hostname):
         raise PendingThoughtServiceError(
             f"non-loopback {name} values must use HTTPS"
         )

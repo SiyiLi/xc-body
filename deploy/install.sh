@@ -110,7 +110,6 @@ import urllib.request as u
 base = sys.argv[1]
 urls = (
     f"{base}/xc-body/healthz",
-    f"{base}/gateway-mcp/healthz",
 )
 raise SystemExit(
     0 if all(u.urlopen(url, timeout=5).status == 200 for url in urls) else 1

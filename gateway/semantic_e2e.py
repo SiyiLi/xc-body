@@ -46,8 +46,8 @@ class RunnerConfig:
     token: str = field(repr=False)
 
 
-def _is_loopback(hostname: str | None) -> bool:
-    if hostname == "localhost":
+def _is_trusted_http_host(hostname: str | None) -> bool:
+    if hostname in {"localhost", "gateway"}:
         return True
     if hostname is None:
         return False
@@ -101,7 +101,7 @@ def load_config(
     parsed = urlparse(endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RunnerConfigError("daemon URL must be an absolute HTTP(S) URL")
-    if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+    if parsed.scheme == "http" and not _is_trusted_http_host(parsed.hostname):
         raise RunnerConfigError("non-loopback daemon URLs must use HTTPS")
     return RunnerConfig(url=endpoint, token=token)
 

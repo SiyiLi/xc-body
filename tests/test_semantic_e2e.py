@@ -17,7 +17,7 @@ class SemanticE2eRunnerTests(unittest.TestCase):
         from gateway.semantic_e2e import TOKEN_ENV, URL_ENV, load_config
 
         config = load_config(
-            url="http://127.0.0.1:8767/mcp",
+            url="http://gateway:8767/mcp",
             environ={TOKEN_ENV: "test-token"},
         )
         environment_config = load_config(
@@ -27,7 +27,7 @@ class SemanticE2eRunnerTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.url, "http://127.0.0.1:8767/mcp")
+        self.assertEqual(config.url, "http://gateway:8767/mcp")
         self.assertEqual(config.token, "test-token")
         self.assertNotIn("test-token", repr(config))
         self.assertEqual(environment_config.url, "https://daemon.invalid/mcp")
