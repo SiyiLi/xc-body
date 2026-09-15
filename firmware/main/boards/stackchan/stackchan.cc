@@ -687,7 +687,6 @@ private:
         WAITING_FOR_HEAD_READY,
         RUNNING,
         WAITING_FOR_FACE,
-        RESTORING_FACE,
     };
     enum class PhysicalBehaviorOwner : uint8_t {
         IDLE = 0,
@@ -718,7 +717,6 @@ private:
     static constexpr int XC_BODY_BEHAVIOR_SPEED_DPS = 30;
     static constexpr uint64_t EXPRESSION_FACE_DURATION_US = 2400000ULL;
     static constexpr uint64_t EXPRESSION_EXECUTION_MARGIN_US = 2000000ULL;
-    static constexpr uint64_t EXPRESSION_FACE_RESTORE_TIMEOUT_US = 500000ULL;
     std::atomic<PhysicalBehaviorOwner> physical_behavior_owner_{
         PhysicalBehaviorOwner::IDLE};
 
@@ -736,9 +734,6 @@ private:
     StackChanExpressionRecipe expression_recipe_;
     bool expression_restore_only_ = false;
     uint64_t expression_execution_deadline_us_ = 0;
-    uint64_t expression_face_restore_deadline_us_ = 0;
-    StackChanExpressionOutcome expression_finish_outcome_ =
-        StackChanExpressionOutcome::UNAVAILABLE;
     std::atomic<ExpressionInvocation> expression_invocation_{
         ExpressionInvocation::PREVIEW};
     std::string expression_name_;
@@ -3050,18 +3045,14 @@ private:
         display_->SetStatusBarModeLocked(status_bar_mode);
         if (!application_view) {
             HideFaceLocked();
-        } else if (!expression_active_.load(std::memory_order_acquire) &&
-                   (state_changed || face_player_ == nullptr ||
-                    !face_player_->IsVisibleLocked())) {
+        } else if (face_player_ != nullptr &&
+                   !expression_active_.load(std::memory_order_acquire) &&
+                   (state_changed || !face_player_->IsVisibleLocked())) {
             if (state == kDeviceStateIdle) {
-                ShowIdleFaceLocked();
+                face_player_->RequestIdle();
             } else if (state == kDeviceStateListening) {
-                ShowListeningFaceLocked();
+                face_player_->RequestListening();
             }
-        }
-        if (state_changed) {
-            display_->SetRecordingIndicatorLocked(
-                state == kDeviceStateListening);
         }
         if (show_screensaver && face_player_ != nullptr &&
             face_player_->IsVisibleLocked() &&
@@ -3081,6 +3072,19 @@ private:
             lv_obj_is_valid(settings_panel_)) {
             lv_obj_move_foreground(settings_panel_);
         }
+    }
+
+    void UpdateRecordingPresentation(DeviceState state) {
+        const bool recording = state == kDeviceStateListening;
+        if (recording == recording_presentation_active_) {
+            return;
+        }
+        SetAllRgbLeds(0, recording ? 32 : 0, 0);
+        if (display_ != nullptr) {
+            DisplayLockGuard lock(display_);
+            display_->SetRecordingIndicatorLocked(recording);
+        }
+        recording_presentation_active_ = recording;
     }
 
     void OpenVolumeSettings() {
@@ -3166,7 +3170,6 @@ private:
             (now_ms - listening_started_ms) > LISTEN_TIMEOUT_MS) {
             ESP_LOGI(TAG, "Listening timeout reached (%d ms) -> StopListening",
                      (int)(now_ms - listening_started_ms));
-            SetAllRgbLeds(0, 0, 0);
             app.StopListening();
             listening_started_ms = 0;
         }
@@ -3284,17 +3287,17 @@ private:
                 bool right_ear = in_ear_row &&
                     touch_start_x >= RIGHT_EAR_TOUCH_LEFT;
 
-                if (app.GetDeviceState() == kDeviceStateListening) {
-                    if (left_ear || right_ear) {
-                        SetAllRgbLeds(0, 0, 0);
-                    }
+                const auto state = app.GetDeviceState();
+                if (state == kDeviceStateListening) {
                     if (left_ear) {
                         app.CancelListening();
                     } else if (right_ear) {
                         app.StopListening();
                     }
+                } else if (state == kDeviceStateConnecting &&
+                           (left_ear || right_ear)) {
+                    app.CancelListening();
                 } else if (right_ear) {
-                    SetAllRgbLeds(0, 32, 0);
                     app.StartListening();
                 }
             }
@@ -3413,6 +3416,7 @@ private:
 
     bool servo_ok_ = false;
     bool rgb_ok_ = false;
+    bool recording_presentation_active_ = false;
     static constexpr uint8_t RGB_LED_COUNT = 12;  // StackChan base has 12 WS2812C
     static constexpr uint8_t RGB_DATA_PIN  = 13;  // PY32 expander pin (not ESP32 GPIO)
 
@@ -3547,10 +3551,9 @@ private:
         out[1] = (uint8_t)((v >> 8) & 0xFF);
     }
 
-    // 全 RGB LED を同じ色にする helper。 self.led.set_all MCP tool と同じ I2C 経路
-    // (PY32 経由 WS2812)。 PollTouchpad のタッチフィードバック等、 MCP 以外の
-    // 経路から LED を駆動するときに使う。 PY32 init 失敗時 (rgb_ok_ == false)
-    // は no-op で安全に抜ける。
+    // Drive all base LEDs through the same PY32 path as self.led.set_all.
+    // This is used for board-owned recording state; failed RGB setup is a
+    // safe no-op.
     void SetAllRgbLeds(uint8_t r, uint8_t g, uint8_t b) {
         if (!rgb_ok_ || io_expander_ == nullptr) {
             return;
@@ -4976,69 +4979,30 @@ private:
     void FinishExpression(
             StackChanExpressionOutcome outcome,
             uint64_t now_us) {
-        if (!expression_active_.load(std::memory_order_acquire)) {
-            return;
-        }
-
-        const ExpressionStep step = expression_step_.load(
-            std::memory_order_acquire);
-        if (step != ExpressionStep::RESTORING_FACE) {
-            expression_finish_outcome_ = outcome;
-            expression_face_restore_deadline_us_ =
-                now_us + EXPRESSION_FACE_RESTORE_TIMEOUT_US;
-            expression_step_.store(
-                ExpressionStep::RESTORING_FACE,
-                std::memory_order_release);
-        }
-        bool face_restored = true;
-        if (FaceDisplayAllowed()) {
-            face_restored = RestoreFaceForCurrentState();
-        } else {
-            HideFace();
-        }
-        if (!face_restored) {
-            if (now_us < expression_face_restore_deadline_us_) {
-                return;
-            }
-            HideFace();
-            if (!expression_failure_reason_.empty()) {
-                expression_failure_reason_ += ":";
-            }
-            expression_failure_reason_ += "face_restore_deadline";
-            if (expression_finish_outcome_ !=
-                    StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
-                expression_finish_outcome_ =
-                    StackChanExpressionOutcome::UNAVAILABLE;
-            }
-        }
         if (!expression_active_.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
         expression_abort_requested_.store(false, std::memory_order_release);
-        if (expression_finish_outcome_ ==
-                StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
+        if (outcome == StackChanExpressionOutcome::SAFE_RETURN_FAILED) {
             physical_motion_unavailable_.store(
                 true, std::memory_order_release);
         }
         ESP_LOGI(
             TAG,
-            "Expression terminal: name=%s outcome=%s face_restored=%d",
+            "Expression terminal: name=%s outcome=%s",
             expression_name_.c_str(),
-            StackChanExpressionOutcomeName(expression_finish_outcome_),
-            face_restored ? 1 : 0);
+            StackChanExpressionOutcomeName(outcome));
         const auto invocation = expression_invocation_.load(
             std::memory_order_acquire);
         if (invocation == ExpressionInvocation::BEHAVIOR) {
-            const char* subtype = expression_finish_outcome_ ==
+            const char* subtype = outcome ==
                     StackChanExpressionOutcome::COMPLETED
                 ? expression_behavior_success_subtype_
                 : "behavior_failed";
             std::string detail;
-            if (expression_finish_outcome_ !=
-                    StackChanExpressionOutcome::COMPLETED) {
+            if (outcome != StackChanExpressionOutcome::COMPLETED) {
                 detail = "outcome=";
-                detail += StackChanExpressionOutcomeName(
-                    expression_finish_outcome_);
+                detail += StackChanExpressionOutcomeName(outcome);
                 if (!expression_failure_reason_.empty()) {
                     detail += " reason=";
                     detail += expression_failure_reason_;
@@ -5053,8 +5017,7 @@ private:
         } else if (invocation == ExpressionInvocation::TOUCH) {
             const TouchEvent touch_event = touch_offer_consent_event_.exchange(
                 TouchEvent::IDLE, std::memory_order_acq_rel);
-            if (expression_finish_outcome_ ==
-                    StackChanExpressionOutcome::COMPLETED &&
+            if (outcome == StackChanExpressionOutcome::COMPLETED &&
                 touch_event != TouchEvent::IDLE) {
                 const char* subtype = touch_event == TouchEvent::TAP
                     ? "tap" : "stroke";
@@ -5065,6 +5028,7 @@ private:
                         std::memory_order_acquire));
             }
         }
+        RequestFaceForCurrentState();
         physical_behavior_owner_.store(
             PhysicalBehaviorOwner::IDLE, std::memory_order_release);
         Application::GetInstance().ResumeDeferredAudioPlayback();
@@ -5082,9 +5046,9 @@ private:
         if (head_motion_runner_ != nullptr) {
             head_motion_runner_->RequestRecovery(outcome, reason);
         }
-        // Recovery has already been handed to the high-priority head runner;
-        // restoring the visual cannot delay the safety command.
-        ShowIdleFace();
+        // Recovery belongs to the head runner. The state face is best-effort
+        // presentation and is applied later by LVGL.
+        RequestIdleFace();
     }
 
     StackChanExpressionOutcome StartExpressionOperation(
@@ -5329,13 +5293,9 @@ private:
                         StackChanExpressionOutcome::MOTION_FAILED, now_us);
                 }
                 break;
-            case ExpressionStep::RESTORING_FACE:
-                FinishExpression(expression_finish_outcome_, now_us);
-                break;
         }
 
         if (!expression_active_.load(std::memory_order_acquire) ||
-            step == ExpressionStep::RESTORING_FACE ||
             step == ExpressionStep::WAITING_FOR_FACE ||
             step == ExpressionStep::PREPARING) {
             return;
@@ -5430,14 +5390,13 @@ private:
         if (!servo_ok_ || head_motion_runner_ == nullptr) {
             return;
         }
-        const BaseType_t created = xTaskCreatePinnedToCore(
+        const BaseType_t created = xTaskCreate(
             &StackChanBoard::ExpressionTaskTrampoline,
             "expression_runner",
             4096,
             this,
             3,
-            &expression_task_handle_,
-            1);
+            &expression_task_handle_);
         if (created != pdPASS) {
             expression_task_handle_ = nullptr;
             ESP_LOGE(TAG, "Failed to create expression_runner task");
@@ -5632,10 +5591,6 @@ private:
             ApplicationDisplayAllowed(state, owner);
     }
 
-    bool ShowIdleFaceLocked() {
-        return face_player_ != nullptr && face_player_->ShowIdleLocked();
-    }
-
     bool ShowIdleFace() {
         if (display_ == nullptr || !FaceDisplayAllowed()) {
             return false;
@@ -5643,22 +5598,25 @@ private:
         return face_player_ != nullptr && face_player_->ShowIdle();
     }
 
-    bool ShowListeningFaceLocked() {
-        return face_player_ != nullptr && face_player_->ShowListeningLocked();
-    }
-
-    bool ShowListeningFace() {
-        if (display_ == nullptr || !FaceDisplayAllowed()) {
-            return false;
+    void RequestIdleFace() {
+        if (face_player_ != nullptr && FaceDisplayAllowed()) {
+            face_player_->RequestIdle();
         }
-        return face_player_ != nullptr && face_player_->ShowListening();
     }
 
-    bool RestoreFaceForCurrentState() {
-        return Application::GetInstance().GetDeviceState() ==
-                kDeviceStateListening
-            ? ShowListeningFace()
-            : ShowIdleFace();
+    void RequestFaceForCurrentState() {
+        if (face_player_ == nullptr || !FaceDisplayAllowed()) {
+            HideFace();
+            return;
+        }
+        const auto state = Application::GetInstance().GetDeviceState();
+        if (state == kDeviceStateListening) {
+            face_player_->RequestListening();
+        } else if (state == kDeviceStateSpeaking) {
+            face_player_->RequestSpeaking();
+        } else {
+            face_player_->RequestIdle();
+        }
     }
 
     void HideFaceLocked() {
@@ -7636,6 +7594,7 @@ public:
     }
 
     void OnDeviceStateChanged(DeviceState state) override {
+        UpdateRecordingPresentation(state);
         const bool deferred_speech = state == kDeviceStateSpeaking &&
             expression_invocation_.load(std::memory_order_acquire) !=
                 ExpressionInvocation::PREVIEW;
@@ -7699,13 +7658,18 @@ public:
 
     virtual void OnTtsStart() override {
         if (face_player_ != nullptr && FaceDisplayAllowed()) {
-            face_player_->ShowSpeaking();
+            face_player_->RequestSpeaking();
         }
     }
 
     virtual void OnTtsStop() override {
-        if (FaceDisplayAllowed()) {
-            RestoreFaceForCurrentState();
+        if (face_player_ != nullptr && FaceDisplayAllowed()) {
+            if (Application::GetInstance().GetDeviceState() ==
+                    kDeviceStateListening) {
+                face_player_->RequestListening();
+            } else {
+                face_player_->RequestIdle();
+            }
         } else {
             HideFace();
         }

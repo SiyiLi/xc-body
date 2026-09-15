@@ -10,9 +10,23 @@
 #define TAG "XcBodyFace"
 
 XcBodyFaceAnimationPlayer::XcBodyFaceAnimationPlayer(LcdDisplay* display)
-    : display_(display) {}
+    : display_(display) {
+    DisplayLockGuard lock(display_);
+    face_request_timer_ = lv_timer_create(
+        &FaceRequestTimerCallback,
+        kFaceRequestIntervalMs,
+        this);
+    if (face_request_timer_ == nullptr) {
+        ESP_LOGE(TAG, "Could not create face request timer");
+    }
+}
 
-XcBodyFaceAnimationPlayer::~XcBodyFaceAnimationPlayer() = default;
+XcBodyFaceAnimationPlayer::~XcBodyFaceAnimationPlayer() {
+    DisplayLockGuard lock(display_);
+    if (face_request_timer_ != nullptr) {
+        lv_timer_delete(face_request_timer_);
+    }
+}
 
 bool XcBodyFaceAnimationPlayer::SameImageLayout(
         const lv_img_dsc_t* first,
@@ -126,17 +140,59 @@ bool XcBodyFaceAnimationPlayer::ShowListeningLocked() {
 
 bool XcBodyFaceAnimationPlayer::ShowIdle() {
     DisplayLockGuard lock(display_);
-    return ShowIdleLocked();
+    requested_face_.store(StateFace::IDLE, std::memory_order_release);
+    const bool shown = ShowIdleLocked();
+    applied_face_ = StateFace::IDLE;
+    return shown;
 }
 
-bool XcBodyFaceAnimationPlayer::ShowListening() {
-    DisplayLockGuard lock(display_);
-    return ShowListeningLocked();
+void XcBodyFaceAnimationPlayer::RequestFace(StateFace face) {
+    requested_face_.store(face, std::memory_order_release);
 }
 
-bool XcBodyFaceAnimationPlayer::ShowSpeaking() {
-    DisplayLockGuard lock(display_);
-    return ShowAssetLocked("speaking.gif", 0, true);
+void XcBodyFaceAnimationPlayer::RequestIdle() {
+    RequestFace(StateFace::IDLE);
+}
+
+void XcBodyFaceAnimationPlayer::RequestListening() {
+    RequestFace(StateFace::LISTENING);
+}
+
+void XcBodyFaceAnimationPlayer::RequestSpeaking() {
+    RequestFace(StateFace::SPEAKING);
+}
+
+void XcBodyFaceAnimationPlayer::FaceRequestTimerCallback(
+        lv_timer_t* timer) {
+    auto* player = static_cast<XcBodyFaceAnimationPlayer*>(
+        lv_timer_get_user_data(timer));
+    player->ApplyRequestedFaceLocked();
+}
+
+void XcBodyFaceAnimationPlayer::ApplyRequestedFaceLocked() {
+    const StateFace target = requested_face_.load(std::memory_order_acquire);
+    if (target == applied_face_) {
+        return;
+    }
+    switch (target) {
+        case StateFace::IDLE:
+            ShowIdleLocked();
+            break;
+        case StateFace::LISTENING:
+            ShowListeningLocked();
+            break;
+        case StateFace::SPEAKING:
+            ShowAssetLocked("speaking.gif", 0, true);
+            break;
+        case StateFace::NONE:
+            break;
+    }
+    applied_face_ = target;
+}
+
+void XcBodyFaceAnimationPlayer::CancelRequestedFaceLocked() {
+    requested_face_.store(StateFace::NONE, std::memory_order_release);
+    applied_face_ = StateFace::NONE;
 }
 
 bool XcBodyFaceAnimationPlayer::PrepareExpression(
@@ -145,6 +201,7 @@ bool XcBodyFaceAnimationPlayer::PrepareExpression(
         return false;
     }
     DisplayLockGuard lock(display_);
+    CancelRequestedFaceLocked();
     return ShowAssetLocked(
         "expression-" + animation + ".gif", 1, false);
 }
@@ -169,6 +226,7 @@ bool XcBodyFaceAnimationPlayer::ExpressionFailed() {
 }
 
 void XcBodyFaceAnimationPlayer::HideLocked() {
+    CancelRequestedFaceLocked();
     gif_.reset();
     paused_by_screensaver_ = false;
     if (image_ != nullptr && lv_obj_is_valid(image_)) {

@@ -85,8 +85,7 @@ void Application::ResumeDeferredAudioPlayback() {
         return;
     }
     auto& board = Board::GetInstance();
-    // Prepare the visual before waking the audio task. GIF setup is optional,
-    // but it must not compete with the first codec writes when it is present.
+    // This only records the latest desired state face. LVGL loads it later.
     board.OnTtsStart();
     audio_service_.ReleasePreparedAudioPlayback();
     audio_service_.ReleaseDirectAudioPlayback();
@@ -1075,6 +1074,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode, uint32_t generati
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
+            if (IsListeningRequestCurrent(generation)) {
+                InvalidatePendingListeningRequest();
+                listening_profile_ =
+                    ListeningProfileAfterStop(listening_profile_);
+                play_popup_on_listening_ = false;
+                SetDeviceState(kDeviceStateIdle);
+            }
             return;
         }
     }
@@ -1179,7 +1185,7 @@ void Application::HandleCancelListeningEvent() {
         listening_profile_ = ListeningProfileAfterStop(listening_profile_);
         play_popup_on_listening_ = false;
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
-            protocol_->SendCancelListening();
+            protocol_->CloseAudioChannel();
         }
         SetDeviceState(kDeviceStateIdle);
     } else if (state == kDeviceStateListening) {
