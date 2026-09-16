@@ -23,7 +23,8 @@ conversation.
 
 Keep Milestone 5 constrained to:
 
-- seven named expressions plus idle ambient presence selected by projection;
+- seven named expressions selected by projection, plus non-selectable idle
+  ambient presence;
 - deterministic face and head recipes with reviewed servo limits;
 - replacement of direct attention and the background-offer knock with one
   selected expression before playback or pending wait;

@@ -42,8 +42,9 @@ turning it off should make the room feel a little emptier.
   offer cues, touch reactions, and speaking animation. Compound transcription
   may select a silent expression when it is a complete response; questions,
   actions, and uncertain cases run the agent. Answer and offer projection use
-  the same fixed vocabulary. Interaction executes the selected expression
-  before optional speech. Versioned end-to-end physical acceptance remains.
+  the same seven-expression vocabulary; idle remains an internal ambient and
+  safe-return state. Interaction executes the selected expression before
+  optional speech. Versioned end-to-end physical acceptance remains.
 - Milestone 6 owns future perception-guided ambient presence, including sparse
   idle behavior and explicit bounded camera observation.
 

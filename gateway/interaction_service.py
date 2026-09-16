@@ -26,7 +26,7 @@ from gateway.direct_conversation import (
     parse_plugin_metrics,
     perform_direct_answer,
 )
-from gateway.expression_names import SUPPORTED_EXPRESSIONS
+from gateway.expression_names import SEMANTIC_EXPRESSIONS
 from gateway.interaction_runtime import (
     InteractionRuntime,
     InteractionRuntimeError,
@@ -452,7 +452,7 @@ def build_app(
             if (
                 not isinstance(turn_id, str)
                 or not isinstance(expression, str)
-                or expression not in SUPPORTED_EXPRESSIONS
+                or expression not in SEMANTIC_EXPRESSIONS
                 or (
                     speech is not None
                     and (not isinstance(speech, str) or not speech.strip())

@@ -51,8 +51,10 @@ are also persisted across container replacement in
 `openclaw-plugin/` observes typed completion hooks, including `agent_end`, and
 deduplicates the same run across hook boundaries. Compound transcription and
 spoken projection use the fixed model with reasoning and thinking disabled.
-They choose from one fixed semantic expression vocabulary. The plugin does not
-own speech encoding, robot motion, pending-offer state, or device connectivity.
+They choose from one fixed seven-expression semantic vocabulary. Idle is an
+internal presence and safe-return state, not a model choice. The plugin does
+not own speech encoding, robot motion, pending-offer state, or device
+connectivity.
 
 ### Interaction service
 
@@ -158,9 +160,9 @@ eventual direct answer.
 3. That expression-only route skips the agent. Questions, requests requiring
    action or explanation, and uncertain cases enter the configured existing
    OpenClaw session.
-4. Every completed answer is projected to select an expression from its full
-   meaning. A short answer keeps its exact speech; a long or formatted answer
-   is also projected into bounded speech.
+4. Every completed answer is projected to select one of the seven named
+   expressions from its full meaning. A short answer keeps its exact speech; a
+   long or formatted answer is also projected into bounded speech.
 5. The plugin sends expression and optional speech once through the claimed
    voice turn. Interaction holds its body lane while Gateway runs the firmware
    expression through safe return and then starts PCM when speech is present.

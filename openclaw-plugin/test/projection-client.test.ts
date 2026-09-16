@@ -95,7 +95,7 @@ test("sends captured Ogg directly to the configured transcriber", async () => {
 });
 
 test("normalizes an unusable expression-only result to conversation", () => {
-  for (const expression of [undefined, null, "unsupported"]) {
+  for (const expression of [undefined, null, "idle", "unsupported"]) {
     const value = {
       transcript: "hello",
       route: "expression_only",

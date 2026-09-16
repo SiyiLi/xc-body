@@ -1,5 +1,4 @@
 export const EXPRESSION_NAMES = [
-  "idle",
   "agree",
   "pleased",
   "curious",
@@ -10,10 +9,10 @@ export const EXPRESSION_NAMES = [
 ] as const;
 
 export type ExpressionName = (typeof EXPRESSION_NAMES)[number];
-export type OfferExpressionName = Exclude<ExpressionName, "idle">;
+export type OfferExpressionName = ExpressionName;
 
-export const EXPRESSION_GUIDANCE = `Choose exactly one XC Body expression:
-- idle: neutral, calm, or purely factual
+export const EXPRESSION_GUIDANCE = `Choose exactly one XC Body expression \
+from this complete list; never return idle:
 - agree: agreement, confirmation, or acknowledgment
 - pleased: warmth, thanks, success, or good news
 - curious: questions, inquiry, or uncertainty
@@ -32,5 +31,5 @@ export function isExpressionName(value: unknown): value is ExpressionName {
 export function isOfferExpressionName(
   value: unknown,
 ): value is OfferExpressionName {
-  return value !== "idle" && isExpressionName(value);
+  return isExpressionName(value);
 }

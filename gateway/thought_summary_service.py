@@ -7,7 +7,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from gateway.expression_names import OFFER_EXPRESSIONS
+from gateway.expression_names import SEMANTIC_EXPRESSIONS
 from gateway.pending_thought import (
     PendingThoughtError,
     decode_prepared_audio,
@@ -65,7 +65,7 @@ def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
     if not summary or len(summary) > _MAX_SUMMARY_CHARS:
         raise ThoughtSummaryError("summary must be bounded spoken text")
     expression = payload["expression"]
-    if not isinstance(expression, str) or expression not in OFFER_EXPRESSIONS:
+    if not isinstance(expression, str) or expression not in SEMANTIC_EXPRESSIONS:
         raise ThoughtSummaryError("expression must be a supported offer name")
     return ThoughtSummary(
         version="v1",

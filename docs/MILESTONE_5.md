@@ -72,13 +72,15 @@ assets package repairs it. A blank face is not a substitute for an expression.
 
 ## Runtime Behavior
 
-- Compound transcription routes directly to one silent expression when that is
-  a natural and complete response. Questions, requests requiring action or
-  explanation, and uncertain cases run the agent normally.
-- Every completed direct answer is projected to select an expression from its
-  full meaning. A short answer keeps its exact speech; a long or formatted
-  answer is also projected into bounded speech. Interaction runs the selected
-  expression through safe return before starting the unchanged speech path.
+- Compound transcription routes directly to one of the seven named silent
+  expressions when that is a natural and complete response. Questions,
+  requests requiring action or explanation, and uncertain cases run the agent
+  normally.
+- Every completed direct answer is projected to select one of the seven named
+  expressions from its full meaning. A short answer keeps its exact speech; a
+  long or formatted answer is also projected into bounded speech. Interaction
+  runs the selected expression through safe return before starting the
+  unchanged speech path.
 - Background projection selects `skip` or bounded speech plus one non-idle
   expression. An offer prepares audio, runs that expression once through safe
   return, then enters the unchanged wait-for-touch state. The VM keeps the idle
@@ -96,10 +98,11 @@ assets package repairs it. A blank face is not a substitute for an expression.
   blink. Missing or invalid speaking art cannot block speech. TTS stop restores
   idle presence.
 - The private `perform_expression` gateway tool accepts `idle` or one of the
-  seven expression names from Interaction. The public voice and summary
-  requests carry only the selected semantic name. `idle` restores the safe
-  pose; named expressions use the same firmware runner. No boundary exposes
-  motor parameters.
+  seven expression names for internal execution. Public voice and summary
+  requests carry one of the seven named expressions; model output cannot
+  select `idle`. Internally, `idle` restores the safe pose, while named
+  expressions use the same firmware runner. No boundary exposes motor
+  parameters.
 
 ## Display Behavior
 

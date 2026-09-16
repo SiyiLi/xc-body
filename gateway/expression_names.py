@@ -1,4 +1,4 @@
-"""Semantic expression names accepted by the Interaction boundary."""
+"""Expression names accepted at XC Body runtime boundaries."""
 
 SUPPORTED_EXPRESSIONS = frozenset(
     (
@@ -12,4 +12,4 @@ SUPPORTED_EXPRESSIONS = frozenset(
         "mischievous",
     )
 )
-OFFER_EXPRESSIONS = SUPPORTED_EXPRESSIONS - {"idle"}
+SEMANTIC_EXPRESSIONS = SUPPORTED_EXPRESSIONS - {"idle"}

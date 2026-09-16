@@ -273,7 +273,7 @@ export async function prepareDirectSpeech(
     }
   }
   if (!projectSpeech) {
-    return { speech: answer, expression: "idle" };
+    return { speech: answer, expression: "curious" };
   }
   return null;
 }

@@ -68,7 +68,7 @@ export async function prepareDirectAnswer(
   return (
     (await prepareDirectSpeech(complete, answer)) ?? {
       speech: PROJECTION_FAILURE_SPEECH,
-      expression: "idle",
+      expression: "curious",
     }
   );
 }

@@ -43,7 +43,7 @@ test("plain answers survive expression projection failure", async () => {
     throw new Error("projection unavailable");
   }, answer);
 
-  assert.deepEqual(prepared, { speech: answer, expression: "idle" });
+  assert.deepEqual(prepared, { speech: answer, expression: "curious" });
   assert.equal(calls, 2);
 });
 
@@ -80,7 +80,7 @@ test("long-answer projection selects from the final answer alone", async () => {
   });
 });
 
-test("direct caller falls back to error speech and idle", async () => {
+test("direct caller falls back to error speech and curious", async () => {
   let calls = 0;
   const prepared = await prepareDirectAnswer(async () => {
     calls += 1;
@@ -89,7 +89,7 @@ test("direct caller falls back to error speech and idle", async () => {
 
   assert.deepEqual(prepared, {
     speech: "抱歉，在生成最终答案时出了点问题。",
-    expression: "idle",
+    expression: "curious",
   });
   assert.equal(calls, 2);
 });
@@ -191,7 +191,7 @@ test("projection parsers enforce speech and expression boundaries", () => {
       speech: null,
       expression: "idle",
     }), false),
-    { speech: null, expression: "idle" },
+    { speech: null, expression: "curious" },
   );
   for (const invalid of [
     JSON.stringify({

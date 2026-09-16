@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Literal, Protocol, cast
 
-from gateway.expression_names import OFFER_EXPRESSIONS
+from gateway.expression_names import SEMANTIC_EXPRESSIONS
 
 Decision = Literal["ignore", "remember", "offer"]
 _ALLOWED_FIELDS = frozenset(
@@ -224,7 +224,7 @@ def parse_pending_thought(payload: Mapping[str, object]) -> PendingThought:
         decode_prepared_audio(audio_base64)
         if (
             not isinstance(expression, str)
-            or expression not in OFFER_EXPRESSIONS
+            or expression not in SEMANTIC_EXPRESSIONS
         ):
             raise PendingThoughtError(
                 "offer requires one supported non-idle expression"
