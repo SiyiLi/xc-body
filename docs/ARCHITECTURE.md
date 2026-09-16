@@ -56,8 +56,8 @@ own speech encoding, robot motion, pending-offer state, or device connectivity.
 
 ### Interaction service
 
-The VM summary boundary keeps plaintext in request scope, prepares normalized
-16 kHz mono Opus for pending offers, validates the packet profile, and submits
+The VM summary boundary keeps plaintext in request scope, prepares 16 kHz mono
+Opus for pending offers, validates the packet profile, and submits
 the existing pending-thought contract. Direct answers use the existing PCM
 streaming path after the selected expression returns safely. Plaintext is not
 stored or logged.

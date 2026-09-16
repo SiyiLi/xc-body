@@ -158,20 +158,51 @@ test("projection parsers enforce speech and expression boundaries", () => {
     }), false),
     { speech: null, expression: "agree" },
   );
-  for (const invalid of [
-    JSON.stringify({
-      decision: "offer",
-      speech: "任务已经完成。",
+  for (const expression of ["excited", "idle", null]) {
+    assert.deepEqual(
+      parseSpokenProjection(JSON.stringify({
+        decision: "offer",
+        speech: "任务已经完成。",
+        expression,
+      })),
+      {
+        decision: "offer",
+        speech: "任务已经完成。",
+        expression: "curious",
+      },
+    );
+  }
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: "excited",
+    }), false),
+    { speech: null, expression: "curious" },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: null,
+    }), false),
+    { speech: null, expression: "curious" },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
       expression: "idle",
-    }),
+    }), false),
+    { speech: null, expression: "idle" },
+  );
+  for (const invalid of [
     JSON.stringify({
       decision: "offer",
       speech: "English only",
       expression: "pleased",
     }),
     JSON.stringify({
+      decision: "offer",
       speech: "任务已经完成。",
-      expression: "unknown",
+      expression: [],
     }),
   ]) {
     assert.equal(parseSpokenProjection(invalid), null);

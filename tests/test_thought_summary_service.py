@@ -294,6 +294,7 @@ class ThoughtSummaryServiceTests(unittest.TestCase):
             args[input_index : input_index + 4],
             ("-f", "mp3", "-i", "pipe:0"),
         )
+        self.assertNotIn("-af", args)
         self.assertIs(kwargs["stdin"], asyncio.subprocess.PIPE)
 
 

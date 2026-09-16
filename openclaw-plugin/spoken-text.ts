@@ -156,14 +156,18 @@ export function parseSpokenProjection(
     value.decision !== "offer" ||
     typeof value.speech !== "string" ||
     !isValidProjectedSpeech(value.speech.trim()) ||
-    !isOfferExpressionName(value.expression)
+    (value.expression !== null &&
+      typeof value.expression !== "string")
   ) {
     return null;
   }
+  const expression = isOfferExpressionName(value.expression)
+    ? value.expression
+    : "curious";
   return {
     decision: "offer",
     speech: value.speech.trim(),
-    expression: value.expression,
+    expression,
   };
 }
 
@@ -175,12 +179,16 @@ export function parseDirectProjection(
   if (
     value === null ||
     Object.keys(value).length !== 2 ||
-    !isExpressionName(value.expression)
+    (value.expression !== null &&
+      typeof value.expression !== "string")
   ) {
     return null;
   }
+  const expression = isExpressionName(value.expression)
+    ? value.expression
+    : "curious";
   if (!projectSpeech && value.speech === null) {
-    return { speech: null, expression: value.expression };
+    return { speech: null, expression };
   }
   if (
     !projectSpeech ||
@@ -191,7 +199,7 @@ export function parseDirectProjection(
   }
   return {
     speech: value.speech.trim(),
-    expression: value.expression,
+    expression,
   };
 }
 
