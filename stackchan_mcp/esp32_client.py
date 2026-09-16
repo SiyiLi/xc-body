@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Timeout for waiting for ESP32 responses
 RESPONSE_TIMEOUT = 10.0
+TTS_DRAIN_TIMEOUT_S = 12.0
 WEBSOCKET_PING_INTERVAL_S = 20
 WEBSOCKET_PING_TIMEOUT_S = 20
 XC_BODY_BEHAVIOR_TIMEOUT_S = 30.0
@@ -369,11 +370,25 @@ class ESP32Connection:
                 transfer_id=transfer_id,
                 drain_id=drain_id,
             )
-            result = await asyncio.wait_for(future, timeout=RESPONSE_TIMEOUT)
+            result = await asyncio.wait_for(
+                future,
+                timeout=TTS_DRAIN_TIMEOUT_S,
+            )
             if result.get("ok") is not True:
                 raise TtsDrainError(result)
             return result
         except asyncio.CancelledError:
+            await self._fence_after_drain_failure()
+            raise
+        except TimeoutError:
+            logger.warning(
+                "TTS drain timed out: device=%s session=%s "
+                "drain_id=%s timeout_s=%.1f",
+                self.device_id,
+                self.session_id,
+                drain_id,
+                TTS_DRAIN_TIMEOUT_S,
+            )
             await self._fence_after_drain_failure()
             raise
         except Exception:
@@ -407,7 +422,15 @@ class ESP32Connection:
             self._tts_drain_waiter = None
             waiter[1].set_result(payload)
         else:
-            logger.warning("Unmatched TTS drain notification: id=%s", drain_id)
+            expected_id = waiter[0] if waiter is not None else None
+            logger.warning(
+                "Late or unmatched TTS drain: device=%s session=%s "
+                "expected_id=%s payload=%s",
+                self.device_id,
+                self.session_id,
+                expected_id,
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
 
     async def send_listen_state(
         self,
