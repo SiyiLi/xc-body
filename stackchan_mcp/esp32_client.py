@@ -120,6 +120,14 @@ def _log_disconnect_details(
     )
 
 
+class TtsDrainError(RuntimeError):
+    """Firmware rejected a correlated drain and supplied diagnostics."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__("Firmware TTS drain did not complete")
+        self.result = dict(result)
+
+
 class ESP32Connection:
     """Manages a single ESP32 device connection."""
 
@@ -363,7 +371,7 @@ class ESP32Connection:
             )
             result = await asyncio.wait_for(future, timeout=RESPONSE_TIMEOUT)
             if result.get("ok") is not True:
-                raise RuntimeError("Firmware TTS drain did not complete")
+                raise TtsDrainError(result)
             return result
         except asyncio.CancelledError:
             await self._fence_after_drain_failure()

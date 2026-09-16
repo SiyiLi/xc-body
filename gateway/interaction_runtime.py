@@ -55,6 +55,23 @@ def _stream_playback_metrics(playback: Mapping[str, object]) -> dict[str, int]:
         value = playback.get(source)
         if isinstance(value, int) and value >= 0:
             metrics[target] = value
+    for source in (
+        "stall_pcm_underrun_ms",
+        "stall_pcm_ready_to_dequeue_ms",
+        "stall_enable_output_ms",
+        "stall_pre_output_ms",
+        "stall_output_data_ms",
+        "stall_opus_dequeue_latency_ms",
+        "stall_decode_resample_ms",
+        "stall_decode_queue_depth",
+        "stall_playback_queue_depth",
+        "stall_terminal",
+        "stall_decode_in_flight",
+        "stall_output_in_flight",
+    ):
+        value = playback.get(source)
+        if isinstance(value, int) and value >= 0:
+            metrics[f"firmware_{source}"] = value
     return metrics
 
 

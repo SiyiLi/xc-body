@@ -190,6 +190,20 @@ class InteractionRuntimeTests(unittest.TestCase):
             streaming_url="http://127.0.0.1:8766/pcm",
         )
         pcm = Pcm()
+        diagnostics = {
+            "stall_pcm_underrun_ms": 5,
+            "stall_pcm_ready_to_dequeue_ms": 4200,
+            "stall_enable_output_ms": 0,
+            "stall_pre_output_ms": 1,
+            "stall_output_data_ms": 60,
+            "stall_opus_dequeue_latency_ms": 12,
+            "stall_decode_resample_ms": 16,
+            "stall_decode_queue_depth": 39,
+            "stall_playback_queue_depth": 4,
+            "stall_terminal": 0,
+            "stall_decode_in_flight": 0,
+            "stall_output_in_flight": 0,
+        }
         with patch.object(
             body,
             "_play_pcm_stream",
@@ -199,6 +213,7 @@ class InteractionRuntimeTests(unittest.TestCase):
                 "duration_ms": 60,
                 "gateway_first_audio_frame_sent_ms": 1000,
                 "gateway_playback_completed_ms": 1060,
+                **diagnostics,
             },
         ) as play:
             metrics = body.tell_direct_stream("robot:1", "pleased", pcm)
@@ -218,6 +233,8 @@ class InteractionRuntimeTests(unittest.TestCase):
         self.assertEqual(play.call_args.args[2], "device-session-1")
         self.assertEqual(metrics["streamed_audio_frames"], 1)
         self.assertEqual(metrics["gateway_first_audio_frame_sent_ms"], 1000)
+        for name, value in diagnostics.items():
+            self.assertEqual(metrics[f"firmware_{name}"], value)
 
     def test_direct_stream_never_opens_pcm_after_producer_failure(self):
         class Pcm:

@@ -48,6 +48,14 @@ constexpr BaseType_t kAudioExecutionCore = 1;
 constexpr BaseType_t kAudioExecutionCore = tskNO_AFFINITY;
 #endif
 
+uint32_t ElapsedMilliseconds(
+        std::chrono::steady_clock::time_point started,
+        std::chrono::steady_clock::time_point finished) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        finished - started).count();
+    return elapsed > 0 ? static_cast<uint32_t>(elapsed) : 0;
+}
+
 } // namespace
 
 AudioService::AudioService() {
@@ -488,6 +496,137 @@ void AudioService::ReturnRawCaptureFrame(std::unique_ptr<RawCaptureFrame> frame,
     audio_queue_cv_.notify_all();
 }
 
+bool AudioService::IsDirectAudioDecodeEligibleLocked() const {
+    return direct_audio_active_ &&
+        !prepared_audio_pending_ &&
+        !prepared_audio_playback_blocked_ &&
+        !direct_audio_playback_blocked_ &&
+        !audio_decode_in_flight_ &&
+        !audio_decode_queue_.empty() &&
+        audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+}
+
+void AudioService::UpdateDirectAudioDecodeEligibilityLocked() {
+    bool eligible = IsDirectAudioDecodeEligibleLocked();
+    if (eligible && !direct_audio_decode_eligible_) {
+        direct_audio_decode_eligible_since_ =
+            std::chrono::steady_clock::now();
+    }
+    direct_audio_decode_eligible_ = eligible;
+}
+
+void AudioService::CaptureDirectAudioStallLocked(
+        const AudioTask& task,
+        size_t playback_queue_depth,
+        std::chrono::steady_clock::time_point output_received,
+        uint32_t enable_output_ms,
+        std::chrono::steady_clock::time_point output_started,
+        std::chrono::steady_clock::time_point output_finished) {
+    if (!direct_audio_has_output_time_) {
+        return;
+    }
+    uint32_t gap_ms = ElapsedMilliseconds(
+        direct_audio_last_output_time_, output_finished);
+    if (gap_ms <= direct_audio_metrics_.max_codec_write_gap_ms) {
+        return;
+    }
+
+    auto eligible_at = std::max(
+        direct_audio_last_output_time_, task.pcm_ready_at);
+    uint32_t pre_output_ms = ElapsedMilliseconds(
+        output_received, output_started);
+    direct_audio_metrics_.max_codec_write_gap_ms = gap_ms;
+    direct_audio_metrics_.stall_pcm_underrun_ms =
+        task.pcm_ready_at > direct_audio_last_output_time_ ?
+        ElapsedMilliseconds(
+            direct_audio_last_output_time_, task.pcm_ready_at) : 0;
+    direct_audio_metrics_.stall_pcm_ready_to_dequeue_ms =
+        output_received > eligible_at ?
+        ElapsedMilliseconds(eligible_at, output_received) : 0;
+    direct_audio_metrics_.stall_enable_output_ms = enable_output_ms;
+    direct_audio_metrics_.stall_pre_output_ms =
+        pre_output_ms > enable_output_ms ?
+        pre_output_ms - enable_output_ms : 0;
+    direct_audio_metrics_.stall_output_data_ms =
+        ElapsedMilliseconds(output_started, output_finished);
+    direct_audio_metrics_.stall_opus_dequeue_latency_ms =
+        task.opus_dequeue_latency_ms;
+    direct_audio_metrics_.stall_decode_resample_ms =
+        task.decode_resample_ms;
+    direct_audio_metrics_.stall_decode_queue_depth =
+        task.decode_queue_depth;
+    direct_audio_metrics_.stall_playback_queue_depth =
+        playback_queue_depth;
+    direct_audio_metrics_.stall_terminal = false;
+    direct_audio_metrics_.stall_decode_in_flight = false;
+    direct_audio_metrics_.stall_output_in_flight = false;
+}
+
+void AudioService::CaptureTerminalDirectAudioStallLocked() {
+    if (!direct_audio_active_) {
+        return;
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (direct_audio_has_output_time_) {
+        uint32_t gap_ms = ElapsedMilliseconds(
+            direct_audio_last_output_time_, now);
+        if (gap_ms <= direct_audio_metrics_.max_codec_write_gap_ms) {
+            return;
+        }
+        direct_audio_metrics_.max_codec_write_gap_ms = gap_ms;
+    }
+
+    direct_audio_metrics_.stall_terminal = true;
+    direct_audio_metrics_.stall_decode_in_flight =
+        audio_decode_in_flight_;
+    direct_audio_metrics_.stall_output_in_flight =
+        audio_output_in_flight_;
+    direct_audio_metrics_.stall_decode_queue_depth =
+        audio_decode_queue_.size();
+    direct_audio_metrics_.stall_playback_queue_depth =
+        audio_playback_queue_.size();
+    direct_audio_metrics_.stall_enable_output_ms = 0;
+    direct_audio_metrics_.stall_pre_output_ms = 0;
+    direct_audio_metrics_.stall_output_data_ms = 0;
+
+    if (audio_output_in_flight_) {
+        direct_audio_metrics_.stall_pcm_underrun_ms = 0;
+        direct_audio_metrics_.stall_pcm_ready_to_dequeue_ms = 0;
+        direct_audio_metrics_.stall_opus_dequeue_latency_ms = 0;
+        direct_audio_metrics_.stall_decode_resample_ms = 0;
+        return;
+    }
+    if (audio_playback_queue_.empty() ||
+        !audio_playback_queue_.front()->direct_audio) {
+        direct_audio_metrics_.stall_pcm_underrun_ms =
+            direct_audio_has_output_time_ ?
+            ElapsedMilliseconds(direct_audio_last_output_time_, now) : 0;
+        direct_audio_metrics_.stall_pcm_ready_to_dequeue_ms = 0;
+        direct_audio_metrics_.stall_opus_dequeue_latency_ms = 0;
+        direct_audio_metrics_.stall_decode_resample_ms = 0;
+        return;
+    }
+
+    const auto& task = *audio_playback_queue_.front();
+    auto eligible_at = task.pcm_ready_at;
+    if (direct_audio_has_output_time_) {
+        eligible_at = std::max(
+            direct_audio_last_output_time_, task.pcm_ready_at);
+        direct_audio_metrics_.stall_pcm_underrun_ms =
+            task.pcm_ready_at > direct_audio_last_output_time_ ?
+            ElapsedMilliseconds(
+                direct_audio_last_output_time_, task.pcm_ready_at) : 0;
+    } else {
+        direct_audio_metrics_.stall_pcm_underrun_ms = 0;
+    }
+    direct_audio_metrics_.stall_pcm_ready_to_dequeue_ms =
+        now > eligible_at ? ElapsedMilliseconds(eligible_at, now) : 0;
+    direct_audio_metrics_.stall_opus_dequeue_latency_ms =
+        task.opus_dequeue_latency_ms;
+    direct_audio_metrics_.stall_decode_resample_ms =
+        task.decode_resample_ms;
+}
+
 void AudioService::AudioOutputTask() {
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
@@ -505,8 +644,12 @@ void AudioService::AudioOutputTask() {
             break;
         }
 
+        auto output_received = std::chrono::steady_clock::now();
+        size_t playback_queue_depth = audio_playback_queue_.size();
         auto task = std::move(audio_playback_queue_.front());
         audio_playback_queue_.pop_front();
+        bool direct_audio_output = direct_audio_active_ &&
+            task->direct_audio;
         if (direct_audio_active_) {
             direct_audio_playback_started_ = true;
         }
@@ -516,31 +659,34 @@ void AudioService::AudioOutputTask() {
                 task->prepared_audio_generation,
                 prepared_audio_generation_,
                 prepared_audio_tracking_);
+        UpdateDirectAudioDecodeEligibilityLocked();
         audio_queue_cv_.notify_all();
         lock.unlock();
 
+        uint32_t enable_output_ms = 0;
         if (!codec_->output_enabled()) {
+            auto enable_started = std::chrono::steady_clock::now();
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
+            enable_output_ms = ElapsedMilliseconds(
+                enable_started, std::chrono::steady_clock::now());
         }
 
+        auto output_started = std::chrono::steady_clock::now();
         bool output_ok = codec_->OutputData(task->pcm);
+        auto output_finished = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-            if (direct_audio_active_ && output_ok) {
-                auto now = std::chrono::steady_clock::now();
-                if (direct_audio_has_output_time_) {
-                    auto gap = std::chrono::duration_cast<
-                        std::chrono::milliseconds>(
-                            now - direct_audio_last_output_time_).count();
-                    uint32_t gap_ms =
-                        gap > 0 ? static_cast<uint32_t>(gap) : 0;
-                    direct_audio_metrics_.max_codec_write_gap_ms = std::max(
-                        direct_audio_metrics_.max_codec_write_gap_ms,
-                        gap_ms);
-                }
-                direct_audio_last_output_time_ = now;
+            if (direct_audio_output && direct_audio_active_ && output_ok) {
+                CaptureDirectAudioStallLocked(
+                    *task,
+                    playback_queue_depth,
+                    output_received,
+                    enable_output_ms,
+                    output_started,
+                    output_finished);
+                direct_audio_last_output_time_ = output_finished;
                 direct_audio_has_output_time_ = true;
                 direct_audio_metrics_.codec_output_frames++;
             }
@@ -606,8 +752,18 @@ void AudioService::OpusCodecTask() {
             !direct_audio_playback_blocked_ &&
             !audio_decode_queue_.empty() &&
             audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
+            bool direct_audio_packet = direct_audio_active_ &&
+                audio_decode_queue_.front()->prepared_audio_generation == 0;
+            uint32_t opus_dequeue_latency_ms = 0;
+            if (direct_audio_packet && direct_audio_decode_eligible_) {
+                opus_dequeue_latency_ms = ElapsedMilliseconds(
+                    direct_audio_decode_eligible_since_,
+                    std::chrono::steady_clock::now());
+            }
+            direct_audio_decode_eligible_ = false;
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            size_t decode_queue_depth = audio_decode_queue_.size();
             if (direct_audio_deferred_backlog_ &&
                 audio_decode_queue_.empty()) {
                 direct_audio_deferred_backlog_ = false;
@@ -627,7 +783,11 @@ void AudioService::OpusCodecTask() {
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
+            task->direct_audio = direct_audio_packet;
+            task->opus_dequeue_latency_ms = opus_dequeue_latency_ms;
+            task->decode_queue_depth = decode_queue_depth;
 
+            auto decode_started = std::chrono::steady_clock::now();
             bool decode_ok = false;
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_ != nullptr) {
@@ -666,6 +826,11 @@ void AudioService::OpusCodecTask() {
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
             }
+            auto decode_finished = std::chrono::steady_clock::now();
+            task->pcm_ready_at = decode_finished;
+            task->decode_resample_ms = ElapsedMilliseconds(
+                decode_started, decode_finished);
+
             lock.lock();
             bool prepared_audio_current =
                 IsCurrentPreparedAudioGeneration(
@@ -686,6 +851,7 @@ void AudioService::OpusCodecTask() {
             }
             audio_decode_in_flight_ = false;
             prepared_audio_decode_in_flight_ = false;
+            UpdateDirectAudioDecodeEligibilityLocked();
             audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
@@ -852,6 +1018,7 @@ bool AudioService::PushIncomingAudioPacket(
     } else if (direct_audio_active_) {
         direct_audio_metrics_.accepted_frames++;
     }
+    UpdateDirectAudioDecodeEligibilityLocked();
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -872,6 +1039,7 @@ bool AudioService::PushPacketToDecodeQueue(
     }
     packet->prepared_audio_generation = 0;
     audio_decode_queue_.push_back(std::move(packet));
+    UpdateDirectAudioDecodeEligibilityLocked();
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -928,6 +1096,7 @@ void AudioService::DiscardQueuedPlaybackLocked() {
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();
     playback_epoch_++;
+    direct_audio_decode_eligible_ = false;
 }
 
 void AudioService::FailPreparedAudioLocked() {
@@ -967,6 +1136,7 @@ void AudioService::BeginDirectAudio() {
     direct_audio_input_finished_ = false;
     direct_audio_playback_started_ = false;
     direct_audio_has_output_time_ = false;
+    direct_audio_decode_eligible_ = false;
     direct_audio_metrics_ = {};
     audio_queue_cv_.notify_all();
 }
@@ -978,6 +1148,7 @@ bool AudioService::ReleaseDirectAudioPlayback() {
     }
     direct_audio_playback_blocked_ = false;
     direct_audio_deferred_backlog_ = !audio_decode_queue_.empty();
+    UpdateDirectAudioDecodeEligibilityLocked();
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -1005,6 +1176,7 @@ void AudioService::AbortDirectAudioLocked() {
     direct_audio_input_finished_ = false;
     direct_audio_playback_started_ = false;
     direct_audio_has_output_time_ = false;
+    direct_audio_decode_eligible_ = false;
 }
 
 void AudioService::AbortDirectAudio() {
@@ -1193,7 +1365,7 @@ bool AudioService::IsIdle() {
 bool AudioService::WaitForPlaybackQueueEmpty(
         std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-    return audio_queue_cv_.wait_for(lock, timeout, [this]() {
+    bool complete = audio_queue_cv_.wait_for(lock, timeout, [this]() {
         return service_stopped_ ||
             (audio_decode_queue_.empty() && audio_playback_queue_.empty() &&
              !audio_decode_in_flight_ && !audio_output_in_flight_ &&
@@ -1202,6 +1374,10 @@ bool AudioService::WaitForPlaybackQueueEmpty(
               prepared_audio_metrics_.output_frames >=
                   prepared_audio_metrics_.decoded_packets));
     });
+    if (!complete) {
+        CaptureTerminalDirectAudioStallLocked();
+    }
+    return complete;
 }
 
 PreparedAudioDrainResult AudioService::WaitForPreparedAudioComplete(

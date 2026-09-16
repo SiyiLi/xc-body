@@ -59,6 +59,18 @@ struct DirectAudioMetrics {
     size_t rejected_frames = 0;
     size_t codec_output_frames = 0;
     uint32_t max_codec_write_gap_ms = 0;
+    uint32_t stall_pcm_underrun_ms = 0;
+    uint32_t stall_pcm_ready_to_dequeue_ms = 0;
+    uint32_t stall_enable_output_ms = 0;
+    uint32_t stall_pre_output_ms = 0;
+    uint32_t stall_output_data_ms = 0;
+    uint32_t stall_opus_dequeue_latency_ms = 0;
+    uint32_t stall_decode_resample_ms = 0;
+    size_t stall_decode_queue_depth = 0;
+    size_t stall_playback_queue_depth = 0;
+    bool stall_terminal = false;
+    bool stall_decode_in_flight = false;
+    bool stall_output_in_flight = false;
 };
 
 #define AUDIO_POWER_TIMEOUT_MS 15000
@@ -119,6 +131,11 @@ struct AudioTask {
     uint32_t timestamp = 0;
     uint32_t raw_capture_generation = 0;
     uint32_t prepared_audio_generation = 0;
+    bool direct_audio = false;
+    std::chrono::steady_clock::time_point pcm_ready_at;
+    uint32_t opus_dequeue_latency_ms = 0;
+    uint32_t decode_resample_ms = 0;
+    size_t decode_queue_depth = 0;
 };
 
 struct DebugStatistics {
@@ -246,6 +263,9 @@ private:
     bool direct_audio_playback_started_ = false;
     bool direct_audio_has_output_time_ = false;
     std::chrono::steady_clock::time_point direct_audio_last_output_time_;
+    bool direct_audio_decode_eligible_ = false;
+    std::chrono::steady_clock::time_point
+        direct_audio_decode_eligible_since_;
     DirectAudioMetrics direct_audio_metrics_;
     uint32_t playback_epoch_ = 0;
     std::mutex raw_capture_mutex_;
@@ -275,6 +295,16 @@ private:
     bool IsRawCaptureGenerationCurrent(uint32_t generation) const;
     bool PushPacketToDecodeQueue(
         std::unique_ptr<AudioStreamPacket> packet);
+    bool IsDirectAudioDecodeEligibleLocked() const;
+    void UpdateDirectAudioDecodeEligibilityLocked();
+    void CaptureDirectAudioStallLocked(
+        const AudioTask& task,
+        size_t playback_queue_depth,
+        std::chrono::steady_clock::time_point output_received,
+        uint32_t enable_output_ms,
+        std::chrono::steady_clock::time_point output_started,
+        std::chrono::steady_clock::time_point output_finished);
+    void CaptureTerminalDirectAudioStallLocked();
     void DiscardQueuedPlaybackLocked();
     void FailPreparedAudioLocked();
     void AbortPreparedAudioLocked();
