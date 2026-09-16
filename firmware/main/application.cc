@@ -561,14 +561,9 @@ void Application::InitializeProtocol() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     
-    protocol_->OnIncomingAudio([this, &board](
+    protocol_->OnIncomingAudio([this](
             std::unique_ptr<AudioStreamPacket> packet) {
-        if (audio_service_.IsPreparedAudioPending()) {
-            audio_service_.PushPreparedPacketToDecodeQueue(
-                std::move(packet));
-        } else if (audio_service_.IsDirectAudioActive()) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
-        }
+        audio_service_.PushIncomingAudioPacket(std::move(packet));
     });
     
     protocol_->OnAudioChannelOpened([this, codec, &board]() {

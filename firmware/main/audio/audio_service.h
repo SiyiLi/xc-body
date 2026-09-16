@@ -172,8 +172,7 @@ public:
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
-    bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
-    bool PushPreparedPacketToDecodeQueue(
+    bool PushIncomingAudioPacket(
         std::unique_ptr<AudioStreamPacket> packet);
     bool BeginPreparedAudio(size_t packet_count);
     bool CommitPreparedAudio(bool defer_playback = false);
@@ -243,12 +242,12 @@ private:
     bool direct_audio_active_ = false;
     bool direct_audio_playback_blocked_ = false;
     bool direct_audio_deferred_backlog_ = false;
-    bool direct_audio_terminal_ = false;
     bool direct_audio_input_finished_ = false;
     bool direct_audio_playback_started_ = false;
     bool direct_audio_has_output_time_ = false;
     std::chrono::steady_clock::time_point direct_audio_last_output_time_;
     DirectAudioMetrics direct_audio_metrics_;
+    uint32_t playback_epoch_ = 0;
     std::mutex raw_capture_mutex_;
     std::atomic<uint32_t> raw_capture_generation_{0};
     std::unique_ptr<std::vector<int16_t>> raw_capture_buffer_;
@@ -275,9 +274,9 @@ private:
     void ReturnRawCaptureFrame(std::unique_ptr<RawCaptureFrame> frame, uint32_t generation);
     bool IsRawCaptureGenerationCurrent(uint32_t generation) const;
     bool PushPacketToDecodeQueue(
-        std::unique_ptr<AudioStreamPacket> packet,
-        bool wait,
-        bool prepared_audio);
+        std::unique_ptr<AudioStreamPacket> packet);
+    void DiscardQueuedPlaybackLocked();
+    void FailPreparedAudioLocked();
     void AbortPreparedAudioLocked();
     void AbortDirectAudioLocked();
     void AllocateRawCaptureStorage();
