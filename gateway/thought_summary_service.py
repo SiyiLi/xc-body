@@ -7,14 +7,15 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
+from gateway.expression_names import SEMANTIC_EXPRESSIONS
 from gateway.pending_thought import (
     PendingThoughtError,
     decode_prepared_audio,
     validate_thought_id,
 )
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntime,
-    PendingThoughtRuntimeError,
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
 )
 from gateway.speech_preparation import (
     DEFAULT_VOICE,
@@ -22,7 +23,9 @@ from gateway.speech_preparation import (
     prepare_speech,
 )
 
-_ALLOWED_FIELDS = frozenset(("version", "thought_id", "summary"))
+_ALLOWED_FIELDS = frozenset(
+    ("version", "thought_id", "summary", "expression")
+)
 _REQUIRED_FIELDS = _ALLOWED_FIELDS
 _MAX_SUMMARY_CHARS = 1_000
 SpeechPreparer = Callable[[str, str], Awaitable[str]]
@@ -38,6 +41,7 @@ class ThoughtSummary:
     version: str
     thought_id: str
     summary: str
+    expression: str
 
 
 def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
@@ -60,10 +64,14 @@ def parse_thought_summary(payload: Mapping[str, object]) -> ThoughtSummary:
     summary = summary.strip()
     if not summary or len(summary) > _MAX_SUMMARY_CHARS:
         raise ThoughtSummaryError("summary must be bounded spoken text")
+    expression = payload["expression"]
+    if not isinstance(expression, str) or expression not in SEMANTIC_EXPRESSIONS:
+        raise ThoughtSummaryError("expression must be a supported offer name")
     return ThoughtSummary(
         version="v1",
         thought_id=thought_id,
         summary=summary,
+        expression=expression,
     )
 
 
@@ -80,7 +88,7 @@ def load_summary_voice(
 
 
 async def handle_summary_request(
-    runtime: PendingThoughtRuntime,
+    runtime: InteractionRuntime,
     payload: Mapping[str, object],
     *,
     voice: str,
@@ -119,9 +127,10 @@ async def handle_summary_request(
                 "thought_id": request.thought_id,
                 "decision": "offer",
                 "audio_base64": audio_base64,
+                "expression": request.expression,
             }
         )
-    except PendingThoughtRuntimeError:
+    except InteractionRuntimeError:
         return 503, {"ok": False, "error": "body_unavailable"}
     except PendingThoughtError:
         return 409, {"ok": False, "error": "offer_rejected"}

@@ -4,10 +4,10 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntime,
-    PendingThoughtRuntimeError,
-    StackChanThoughtBody,
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
+    XcBodyInteractionBody,
 )
 
 
@@ -42,35 +42,37 @@ class RecordingCaller:
 
 
 def ready_body(caller, **kwargs):
-    body = StackChanThoughtBody(caller, **kwargs)
+    body = XcBodyInteractionBody(caller, **kwargs)
     body.mark_device_ready(_READY_STATUS["session_id"])
     return body
 
 
-class PendingThoughtRuntimeTests(unittest.TestCase):
-    def test_knock_delegates_complete_physical_behavior(self):
+class InteractionRuntimeTests(unittest.TestCase):
+    def test_expression_failure_is_reported(self):
+        caller = RecordingCaller([RuntimeError("expression failed")])
+        body = ready_body(caller)
+
+        with self.assertRaisesRegex(
+            InteractionRuntimeError,
+            "expression failed",
+        ):
+            body.perform_expression("pleased")
+
+    def test_expression_uses_the_existing_body_lane(self):
         caller = RecordingCaller()
         body = ready_body(caller)
 
-        body.knock("eval:42")
+        body.perform_expression("curious")
 
         self.assertEqual(
             caller.calls,
             [
                 ("get_status", {}),
-                ("perform_knock", {"behavior_id": "eval:42"}),
+                ("perform_expression", {"expression": "curious"}),
             ],
         )
-        self.assertNotIn("say", [name for name, _ in caller.calls])
 
-    def test_knock_failure_is_reported(self):
-        caller = RecordingCaller([RuntimeError("knock failed")])
-        body = ready_body(caller)
-
-        with self.assertRaisesRegex(PendingThoughtRuntimeError, "knock failed"):
-            body.knock("eval:42")
-
-    @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
+    @patch("gateway.interaction_runtime.urllib.request.urlopen")
     def test_tell_posts_audio_without_cloud_motion_control(self, urlopen):
         response = Mock()
         response.read.return_value = b'{"ok": true}'
@@ -94,7 +96,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             [("get_status", {})],
         )
 
-    @patch("gateway.pending_thought_runtime.urllib.request.urlopen")
+    @patch("gateway.interaction_runtime.urllib.request.urlopen")
     def test_tell_error_is_not_marked_complete(self, urlopen):
         failure = Mock()
         failure.read.return_value = b'{"ok": false, "error": "unavailable"}'
@@ -106,7 +108,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             playback_url="http://127.0.0.1:8080/play",
         )
 
-        with self.assertRaisesRegex(PendingThoughtRuntimeError, "unavailable"):
+        with self.assertRaisesRegex(InteractionRuntimeError, "unavailable"):
             body.tell("eval:42", _PREPARED_AUDIO_BASE64)
         body.tell("eval:42", _PREPARED_AUDIO_BASE64)
 
@@ -114,31 +116,31 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
     def test_body_rejects_unverified_or_reconnected_device_session(self):
         caller = RecordingCaller()
-        body = StackChanThoughtBody(caller)
+        body = XcBodyInteractionBody(caller)
 
         with self.assertRaisesRegex(
-            PendingThoughtRuntimeError,
+            InteractionRuntimeError,
             "device is not ready",
         ):
-            body.knock("eval:unverified")
+            body.perform_expression("curious")
         self.assertEqual(caller.calls, [])
 
         body.mark_device_ready("device-session-1")
         caller.status["session_id"] = "device-session-2"
         with self.assertRaisesRegex(
-            PendingThoughtRuntimeError,
+            InteractionRuntimeError,
             "device is not ready",
         ):
-            body.knock("eval:reconnected")
+            body.perform_expression("curious")
         self.assertEqual(caller.calls, [("get_status", {})])
 
     def test_runtime_owns_machine_for_session_lifetime(self):
-        runtime = PendingThoughtRuntime()
+        runtime = InteractionRuntime()
         first_session = object()
         second_session = object()
 
         with patch(
-            "gateway.pending_thought_runtime.create_stackchan_client_session",
+            "gateway.interaction_runtime.create_stackchan_client_session",
             side_effect=(first_session, second_session),
         ) as factory:
             first = runtime.create_session("read-1", "write-1", object())
@@ -162,7 +164,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
     def test_runtime_readiness_tracks_verified_device_session(self):
         caller = RecordingCaller()
         body = ready_body(caller)
-        runtime = PendingThoughtRuntime()
+        runtime = InteractionRuntime()
         runtime.body = body
         runtime.machine = Mock(pending_thought_id=None)
 
@@ -188,6 +190,20 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             streaming_url="http://127.0.0.1:8766/pcm",
         )
         pcm = Pcm()
+        diagnostics = {
+            "stall_pcm_underrun_ms": 5,
+            "stall_pcm_ready_to_dequeue_ms": 4200,
+            "stall_enable_output_ms": 0,
+            "stall_pre_output_ms": 1,
+            "stall_output_data_ms": 60,
+            "stall_opus_dequeue_latency_ms": 12,
+            "stall_decode_resample_ms": 16,
+            "stall_decode_queue_depth": 39,
+            "stall_playback_queue_depth": 4,
+            "stall_terminal": 0,
+            "stall_decode_in_flight": 0,
+            "stall_output_in_flight": 0,
+        }
         with patch.object(
             body,
             "_play_pcm_stream",
@@ -197,17 +213,18 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
                 "duration_ms": 60,
                 "gateway_first_audio_frame_sent_ms": 1000,
                 "gateway_playback_completed_ms": 1060,
+                **diagnostics,
             },
         ) as play:
-            metrics = body.tell_direct_stream("robot:1", pcm)
+            metrics = body.tell_direct_stream("robot:1", "pleased", pcm)
 
         self.assertEqual(
             caller.calls,
             [
                 ("get_status", {}),
                 (
-                    "perform_behavior",
-                    {"behavior_id": "robot:1", "kind": "attention"},
+                    "perform_expression",
+                    {"expression": "pleased"},
                 ),
             ],
         )
@@ -216,6 +233,8 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         self.assertEqual(play.call_args.args[2], "device-session-1")
         self.assertEqual(metrics["streamed_audio_frames"], 1)
         self.assertEqual(metrics["gateway_first_audio_frame_sent_ms"], 1000)
+        for name, value in diagnostics.items():
+            self.assertEqual(metrics[f"firmware_{name}"], value)
 
     def test_direct_stream_never_opens_pcm_after_producer_failure(self):
         class Pcm:
@@ -231,10 +250,10 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
         )
         with patch.object(body, "_play_pcm_stream") as play:
             with self.assertRaisesRegex(
-                PendingThoughtRuntimeError,
+                InteractionRuntimeError,
                 "direct stream: RuntimeError",
             ):
-                body.tell_direct_stream("robot:1", Pcm())
+                body.tell_direct_stream("robot:1", "concerned", Pcm())
 
         play.assert_not_called()
 
@@ -280,11 +299,11 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             streaming_url="http://127.0.0.1:8766/pcm",
         )
         with patch(
-            "gateway.pending_thought_runtime.http.client.HTTPConnection",
+            "gateway.interaction_runtime.http.client.HTTPConnection",
             return_value=connection,
         ):
             with self.assertRaisesRegex(
-                PendingThoughtRuntimeError,
+                InteractionRuntimeError,
                 "stream audio: RuntimeError",
             ) as raised:
                 body._play_pcm_stream(
@@ -314,7 +333,7 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
 
         playback_started = threading.Event()
         release_playback = threading.Event()
-        knock_finished = threading.Event()
+        presentation_finished = threading.Event()
         body = ready_body(
             RecordingCaller(),
             streaming_url="http://127.0.0.1:8766/pcm",
@@ -326,26 +345,26 @@ class PendingThoughtRuntimeTests(unittest.TestCase):
             release_playback.wait(timeout=1)
             return {"ok": True}
 
-        def knock():
-            body.knock("eval:next")
-            knock_finished.set()
+        def present():
+            body.perform_expression("surprised")
+            presentation_finished.set()
 
         with patch.object(body, "_play_pcm_stream", side_effect=play):
             direct = threading.Thread(
                 target=body.tell_direct_stream,
-                args=("robot:1", Pcm()),
+                args=("robot:1", "curious", Pcm()),
             )
             direct.start()
             self.assertTrue(playback_started.wait(timeout=1))
-            contender = threading.Thread(target=knock)
+            contender = threading.Thread(target=present)
             contender.start()
-            self.assertFalse(knock_finished.wait(timeout=0.02))
+            self.assertFalse(presentation_finished.wait(timeout=0.02))
             release_playback.set()
             direct.join(timeout=1)
             contender.join(timeout=1)
 
         self.assertFalse(direct.is_alive())
-        self.assertTrue(knock_finished.is_set())
+        self.assertTrue(presentation_finished.is_set())
 
 if __name__ == "__main__":
     unittest.main()

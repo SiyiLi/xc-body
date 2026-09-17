@@ -46,6 +46,21 @@ DIRECT_PCM_BURST_FRAMES = 12
 
 logger = logging.getLogger(__name__)
 
+_DIRECT_AUDIO_DIAGNOSTICS = (
+    "stall_pcm_underrun_ms",
+    "stall_pcm_ready_to_dequeue_ms",
+    "stall_enable_output_ms",
+    "stall_pre_output_ms",
+    "stall_output_data_ms",
+    "stall_opus_dequeue_latency_ms",
+    "stall_decode_resample_ms",
+    "stall_decode_queue_depth",
+    "stall_playback_queue_depth",
+    "stall_terminal",
+    "stall_decode_in_flight",
+    "stall_output_in_flight",
+)
+
 
 #: Built-in default engine name when ``voice`` is omitted from the tool
 #: call and ``STACKCHAN_TTS_ENGINE`` is unset. VOICEVOX is the canonical
@@ -91,6 +106,12 @@ def _validate_direct_audio_integrity(
                 metrics=metrics,
             )
         integrity_metrics[name] = value
+    for name in _DIRECT_AUDIO_DIAGNOSTICS:
+        value = drain_metrics.get(name) if drain_metrics is not None else None
+        if isinstance(value, bool):
+            integrity_metrics[name] = int(value)
+        elif isinstance(value, int) and value >= 0:
+            integrity_metrics[name] = value
     if (
         integrity_metrics["accepted_frames"] != sent
         or integrity_metrics["rejected_frames"] != 0
@@ -102,6 +123,30 @@ def _validate_direct_audio_integrity(
             metrics={**metrics, **integrity_metrics},
         )
     return integrity_metrics
+
+
+def _direct_audio_failure_metrics(
+    drain_metrics: dict[str, Any] | None,
+    metrics: dict[str, int],
+) -> dict[str, int]:
+    """Preserve valid firmware counters from a failed correlated drain."""
+
+    result = dict(metrics)
+    if drain_metrics is None:
+        return result
+    for name in (
+        "accepted_frames",
+        "rejected_frames",
+        "codec_output_frames",
+        "max_codec_write_gap_ms",
+        *_DIRECT_AUDIO_DIAGNOSTICS,
+    ):
+        value = drain_metrics.get(name)
+        if isinstance(value, bool):
+            result[name] = int(value)
+        elif isinstance(value, int) and value >= 0:
+            result[name] = value
+    return result
 
 
 def _resolve_default_engine() -> str:
@@ -656,12 +701,18 @@ async def send_pcm_stream(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    result = getattr(exc, "result", None)
+                    if isinstance(result, dict):
+                        drain_metrics = result
                     stop_error = exc
 
     if stop_error is not None:
         raise PcmStreamError(
             f"PCM drain failed after {sent} frames: {stop_error}",
-            metrics=partial_metrics(),
+            metrics=_direct_audio_failure_metrics(
+                drain_metrics,
+                partial_metrics(),
+            ),
         ) from stop_error
     if push_error is not None:
         raise PcmStreamError(

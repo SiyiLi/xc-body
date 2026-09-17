@@ -1,4 +1,4 @@
-"""Concrete Milestone 2 runtime adapters for the XC Body gateway."""
+"""Serialized body operations for conversation, offers, and expressions."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
-from gateway.pending_thought import KnockWaitTell
+from gateway.pending_thought import OfferFlow
 from gateway.stackchan_event_session import create_stackchan_client_session
 
 ToolCaller = Callable[[str, Mapping[str, object]], object]
@@ -22,8 +22,8 @@ _MISSING = object()
 logger = logging.getLogger(__name__)
 
 
-class PendingThoughtRuntimeError(RuntimeError):
-    """The persistent thought runtime could not complete a body operation."""
+class InteractionRuntimeError(RuntimeError):
+    """The interaction runtime could not complete a body operation."""
 
     def __init__(
         self,
@@ -55,11 +55,28 @@ def _stream_playback_metrics(playback: Mapping[str, object]) -> dict[str, int]:
         value = playback.get(source)
         if isinstance(value, int) and value >= 0:
             metrics[target] = value
+    for source in (
+        "stall_pcm_underrun_ms",
+        "stall_pcm_ready_to_dequeue_ms",
+        "stall_enable_output_ms",
+        "stall_pre_output_ms",
+        "stall_output_data_ms",
+        "stall_opus_dequeue_latency_ms",
+        "stall_decode_resample_ms",
+        "stall_decode_queue_depth",
+        "stall_playback_queue_depth",
+        "stall_terminal",
+        "stall_decode_in_flight",
+        "stall_output_in_flight",
+    ):
+        value = playback.get(source)
+        if isinstance(value, int) and value >= 0:
+            metrics[f"firmware_{source}"] = value
     return metrics
 
 
-class StackChanThoughtBody:
-    """Synchronous knock/tell ports backed by an injected MCP tool caller."""
+class XcBodyInteractionBody:
+    """Synchronous offer and conversation operations over one body lane."""
 
     def __init__(
         self,
@@ -80,7 +97,7 @@ class StackChanThoughtBody:
         """Bind readiness to one initialized device session."""
 
         if not isinstance(session_id, str) or not session_id:
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 "device readiness requires a device session"
             )
         self._device_session_id = session_id
@@ -92,7 +109,7 @@ class StackChanThoughtBody:
             return False
         try:
             status = self._call("get_status", {})
-        except PendingThoughtRuntimeError:
+        except InteractionRuntimeError:
             return False
         return ready_device_session_id(status) == self._device_session_id
 
@@ -102,13 +119,6 @@ class StackChanThoughtBody:
         with self._operation_lock:
             self.set_offer_pending(offer_pending)
 
-    def knock(self, thought_id: str) -> None:
-        """Run the firmware-owned silent knock through physical completion."""
-
-        with self._operation_lock:
-            self._require_ready()
-            self._call("perform_knock", {"behavior_id": thought_id})
-
     def tell(self, thought_id: str, audio_base64: str) -> None:
         """Play prepared audio after firmware reports acknowledgment."""
 
@@ -116,35 +126,38 @@ class StackChanThoughtBody:
             self._require_ready()
             self._play_audio(audio_base64, thought_id)
 
+    def perform_expression(self, expression: str) -> Mapping[str, object]:
+        """Run one firmware-owned named expression in the body lane."""
+
+        with self._operation_lock:
+            return self._perform_expression_locked(expression)
+
     def tell_direct_stream(
         self,
         turn_id: str,
+        expression: str,
         pcm: Any,
     ) -> dict[str, int]:
-        """Run attention, then hold the body lane through PCM playback."""
+        """Run one expression, then hold the lane through PCM playback."""
 
         with self._operation_lock:
-            self._require_ready()
+            started = time.monotonic()
+            self._perform_expression_locked(expression)
+            expression_ms = round((time.monotonic() - started) * 1000)
+            expression_completed_ms = time.time_ns() // 1_000_000
             session_id = self._device_session_id
             if session_id is None:
-                raise PendingThoughtRuntimeError(
+                raise InteractionRuntimeError(
                     "device session is unavailable"
                 )
-            started = time.monotonic()
-            self._call(
-                "perform_behavior",
-                {"behavior_id": turn_id, "kind": "attention"},
-            )
-            attention_ms = round((time.monotonic() - started) * 1000)
-            attention_completed_ms = time.time_ns() // 1_000_000
             metrics = {
-                "attention_ms": attention_ms,
-                "attention_completed_ms": attention_completed_ms,
+                "expression_ms": expression_ms,
+                "expression_completed_ms": expression_completed_ms,
             }
             try:
                 pcm.wait_for_playable()
             except Exception as exc:
-                raise PendingThoughtRuntimeError(
+                raise InteractionRuntimeError(
                     f"direct stream: {type(exc).__name__}",
                     metrics=metrics,
                 ) from exc
@@ -155,12 +168,12 @@ class StackChanThoughtBody:
                     turn_id,
                     session_id,
                 )
-            except PendingThoughtRuntimeError as exc:
+            except InteractionRuntimeError as exc:
                 metrics["playback_request_ms"] = round(
                     (time.monotonic() - started) * 1000
                 )
                 metrics.update(exc.metrics)
-                raise PendingThoughtRuntimeError(
+                raise InteractionRuntimeError(
                     str(exc),
                     metrics=metrics,
                 ) from exc
@@ -168,7 +181,7 @@ class StackChanThoughtBody:
                 metrics["playback_request_ms"] = round(
                     (time.monotonic() - started) * 1000
                 )
-                raise PendingThoughtRuntimeError(
+                raise InteractionRuntimeError(
                     f"stream audio: {type(exc).__name__}",
                     metrics=metrics,
                 ) from exc
@@ -178,6 +191,16 @@ class StackChanThoughtBody:
             metrics.update(_stream_playback_metrics(playback))
             return metrics
 
+    def _perform_expression_locked(
+        self,
+        expression: str,
+    ) -> Mapping[str, object]:
+        self._require_ready()
+        return self._call(
+            "perform_expression",
+            {"expression": expression},
+        )
+
     def set_offer_pending(self, pending: bool) -> None:
         """Best-effort hint controlling the firmware idle screensaver."""
 
@@ -185,7 +208,7 @@ class StackChanThoughtBody:
             try:
                 self._require_ready()
                 self._call("set_offer_pending", {"pending": pending})
-            except PendingThoughtRuntimeError as exc:
+            except InteractionRuntimeError as exc:
                 logger.warning("offer-state synchronization failed: %s", exc)
 
     def _play_audio(self, audio_base64: str, thought_id: str) -> None:
@@ -197,7 +220,7 @@ class StackChanThoughtBody:
         thought_id: str,
     ) -> Mapping[str, object]:
         if not self._playback_url:
-            raise PendingThoughtRuntimeError("audio playback URL is not configured")
+            raise InteractionRuntimeError("audio playback URL is not configured")
         request = urllib.request.Request(
             self._playback_url,
             data=payload,
@@ -212,9 +235,9 @@ class StackChanThoughtBody:
             with urllib.request.urlopen(request, timeout=300) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
-            raise PendingThoughtRuntimeError(f"play audio: {exc}") from exc
+            raise InteractionRuntimeError(f"play audio: {exc}") from exc
         if result.get("ok") is not True:
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 f"play audio: {result.get('error', 'playback failed')}"
             )
         return result
@@ -226,12 +249,12 @@ class StackChanThoughtBody:
         session_id: str,
     ) -> Mapping[str, object]:
         if not self._streaming_url:
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 "PCM playback URL is not configured"
             )
         parsed = urlsplit(self._streaming_url)
         if not parsed.hostname:
-            raise PendingThoughtRuntimeError("PCM playback URL is invalid")
+            raise InteractionRuntimeError("PCM playback URL is invalid")
         target = parsed.path or "/"
         if parsed.query:
             target = f"{target}?{parsed.query}"
@@ -272,7 +295,7 @@ class StackChanThoughtBody:
             response = connection.getresponse()
             result = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 f"stream audio: {type(exc).__name__}"
             ) from exc
         finally:
@@ -283,13 +306,13 @@ class StackChanThoughtBody:
         ) else {}
         if not isinstance(result, Mapping) or result.get("ok") is not True:
             detail = result.get("error") if isinstance(result, Mapping) else None
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 f"stream audio: {detail or 'playback failed'}",
                 metrics=metrics,
             )
         if stream_error is not None:
             metrics.pop("gateway_playback_completed_ms", None)
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 f"stream audio: {type(stream_error).__name__}",
                 metrics=metrics,
             ) from stream_error
@@ -297,7 +320,7 @@ class StackChanThoughtBody:
 
     def _require_ready(self) -> None:
         if not self.is_ready():
-            raise PendingThoughtRuntimeError(
+            raise InteractionRuntimeError(
                 "device is not ready for the current session"
             )
 
@@ -307,12 +330,12 @@ class StackChanThoughtBody:
         try:
             result = self._call_tool(name, arguments)
         except Exception as exc:
-            raise PendingThoughtRuntimeError(f"{name}: {exc}") from exc
+            raise InteractionRuntimeError(f"{name}: {exc}") from exc
         payload = _tool_payload(result)
         if payload.get("ok") is False or "error" in payload:
             message = payload.get("error") or payload.get("message")
-            raise PendingThoughtRuntimeError(
-                f"{name}: {message or 'StackChan tool failed'}"
+            raise InteractionRuntimeError(
+                f"{name}: {message or 'XC Body tool failed'}"
             )
         return payload
 
@@ -335,7 +358,7 @@ class SessionToolCaller:
         self, name: str, arguments: Mapping[str, object]
     ) -> object:
         if self._session is None:
-            raise PendingThoughtRuntimeError("MCP session is not bound")
+            raise InteractionRuntimeError("MCP session is not bound")
         future = asyncio.run_coroutine_threadsafe(
             self._session.call_tool(name, arguments=dict(arguments)),
             self._loop,
@@ -343,7 +366,7 @@ class SessionToolCaller:
         return future.result()
 
 
-class PendingThoughtRuntime:
+class InteractionRuntime:
     """Own one state machine for the lifetime of an upstream MCP session."""
 
     def __init__(
@@ -356,15 +379,15 @@ class PendingThoughtRuntime:
         self._playback_url = playback_url
         self._streaming_url = streaming_url
         self._playback_token = playback_token
-        self.machine: KnockWaitTell | None = None
-        self.body: StackChanThoughtBody | None = None
+        self.machine: OfferFlow | None = None
+        self.body: XcBodyInteractionBody | None = None
         self._caller: SessionToolCaller | None = None
 
     def mark_device_ready(self, session_id: str) -> None:
         """Record the initialized device session."""
 
         if self.body is None:
-            raise PendingThoughtRuntimeError("runtime session is not initialized")
+            raise InteractionRuntimeError("runtime session is not initialized")
         self.body.mark_device_ready(session_id)
 
     async def is_ready(self) -> bool:
@@ -397,16 +420,31 @@ class PendingThoughtRuntime:
     async def tell_direct_stream(
         self,
         turn_id: str,
+        expression: str,
         pcm: Any,
     ) -> dict[str, int]:
-        """Keep direct attention and streamed playback in one body lane."""
+        """Keep direct expression and streamed playback in one body lane."""
 
         if self.machine is None or self.body is None:
-            raise PendingThoughtRuntimeError("runtime session is not initialized")
+            raise InteractionRuntimeError("runtime session is not initialized")
         return await asyncio.to_thread(
             self.body.tell_direct_stream,
             turn_id,
+            expression,
             pcm,
+        )
+
+    async def perform_expression(
+        self,
+        expression: str,
+    ) -> Mapping[str, object]:
+        """Run one named expression without blocking the service loop."""
+
+        if self.machine is None or self.body is None:
+            raise InteractionRuntimeError("runtime session is not initialized")
+        return await asyncio.to_thread(
+            self.body.perform_expression,
+            expression,
         )
 
     async def consider_thought(
@@ -415,7 +453,7 @@ class PendingThoughtRuntime:
         """Submit without blocking the MCP session's receive loop."""
 
         if self.machine is None:
-            raise PendingThoughtRuntimeError("runtime session is not initialized")
+            raise InteractionRuntimeError("runtime session is not initialized")
         return await asyncio.to_thread(self.machine.submit, payload)
 
     def create_session(
@@ -428,13 +466,13 @@ class PendingThoughtRuntime:
 
         if self.machine is None:
             self._caller = SessionToolCaller(loop)
-            self.body = StackChanThoughtBody(
+            self.body = XcBodyInteractionBody(
                 self._caller,
                 playback_url=self._playback_url,
                 streaming_url=self._streaming_url,
                 playback_token=self._playback_token,
             )
-            self.machine = KnockWaitTell(
+            self.machine = OfferFlow(
                 self.body,
                 self.body,
                 offer_display_port=self.body,
@@ -487,7 +525,7 @@ def _tool_payload(result: object) -> Mapping[str, object]:
                 return decoded
     if isinstance(result, Mapping):
         return result
-    raise PendingThoughtRuntimeError("tool returned no structured result")
+    raise InteractionRuntimeError("tool returned no structured result")
 
 
 def _field(value: object, *names: str) -> object:

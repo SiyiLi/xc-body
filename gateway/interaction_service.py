@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Milestone 2 as a long-lived Streamable HTTP MCP service."""
+"""Run XC Body conversation and offer handling as one HTTP service."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ import sys
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from gateway.direct_conversation import (
     DirectConversationError,
@@ -22,31 +24,32 @@ from gateway.direct_conversation import (
     build_direct_turn_report,
     emit_direct_turn_metrics,
     parse_plugin_metrics,
-    speak_direct_answer,
+    perform_direct_answer,
 )
-from gateway.pending_thought_runtime import PendingThoughtRuntime
-from gateway.pending_thought_service import (
-    PlaybackConfig,
-    PendingThoughtServiceError,
-    create_service_server,
-    load_playback_config,
-    prepare_pending_runtime,
+from gateway.expression_names import SEMANTIC_EXPRESSIONS
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
+    ready_device_session_id,
 )
-from gateway.semantic_e2e import RunnerConfigError, load_config
 from gateway.stackchan_event_session import wait_for_stackchan_event_tasks
 from gateway.thought_summary_service import (
     handle_summary_request,
     load_summary_voice,
 )
 
-DOWNSTREAM_TOKEN_ENV = "XC_BODY_PENDING_HTTP_TOKEN"
+GATEWAY_URL_ENV = "XC_BODY_STACKCHAN_MCP_URL"
+GATEWAY_TOKEN_ENV = "XC_BODY_STACKCHAN_MCP_TOKEN"
+PLAYBACK_URL_ENV = "XC_BODY_PLAYBACK_URL"
+PCM_URL_ENV = "XC_BODY_PCM_URL"
+PLAYBACK_TOKEN_ENV = "XC_BODY_PLAYBACK_TOKEN"
+DOWNSTREAM_TOKEN_ENV = "XC_BODY_INTERACTION_HTTP_TOKEN"
 AUTH_FAILURE_MESSAGE = "Unauthorized: missing or invalid bearer token"
 TOKEN_REQUIRED_MESSAGE = (
-    f"refusing pending-thought HTTP service without {DOWNSTREAM_TOKEN_ENV}"
+    f"refusing Interaction HTTP service without {DOWNSTREAM_TOKEN_ENV}"
 )
 _AUTHENTICATED_PATHS = frozenset(
     (
-        "/mcp",
         "/readyz",
         "/summary/v1",
         "/voice/v1/capture",
@@ -56,6 +59,8 @@ _AUTHENTICATED_PATHS = frozenset(
 )
 _MAX_SUMMARY_REQUEST_BYTES = 4096
 _MAX_ANSWER_REQUEST_BYTES = 64 * 1024
+_ANSWER_REQUIRED_FIELDS = frozenset(("turn_id", "expression", "speech"))
+_ANSWER_ALLOWED_FIELDS = _ANSWER_REQUIRED_FIELDS | {"metrics"}
 _RECOVERY_DELAY_SECONDS = 5
 _CAPTURE_METRIC_HEADERS = {
     "capture_started_uptime_us": "X-XC-Device-Capture-Start-Us",
@@ -65,6 +70,21 @@ _CAPTURE_METRIC_HEADERS = {
     "gateway_upload_started_ms": "X-XC-Gateway-Upload-Started-Ms",
 }
 logger = logging.getLogger(__name__)
+class InteractionServiceError(RuntimeError):
+    """The Interaction service configuration or runtime is invalid."""
+
+
+@dataclass(frozen=True)
+class GatewayConfig:
+    url: str
+    token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class PlaybackConfig:
+    url: str
+    streaming_url: str
+    token: str = field(repr=False)
 
 
 def is_loopback_bind_host(host: str) -> bool:
@@ -82,7 +102,7 @@ def validate_bind_safety(host: str, downstream_token: str) -> None:
     """Require authentication when the HTTP service is network-visible."""
 
     if not downstream_token and not is_loopback_bind_host(host):
-        raise PendingThoughtServiceError(TOKEN_REQUIRED_MESSAGE)
+        raise InteractionServiceError(TOKEN_REQUIRED_MESSAGE)
 
 
 def load_downstream_token(
@@ -94,16 +114,95 @@ def load_downstream_token(
     return values.get(DOWNSTREAM_TOKEN_ENV, "").strip()
 
 
-class _StreamableHTTPApp:
-    def __init__(self, manager: Any):
-        self._manager = manager
+def _is_trusted_http_host(hostname: str | None) -> bool:
+    if hostname in {"localhost", "gateway"}:
+        return True
+    if hostname is None:
+        return False
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        await self._manager.handle_request(scope, receive, send)
+
+def _validate_service_url(url: str, name: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise InteractionServiceError(
+            f"{name} must be an absolute HTTP(S) URL"
+        )
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise InteractionServiceError(
+            f"{name} must include a valid port"
+        ) from exc
+    if parsed.scheme == "http" and not _is_trusted_http_host(parsed.hostname):
+        raise InteractionServiceError(
+            f"non-loopback {name} values must use HTTPS"
+        )
+
+
+def load_gateway_config(
+    *,
+    url: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> GatewayConfig:
+    values = os.environ if environ is None else environ
+    endpoint = values.get(GATEWAY_URL_ENV, "") if url is None else url
+    endpoint = endpoint.strip()
+    token = values.get(GATEWAY_TOKEN_ENV, "").strip()
+    if not endpoint:
+        raise InteractionServiceError(
+            f"Gateway URL is required via --url or {GATEWAY_URL_ENV}"
+        )
+    if not token:
+        raise InteractionServiceError(
+            f"Gateway token is required via {GATEWAY_TOKEN_ENV}"
+        )
+    _validate_service_url(endpoint, GATEWAY_URL_ENV)
+    return GatewayConfig(url=endpoint, token=token)
+
+
+def load_playback_config(
+    environ: Mapping[str, str] | None = None,
+) -> PlaybackConfig:
+    values = os.environ if environ is None else environ
+    url = values.get(PLAYBACK_URL_ENV, "").strip()
+    streaming_url = values.get(PCM_URL_ENV, "").strip()
+    token = values.get(PLAYBACK_TOKEN_ENV, "").strip()
+    if not url:
+        raise InteractionServiceError(f"{PLAYBACK_URL_ENV} is required")
+    if not streaming_url:
+        raise InteractionServiceError(f"{PCM_URL_ENV} is required")
+    if not token:
+        raise InteractionServiceError(f"{PLAYBACK_TOKEN_ENV} is required")
+    _validate_service_url(url, PLAYBACK_URL_ENV)
+    _validate_service_url(streaming_url, PCM_URL_ENV)
+    return PlaybackConfig(url, streaming_url, token)
+
+
+async def prepare_interaction_runtime(
+    session: Any,
+    runtime: InteractionRuntime,
+) -> None:
+    try:
+        status = await session.call_tool("get_status", arguments={})
+        session_id = ready_device_session_id(status)
+    except Exception as exc:
+        raise InteractionServiceError(
+            f"device readiness check failed ({type(exc).__name__})"
+        ) from exc
+    if session_id is None:
+        raise InteractionServiceError(
+            "XC Body device is not connected and initialized"
+        )
+    runtime.mark_device_ready(session_id)
+    await runtime.reconcile_offer_state()
 
 
 class _BearerAuthApp:
-    """Require one exact bearer credential for the MCP route."""
+    """Require one exact bearer credential on Interaction routes."""
 
     def __init__(self, app: Any, downstream_token: str):
         self._app = app
@@ -123,6 +222,7 @@ class _BearerAuthApp:
                 await _send_auth_failure(send)
                 return
         await self._app(scope, receive, send)
+
 
 def _header_value(scope: Any, name: bytes) -> str:
     for raw_name, raw_value in scope.get("headers", []):
@@ -148,7 +248,7 @@ async def _send_auth_failure(send: Any) -> None:
 
 
 async def _readiness_payload(
-    runtime: PendingThoughtRuntime,
+    runtime: InteractionRuntime,
 ) -> dict[str, object]:
     return {
         "ok": await runtime.is_ready(),
@@ -156,23 +256,23 @@ async def _readiness_payload(
     }
 
 
-async def _restore_pending_runtime_if_needed(
+async def _restore_interaction_runtime_if_needed(
     session: Any,
-    runtime: PendingThoughtRuntime,
+    runtime: InteractionRuntime,
 ) -> bool:
     if await runtime.is_ready():
         return True
     try:
-        await prepare_pending_runtime(session, runtime)
-    except PendingThoughtServiceError:
+        await prepare_interaction_runtime(session, runtime)
+    except InteractionServiceError:
         return False
-    logger.info("StackChan device session is ready")
+    logger.info("XC Body device session is ready")
     return True
 
 
-async def _maintain_pending_runtime(
-    config: Any,
-    runtime: PendingThoughtRuntime,
+async def _maintain_interaction_runtime(
+    config: GatewayConfig,
+    runtime: InteractionRuntime,
     httpx: Any,
     streamable_http_client: Any,
 ) -> None:
@@ -197,7 +297,7 @@ async def _maintain_pending_runtime(
                         try:
                             while True:
                                 restored = (
-                                    await _restore_pending_runtime_if_needed(
+                                    await _restore_interaction_runtime_if_needed(
                                         session,
                                         runtime,
                                     )
@@ -212,47 +312,38 @@ async def _maintain_pending_runtime(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("StackChan upstream reconnect: %s", exc)
+            logger.warning("XC Body upstream reconnect: %s", exc)
         await asyncio.sleep(_RECOVERY_DELAY_SECONDS)
 
 
 def build_app(
-    config: Any,
+    config: GatewayConfig,
     playback_config: PlaybackConfig,
     *,
     host: str,
     downstream_token: str = "",
     voice: str,
 ) -> Any:
-    """Build one process-wide runtime and its guarded HTTP MCP surface."""
+    """Build one process-wide Interaction runtime and HTTP surface."""
 
     validate_bind_safety(host, downstream_token)
     try:
         import httpx
         from mcp.client.streamable_http import streamable_http_client
-        from mcp.server.streamable_http_manager import (
-            StreamableHTTPSessionManager,
-        )
         from starlette.applications import Starlette
         from starlette.responses import JSONResponse
         from starlette.routing import Route
     except ImportError as exc:
-        raise PendingThoughtServiceError(
+        raise InteractionServiceError(
             "the deployment environment must provide MCP, HTTP, and ASGI clients"
         ) from exc
 
-    runtime = PendingThoughtRuntime(
+    runtime = InteractionRuntime(
         playback_url=playback_config.url,
         streaming_url=playback_config.streaming_url,
         playback_token=playback_config.token,
     )
     voice_mailbox = VoiceMailbox()
-    server = create_service_server(runtime)
-    manager = StreamableHTTPSessionManager(
-        app=server,
-        json_response=True,
-        stateless=False,
-    )
 
     async def healthz(_request: Any) -> Any:
         return JSONResponse({"ok": True})
@@ -347,9 +438,26 @@ def build_app(
             if len(raw_body) > _MAX_ANSWER_REQUEST_BYTES:
                 raise ValueError
             payload = json.loads(raw_body.decode("utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError
+            fields = set(payload)
+            if (
+                not _ANSWER_REQUIRED_FIELDS.issubset(fields)
+                or fields - _ANSWER_ALLOWED_FIELDS
+            ):
+                raise ValueError
             turn_id = payload["turn_id"]
-            answer = payload["answer"]
-            if not isinstance(turn_id, str) or not isinstance(answer, str):
+            expression = payload["expression"]
+            speech = payload["speech"]
+            if (
+                not isinstance(turn_id, str)
+                or not isinstance(expression, str)
+                or expression not in SEMANTIC_EXPRESSIONS
+                or (
+                    speech is not None
+                    and (not isinstance(speech, str) or not speech.strip())
+                )
+            ):
                 raise ValueError
             turn_metrics, failed_stage = parse_plugin_metrics(
                 payload.get("metrics")
@@ -376,10 +484,11 @@ def build_app(
             time.time_ns() // 1_000_000
         )
         try:
-            body_metrics = await speak_direct_answer(
+            body_metrics = await perform_direct_answer(
                 runtime,
                 turn_id,
-                answer,
+                expression,
+                speech,
                 voice,
             )
         except Exception as exc:
@@ -431,30 +540,24 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any):
-        async with manager.run():
-            recovery_task = asyncio.create_task(
-                _maintain_pending_runtime(
-                    config,
-                    runtime,
-                    httpx,
-                    streamable_http_client,
-                )
+        recovery_task = asyncio.create_task(
+            _maintain_interaction_runtime(
+                config,
+                runtime,
+                httpx,
+                streamable_http_client,
             )
-            try:
-                yield
-            finally:
-                recovery_task.cancel()
-                await asyncio.gather(
-                    recovery_task,
-                    return_exceptions=True,
-                )
+        )
+        try:
+            yield
+        finally:
+            recovery_task.cancel()
+            await asyncio.gather(
+                recovery_task,
+                return_exceptions=True,
+            )
 
     routes = [
-        Route(
-            "/mcp",
-            endpoint=_StreamableHTTPApp(manager),
-            methods=["GET", "POST", "DELETE"],
-        ),
         Route("/healthz", endpoint=healthz, methods=["GET"]),
         Route("/readyz", endpoint=readyz, methods=["GET"]),
         Route("/summary/v1", endpoint=summary_v1, methods=["POST"]),
@@ -484,7 +587,7 @@ def build_app(
 
 
 async def run_http_service(
-    config: Any,
+    config: GatewayConfig,
     playback_config: PlaybackConfig,
     *,
     host: str,
@@ -495,7 +598,7 @@ async def run_http_service(
     try:
         import uvicorn
     except ImportError as exc:
-        raise PendingThoughtServiceError(
+        raise InteractionServiceError(
             "the deployment environment must provide an ASGI server"
         ) from exc
 
@@ -520,7 +623,7 @@ async def run_http_service(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run persistent XC Body knock-wait-tell over HTTP."
+        description="Run the XC Body Interaction service."
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8770)
@@ -535,7 +638,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        config = load_config(url=args.url, environ=environ)
+        config = load_gateway_config(url=args.url, environ=environ)
         downstream_token = load_downstream_token(environ)
         validate_bind_safety(args.host, downstream_token)
         playback_config = load_playback_config(environ)
@@ -551,8 +654,7 @@ def main(
             )
         )
     except (
-        RunnerConfigError,
-        PendingThoughtServiceError,
+        InteractionServiceError,
         ValueError,
     ) as exc:
         print(

@@ -8,7 +8,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gateway.pending_thought import KnockWaitTell
+from gateway.pending_thought import OfferFlow
 from gateway.stackchan_event_session import (
     StackChanEventDispatcher,
     StackChanEventSessionError,
@@ -23,11 +23,11 @@ _PREPARED_AUDIO_BASE64 = "ABRYAvkwTbsN5eOSCYk468rhsdHdhQ=="
 
 class RecordingBody:
     def __init__(self):
-        self.knocks = []
+        self.presentations = []
         self.tells = []
 
-    def knock(self, thought_id):
-        self.knocks.append(thought_id)
+    def perform_expression(self, expression):
+        self.presentations.append(expression)
 
     def tell(self, thought_id, audio_base64):
         self.tells.append((thought_id, audio_base64))
@@ -36,7 +36,7 @@ class RecordingBody:
 class StackChanEventSessionTests(unittest.TestCase):
     def test_session_message_routes_only_touch_during_offer_wait(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         unrelated = SimpleNamespace(
             root=SimpleNamespace(
                 method="notifications/tools/list_changed",
@@ -78,7 +78,7 @@ class StackChanEventSessionTests(unittest.TestCase):
 
     def test_matching_message_requires_object_params(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         malformed = SimpleNamespace(
             root=SimpleNamespace(method="stackchan/event", params=None)
         )
@@ -187,7 +187,7 @@ class StackChanEventSessionTests(unittest.TestCase):
 
     @staticmethod
     def _waiting_machine(body):
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         StackChanEventSessionTests._offer(machine)
         return machine
 
@@ -199,6 +199,7 @@ class StackChanEventSessionTests(unittest.TestCase):
                 "thought_id": "eval:42",
                 "decision": "offer",
                 "audio_base64": _PREPARED_AUDIO_BASE64,
+                "expression": "curious",
             }
         )
 

@@ -9,11 +9,21 @@ and exact safe return.
 
 ## Current Status
 
-The seven motor recipes were physically calibrated on source commit `e212a1c`.
-That evidence remains useful, but the replacement renderer and its runtime
-integration are a new candidate and require the end-to-end hardware paths
-below before acceptance. No firmware, gateway, OpenClaw, or deployment version
-combination is claimed as physically accepted yet.
+Completed on 2026-09-17 with sustained real-user physical acceptance of the
+versioned expression, conversation, offer, touch, display, maintenance, and
+USB calibration paths below.
+
+The accepted candidate is:
+
+- XC Body firmware and assets `0.3.26`;
+- Gateway and Interaction runtime `0.3.8`;
+- XC Body OpenClaw plugin `0.3.2`;
+- OpenClaw `2026.7.1-2`; and
+- source commit `ffb56f0259446f6e565075fe473de613337108fe`.
+
+The seven motor recipes were initially calibrated on source commit `e212a1c`.
+The accepted candidate revalidated their complete runtime integration rather
+than relying on that earlier calibration alone.
 
 ## Expression Vocabulary
 
@@ -23,7 +33,7 @@ The named recipes remain:
 | --- | --- |
 | `agree` | agreement through one restrained nod |
 | `pleased` | good news, thanks, and warmth |
-| `curious` | inquiry, attention, and the offer knock |
+| `curious` | questions, inquiry, and uncertainty |
 | `concerned` | bad news, caution, and empathy |
 | `surprised` | genuinely unexpected information |
 | `embarrassed` | mistakes and mild self-consciousness |
@@ -71,13 +81,19 @@ assets package repairs it. A blank face is not a substitute for an expression.
 
 ## Runtime Behavior
 
-- Direct conversation runs saved `curious`, returns safely to idle, and then
-  starts the unchanged speech path. There is no direct projection or model
-  expression selection.
-- A background offer runs saved `curious` once, returns safely, then enters
-  the unchanged wait-for-touch state and tells the prepared result after
-  consent. The VM asks firmware to keep the idle screensaver hidden while the
-  offer waits; that display hint does not own offer admission.
+- Compound transcription routes directly to one of the seven named silent
+  expressions when that is a natural and complete response. Questions,
+  requests requiring action or explanation, and uncertain cases run the agent
+  normally.
+- Every completed direct answer is projected to select one of the seven named
+  expressions from its full meaning. A short answer keeps its exact speech; a
+  long or formatted answer is also projected into bounded speech. Interaction
+  runs the selected expression through safe return before starting the
+  unchanged speech path.
+- Background projection selects `skip` or bounded speech plus one non-idle
+  expression. An offer prepares audio, runs that expression once through safe
+  return, then enters the unchanged wait-for-touch state. The VM keeps the idle
+  screensaver hidden while the offer waits.
 - While direct attention or its speech is active, a head tap or stroke is
   ignored. After it completes, the next gesture runs the locally stored
   `touch` recipe. Only that reaction's successful safe return emits its
@@ -90,17 +106,21 @@ assets package repairs it. A blank face is not a substitute for an expression.
 - `speaking.gif` loops only for actual audio playback, with no head motion or
   blink. Missing or invalid speaking art cannot block speech. TTS stop restores
   idle presence.
-- The public `perform_expression` gateway tool accepts `idle` or one of the
-  seven expression names from a trusted upstream semantic caller. It does not
-  distinguish a user request from model judgment. `idle` restores the safe
-  pose; named expressions use the same firmware runner. The tool exposes no
-  motor parameters.
+- The private `perform_expression` gateway tool accepts `idle` or one of the
+  seven expression names for internal execution. Public voice and summary
+  requests carry one of the seven named expressions; model output cannot
+  select `idle`. Internally, `idle` restores the safe pose, while named
+  expressions use the same firmware runner. No boundary exposes motor
+  parameters.
 
 ## Display Behavior
 
 - The application view owns the expression and application status bar. The
   configuration and OTA view owns the generic system content and status row.
   Switching views hides the complete inactive pair; their layers never mix.
+- The deterministic asset generator gives every face GIF the same canonical
+  opaque background and preserves efficient delta frames. A transition redraws
+  the complete face once; later frames redraw only their changed regions.
 - XC Body does not construct generic emoji widgets. A blank face is the
   fallback only for a display-only state; it never substitutes for a named
   expression whose GIF is missing or invalid.
@@ -132,25 +152,29 @@ schema so previously approved motor calibration is retained.
 USB remains the only boundary for changing recipes. Gateway and OpenClaw calls
 can choose only a saved semantic name.
 
-## Acceptance Paths
+## Accepted Hardware Paths
 
-Before this candidate is accepted, test these complete paths on hardware and
-record exact firmware, gateway, OpenClaw, and source versions:
+Real-user testing accepted these complete paths on the versioned candidate:
 
 1. boot -> configuration or activation -> idle face, with no `待命` flash;
 2. screensaver -> first LCD, right-side, and head touch -> idle only;
 3. charging transition -> green level glyph with no lightning glyph;
 4. accepted USB OTA -> face hidden -> maintenance UI -> update;
-5. direct request -> listening -> curious -> safe return -> speaking -> idle;
+5. direct request -> listening -> selected expression -> safe return ->
+   speaking -> idle;
    head touch during attention or speech has no effect;
-6. background offer -> curious -> safe return -> wait -> touch -> pleased and
-   shake -> safe return -> prepared speech;
+6. background offer -> selected expression -> safe return -> wait -> touch ->
+   pleased and shake -> safe return -> prepared speech;
 7. tap and stroke with no pending offer -> pleased and shake -> safe return;
    no speech; and
 8. USB preview and persistence of `touch.json` with no second motion runner.
+9. expression-only utterance -> no agent run -> saved firmware expression ->
+   safe return -> no speech; verify both an explicit display request and a
+   self-contained social or emotional remark.
 
 ## Out of Scope
 
-This change does not add combined GIF playback, projection-selected direct
-expressions, speech-null contracts, new expression catalogs, model-generated
-motion, camera input, constant servo activity, or a global activity framework.
+This change does not add combined GIF playback, model-generated motion, sparse
+idle gaze or posture changes, camera input, constant servo activity, or a
+global activity framework. Milestone 6 owns future ambient motion and camera
+work as one perception-guided presence feature.

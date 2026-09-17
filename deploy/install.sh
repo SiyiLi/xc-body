@@ -48,10 +48,10 @@ docker tag "$runtime_image" "${runtime_image%@*}"
 docker tag "$caddy_image" "${caddy_image%@*}"
 docker run --rm --user 0:0 --entrypoint /bin/sh \
   -v "$log_dir:/logs" "$runtime_image" \
-  -c 'touch /logs/gateway.log /logs/pending.log &&
-      chown 1000:1000 /logs /logs/gateway.log /logs/pending.log &&
+  -c 'touch /logs/gateway.log /logs/interaction.log &&
+      chown 1000:1000 /logs /logs/gateway.log /logs/interaction.log &&
       chmod 0755 /logs &&
-      chmod 0644 /logs/gateway.log /logs/pending.log'
+      chmod 0644 /logs/gateway.log /logs/interaction.log'
 
 stage=$(mktemp -d /tmp/xc-body-config.XXXXXX)
 container_id=$(docker create "$runtime_image")
@@ -88,7 +88,8 @@ compose=(
 
 echo "[deploy] replacing legacy XC Body containers"
 for container in \
-  xc-body-tunnel xc-body-pending xc-body-proxy xc-body-gateway; do
+  xc-body-tunnel xc-body-pending xc-body-interaction \
+  xc-body-proxy xc-body-gateway; do
   if docker inspect "$container" >/dev/null 2>&1; then
     docker rm -f "$container" >/dev/null
   fi
@@ -97,12 +98,12 @@ done
 echo "[deploy] starting gateway and proxy"
 "${compose[@]}" up -d --force-recreate gateway proxy
 
-echo "[deploy] starting pending-thought service"
-"${compose[@]}" up -d --force-recreate pending
+echo "[deploy] starting Interaction service"
+"${compose[@]}" up -d --force-recreate interaction
 echo "[deploy] checking public XC Body routes"
 attempt=0
 while [ "$attempt" -lt 90 ]; do
-  if docker exec xc-body-pending python3 -c \
+  if docker exec xc-body-interaction python3 -c \
     '
 import sys
 import urllib.request as u
@@ -110,7 +111,6 @@ import urllib.request as u
 base = sys.argv[1]
 urls = (
     f"{base}/xc-body/healthz",
-    f"{base}/gateway-mcp/healthz",
 )
 raise SystemExit(
     0 if all(u.urlopen(url, timeout=5).status == 200 for url in urls) else 1
@@ -124,7 +124,7 @@ raise SystemExit(
 done
 [ "$attempt" -lt 90 ] || {
   for container in \
-    xc-body-pending xc-body-gateway xc-body-proxy; do
+    xc-body-interaction xc-body-gateway xc-body-proxy; do
     echo "[deploy] $container logs"
     docker logs --tail 80 "$container" 2>&1 || true
   done
@@ -134,7 +134,7 @@ done
 unexpected=$(
   docker ps -a --format '{{.Names}}' \
     | awk '/^xc-body-/ && $0 != "xc-body-gateway" && \
-      $0 != "xc-body-pending" && $0 != "xc-body-proxy"'
+      $0 != "xc-body-interaction" && $0 != "xc-body-proxy"'
 )
 [ -z "$unexpected" ] \
   || die "unexpected XC Body containers remain: $unexpected" 68

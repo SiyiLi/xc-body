@@ -23,6 +23,57 @@ namespace {
 
 constexpr auto kPlaybackDrainTimeout = std::chrono::seconds(8);
 
+void AddDirectAudioMetrics(
+        cJSON* result, const DirectAudioMetrics& metrics) {
+    cJSON_AddNumberToObject(
+        result, "accepted_frames",
+        static_cast<double>(metrics.accepted_frames));
+    cJSON_AddNumberToObject(
+        result, "rejected_frames",
+        static_cast<double>(metrics.rejected_frames));
+    cJSON_AddNumberToObject(
+        result, "codec_output_frames",
+        static_cast<double>(metrics.codec_output_frames));
+    cJSON_AddNumberToObject(
+        result, "max_codec_write_gap_ms",
+        metrics.max_codec_write_gap_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_pcm_underrun_ms",
+        metrics.stall_pcm_underrun_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_pcm_ready_to_dequeue_ms",
+        metrics.stall_pcm_ready_to_dequeue_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_enable_output_ms",
+        metrics.stall_enable_output_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_pre_output_ms",
+        metrics.stall_pre_output_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_output_data_ms",
+        metrics.stall_output_data_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_opus_dequeue_latency_ms",
+        metrics.stall_opus_dequeue_latency_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_decode_resample_ms",
+        metrics.stall_decode_resample_ms);
+    cJSON_AddNumberToObject(
+        result, "stall_decode_queue_depth",
+        static_cast<double>(metrics.stall_decode_queue_depth));
+    cJSON_AddNumberToObject(
+        result, "stall_playback_queue_depth",
+        static_cast<double>(metrics.stall_playback_queue_depth));
+    cJSON_AddBoolToObject(
+        result, "stall_terminal", metrics.stall_terminal);
+    cJSON_AddBoolToObject(
+        result, "stall_decode_in_flight",
+        metrics.stall_decode_in_flight);
+    cJSON_AddBoolToObject(
+        result, "stall_output_in_flight",
+        metrics.stall_output_in_flight);
+}
+
 ListeningProfile ParseListenProfile(const cJSON* root) {
     auto profile = cJSON_GetObjectItem(root, "profile");
     bool profile_present = profile != nullptr;
@@ -85,8 +136,7 @@ void Application::ResumeDeferredAudioPlayback() {
         return;
     }
     auto& board = Board::GetInstance();
-    // Prepare the visual before waking the audio task. GIF setup is optional,
-    // but it must not compete with the first codec writes when it is present.
+    // This only records the latest desired state face. LVGL loads it later.
     board.OnTtsStart();
     audio_service_.ReleasePreparedAudioPlayback();
     audio_service_.ReleaseDirectAudioPlayback();
@@ -562,14 +612,9 @@ void Application::InitializeProtocol() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     
-    protocol_->OnIncomingAudio([this, &board](
+    protocol_->OnIncomingAudio([this](
             std::unique_ptr<AudioStreamPacket> packet) {
-        if (audio_service_.IsPreparedAudioPending()) {
-            audio_service_.PushPreparedPacketToDecodeQueue(
-                std::move(packet));
-        } else if (audio_service_.IsDirectAudioActive()) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
-        }
+        audio_service_.PushIncomingAudioPacket(std::move(packet));
     });
     
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -805,21 +850,7 @@ void Application::InitializeProtocol() {
                         cJSON_AddBoolToObject(
                             result, "ok", !drain_timed_out && !drain_failed);
                         if (direct_audio) {
-                            cJSON_AddNumberToObject(
-                                result, "accepted_frames",
-                                static_cast<double>(
-                                    direct_metrics.accepted_frames));
-                            cJSON_AddNumberToObject(
-                                result, "rejected_frames",
-                                static_cast<double>(
-                                    direct_metrics.rejected_frames));
-                            cJSON_AddNumberToObject(
-                                result, "codec_output_frames",
-                                static_cast<double>(
-                                    direct_metrics.codec_output_frames));
-                            cJSON_AddNumberToObject(
-                                result, "max_codec_write_gap_ms",
-                                direct_metrics.max_codec_write_gap_ms);
+                            AddDirectAudioMetrics(result, direct_metrics);
                         }
                         char* result_str = cJSON_PrintUnformatted(result);
                         if (result_str != nullptr) {
@@ -1075,6 +1106,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode, uint32_t generati
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
+            if (IsListeningRequestCurrent(generation)) {
+                InvalidatePendingListeningRequest();
+                listening_profile_ =
+                    ListeningProfileAfterStop(listening_profile_);
+                play_popup_on_listening_ = false;
+                SetDeviceState(kDeviceStateIdle);
+            }
             return;
         }
     }
@@ -1179,7 +1217,7 @@ void Application::HandleCancelListeningEvent() {
         listening_profile_ = ListeningProfileAfterStop(listening_profile_);
         play_popup_on_listening_ = false;
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
-            protocol_->SendCancelListening();
+            protocol_->CloseAudioChannel();
         }
         SetDeviceState(kDeviceStateIdle);
     } else if (state == kDeviceStateListening) {

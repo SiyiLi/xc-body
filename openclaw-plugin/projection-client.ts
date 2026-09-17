@@ -4,22 +4,47 @@ import type {
   LlmCompleter,
   LlmCompleteParams,
 } from "./spoken-text.ts";
+import {
+  EXPRESSION_GUIDANCE,
+  isExpressionName,
+  type ExpressionName,
+} from "./expression.ts";
 
-export const NVIDIA_PROJECTION_URL =
+export const MODEL_API_URL =
   "https://inference-api.nvidia.com/v1/chat/completions";
-export const NVIDIA_PROJECTION_MODEL =
+export const MODEL_NAME =
   "gcp/google/gemini-3.5-flash-lite";
-export const NVIDIA_TRANSCRIPTION_PROMPT =
-  "Transcribe this audio accurately. The speaker may use English, Chinese " +
-  "(Mandarin), or French — sometimes mixed in the same message. Output the " +
-  "transcribed text only, nothing else. Preserve the original language(s).";
+export const TRANSCRIPTION_PROMPT = `Transcribe and route one spoken \
+XC Body turn. Return exactly one JSON object with exactly these keys: \
+{"transcript":string,"route":"expression_only"|"conversation",\
+"expression":string|null}. Do not return Markdown or commentary.
+
+Transcribe faithfully in the speaker's original language. The speaker may use \
+English, Chinese, French, or mix them.
+
+First choose conversation for any question, request for information or action, \
+instruction beyond displaying an expression, or turn that needs words for a \
+complete response. Otherwise choose expression_only when one supported \
+nonverbal expression is a natural and complete response by itself. This \
+includes direct requests to display an expression and self-contained social or \
+emotional remarks. For example, "I am embarrassed" may use expression_only, \
+while "Why am I so embarrassed?" and "Help me explain this" use conversation. \
+Classify meaning in any language, not particular English words. When uncertain, \
+use conversation. Set expression to the chosen name for expression_only and to \
+null for conversation.
+
+${EXPRESSION_GUIDANCE}`;
+
+const TRANSCRIPTION_CORRECTION_PROMPT = `Your previous response was not valid \
+JSON matching the required schema. Correct it now. Return only one JSON object \
+with exactly transcript, route, and expression; no Markdown or commentary.`;
 
 type ProjectionClientConfig = {
   apiKeyFile: string;
   timeoutMs: number;
 };
 
-type NvidiaResponse = {
+type ModelResponse = {
   choices?: Array<{
     message?: {
       content?: unknown;
@@ -27,10 +52,57 @@ type NvidiaResponse = {
   }>;
 };
 
-export type NvidiaAudioTranscriber = (
+export type AudioTranscriber = (
   audioBase64: string,
   signal?: AbortSignal,
-) => Promise<string>;
+) => Promise<DirectTranscription>;
+
+export type DirectTranscription =
+  | {
+      transcript: string;
+      route: "expression_only";
+      expression: ExpressionName;
+    }
+  | {
+      transcript: string;
+      route: "conversation";
+      expression: null;
+    };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseDirectTranscription(text: string): DirectTranscription {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("Model transcription is invalid JSON");
+  }
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some(
+      (key) => !["transcript", "route", "expression"].includes(key),
+    ) ||
+    typeof value.transcript !== "string" ||
+    !value.transcript.trim() ||
+    (value.route !== "expression_only" && value.route !== "conversation")
+  ) {
+    throw new Error("Model transcription has an invalid structure");
+  }
+  const transcript = value.transcript.trim();
+  if (value.route === "expression_only" && isExpressionName(value.expression)) {
+    return { transcript, route: value.route, expression: value.expression };
+  }
+  if (value.route === "expression_only") {
+    return { transcript, route: "conversation", expression: null };
+  }
+  if (value.route === "conversation" && value.expression === null) {
+    return { transcript, route: value.route, expression: null };
+  }
+  throw new Error("Model transcription has an invalid structure");
+}
 
 function requestSignal(
   signal: AbortSignal | undefined,
@@ -44,7 +116,7 @@ function projectionRequestBody(
   params: LlmCompleteParams,
 ): Record<string, unknown> {
   return {
-    model: NVIDIA_PROJECTION_MODEL,
+    model: MODEL_NAME,
     messages: [
       { role: "system", content: params.systemPrompt },
       ...params.messages,
@@ -58,10 +130,14 @@ function projectionRequestBody(
   };
 }
 
-function transcriptionRequestBody(audioBase64: string): Record<string, unknown> {
+function transcriptionRequestBody(
+  audioBase64: string,
+  previousResponse?: string,
+): Record<string, unknown> {
   return {
-    model: NVIDIA_PROJECTION_MODEL,
+    model: MODEL_NAME,
     messages: [
+      { role: "system", content: TRANSCRIPTION_PROMPT },
       {
         role: "user",
         content: [
@@ -69,17 +145,23 @@ function transcriptionRequestBody(audioBase64: string): Record<string, unknown> 
             type: "input_audio",
             input_audio: { data: audioBase64, format: "ogg" },
           },
-          { type: "text", text: NVIDIA_TRANSCRIPTION_PROMPT },
         ],
       },
+      ...(previousResponse === undefined
+        ? []
+        : [
+            { role: "assistant", content: previousResponse },
+            { role: "user", content: TRANSCRIPTION_CORRECTION_PROMPT },
+          ]),
     ],
-    max_tokens: 2048,
+    max_tokens: 256,
+    temperature: 0,
     reasoning_effort: "none",
     thinking_level: "off",
   };
 }
 
-function responseText(value: NvidiaResponse): string {
+function responseText(value: ModelResponse): string {
   const content = value.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) {
     throw new Error("Model API response has no text");
@@ -87,7 +169,7 @@ function responseText(value: NvidiaResponse): string {
   return content;
 }
 
-async function requestNvidiaText(
+async function requestModelText(
   config: ProjectionClientConfig,
   fetchImpl: typeof fetch = fetch,
   body: Record<string, unknown>,
@@ -97,7 +179,7 @@ async function requestNvidiaText(
   if (!apiKey) {
     throw new Error("Model API key is empty");
   }
-  const response = await fetchImpl(NVIDIA_PROJECTION_URL, {
+  const response = await fetchImpl(MODEL_API_URL, {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -117,21 +199,21 @@ async function requestNvidiaText(
       `Model API returned ${response.status}`,
     );
   }
-  let value: NvidiaResponse;
+  let value: ModelResponse;
   try {
-    value = await response.json() as NvidiaResponse;
+    value = await response.json() as ModelResponse;
   } catch {
     throw new Error("Model API response is invalid JSON");
   }
   return responseText(value);
 }
 
-export function createNvidiaProjectionCompleter(
+export function createProjectionCompleter(
   config: ProjectionClientConfig,
   fetchImpl: typeof fetch = fetch,
 ): LlmCompleter {
   return async (params) => ({
-    text: await requestNvidiaText(
+    text: await requestModelText(
       config,
       fetchImpl,
       projectionRequestBody(params),
@@ -140,15 +222,29 @@ export function createNvidiaProjectionCompleter(
   });
 }
 
-export function createNvidiaAudioTranscriber(
+export function createAudioTranscriber(
   config: ProjectionClientConfig,
   fetchImpl: typeof fetch = fetch,
-): NvidiaAudioTranscriber {
-  return async (audioBase64, signal) =>
-    requestNvidiaText(
+): AudioTranscriber {
+  return async (audioBase64, signal) => {
+    const operationSignal = requestSignal(signal, config.timeoutMs);
+    const firstResponse = await requestModelText(
       config,
       fetchImpl,
       transcriptionRequestBody(audioBase64),
-      signal,
+      operationSignal,
     );
+    try {
+      return parseDirectTranscription(firstResponse);
+    } catch {
+      return parseDirectTranscription(
+        await requestModelText(
+          config,
+          fetchImpl,
+          transcriptionRequestBody(audioBase64, firstResponse),
+          operationSignal,
+        ),
+      );
+    }
+  };
 }

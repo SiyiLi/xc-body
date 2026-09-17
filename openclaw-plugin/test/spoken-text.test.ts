@@ -1,34 +1,53 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { prepareDirectAnswerSpeech } from "../direct-conversation.ts";
+import { prepareDirectAnswer } from "../direct-conversation.ts";
+import { EXPRESSION_NAMES } from "../expression.ts";
 import {
   needsSpeechProjection,
+  parseDirectProjection,
   parseSpokenProjection,
   prepareDirectSpeech,
   projectSpokenText,
 } from "../spoken-text.ts";
 
-test("plain answers bypass projection until a speech limit is exceeded", async () => {
+test("plain answers keep exact speech and select from the answer", async () => {
+  const answer = "不，我不同意。";
   let calls = 0;
-  for (const answer of [
-    "九加六等于十五。",
-    "Scarlett means a vivid shade of red.",
-  ]) {
-    const speech = await prepareDirectSpeech(async () => {
-      calls += 1;
-      return { text: "" };
-    }, answer);
-    assert.equal(speech, answer);
-  }
-  assert.equal(calls, 0);
+  const prepared = await prepareDirectSpeech(async (params) => {
+    calls += 1;
+    assert.deepEqual(JSON.parse(params.messages[0]?.content ?? ""), {
+      openclaw_answer: answer,
+      project_speech: false,
+    });
+    return {
+      text: JSON.stringify({ speech: null, expression: "concerned" }),
+    };
+  }, answer);
+  assert.deepEqual(prepared, {
+    speech: answer,
+    expression: "concerned",
+  });
+  assert.equal(calls, 1);
   assert.equal(needsSpeechProjection("word ".repeat(200)), false);
   assert.equal(needsSpeechProjection("word ".repeat(201)), true);
   assert.equal(needsSpeechProjection("a".repeat(1_000)), false);
   assert.equal(needsSpeechProjection("a".repeat(1_001)), true);
 });
 
-test("formatted answers use one shared projection with complete input", async () => {
+test("plain answers survive expression projection failure", async () => {
+  const answer = "十五。";
+  let calls = 0;
+  const prepared = await prepareDirectSpeech(async () => {
+    calls += 1;
+    throw new Error("projection unavailable");
+  }, answer);
+
+  assert.deepEqual(prepared, { speech: answer, expression: "curious" });
+  assert.equal(calls, 2);
+});
+
+test("long-answer projection selects from the final answer alone", async () => {
   const answer = [
     "| 城市 | 天气 |",
     "| --- | --- |",
@@ -36,58 +55,155 @@ test("formatted answers use one shared projection with complete input", async ()
   ].join("\n");
   assert.equal(needsSpeechProjection(answer), true);
 
-  const speech = await prepareDirectSpeech(
+  const prepared = await prepareDirectSpeech(
     async (params) => {
-      assert.equal(params.messages[0]?.content, answer);
-      return { text: "上海今天有雨。" };
+      assert.deepEqual(JSON.parse(params.messages[0]?.content ?? ""), {
+        openclaw_answer: answer,
+        project_speech: true,
+      });
+      for (const expression of EXPRESSION_NAMES) {
+        assert.match(params.systemPrompt, new RegExp(`\\b${expression}:`));
+      }
+      return {
+        text: JSON.stringify({
+          speech: "上海今天有雨。",
+          expression: "concerned",
+        }),
+      };
     },
     answer,
   );
 
-  assert.equal(speech, "上海今天有雨。");
+  assert.deepEqual(prepared, {
+    speech: "上海今天有雨。",
+    expression: "concerned",
+  });
 });
 
-test("direct caller speaks an error after invalid projection output", async () => {
+test("direct caller falls back to error speech and curious", async () => {
   let calls = 0;
-  const speech = await prepareDirectAnswerSpeech(async () => {
+  const prepared = await prepareDirectAnswer(async () => {
     calls += 1;
-    return { text: "not suitable for speech" };
-  }, "```text\nnot suitable for speech\n```");
+    return { text: "not valid JSON" };
+  }, "# not suitable for speech");
 
-  assert.equal(speech, "抱歉，在生成最终答案时出了点问题。");
+  assert.deepEqual(prepared, {
+    speech: "抱歉，在生成最终答案时出了点问题。",
+    expression: "curious",
+  });
   assert.equal(calls, 2);
 });
 
-test("projection retry can recover from invalid output", async () => {
+test("background projection retries invalid structured output", async () => {
   let calls = 0;
-  const projection = await projectSpokenText(async () => {
+  const projection = await projectSpokenText(async (params) => {
     calls += 1;
+    for (const expression of EXPRESSION_NAMES) {
+      assert.match(params.systemPrompt, new RegExp(`\\b${expression}:`));
+    }
+    assert.deepEqual(JSON.parse(params.messages[0]?.content ?? ""), {
+      openclaw_result: "completed result",
+    });
     return calls === 1
-      ? { text: "not suitable for speech" }
-      : { text: "SKIP" };
+      ? { text: "not valid JSON" }
+      : {
+          text: JSON.stringify({
+            decision: "skip",
+            speech: null,
+            expression: null,
+          }),
+        };
   }, "completed result");
 
   assert.deepEqual(projection, {
     decision: "skip",
     speech: "",
+    expression: null,
   });
   assert.equal(calls, 2);
 });
 
-test("background projection accepts SKIP or bounded Chinese speech", () => {
+test("projection parsers enforce speech and expression boundaries", () => {
   assert.deepEqual(
-    parseSpokenProjection("任务已经完成。"),
-    { decision: "offer", speech: "任务已经完成。" },
+    parseSpokenProjection(JSON.stringify({
+      decision: "offer",
+      speech: "任务已经完成。",
+      expression: "pleased",
+    })),
+    {
+      decision: "offer",
+      speech: "任务已经完成。",
+      expression: "pleased",
+    },
   );
   assert.deepEqual(
-    parseSpokenProjection("SKIP"),
-    { decision: "skip", speech: "" },
+    parseSpokenProjection(JSON.stringify({
+      decision: "skip",
+      speech: null,
+      expression: null,
+    })),
+    { decision: "skip", speech: "", expression: null },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: "我不太确定。",
+      expression: "curious",
+    }), true),
+    { speech: "我不太确定。", expression: "curious" },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: "agree",
+    }), false),
+    { speech: null, expression: "agree" },
+  );
+  for (const expression of ["excited", "idle", null]) {
+    assert.deepEqual(
+      parseSpokenProjection(JSON.stringify({
+        decision: "offer",
+        speech: "任务已经完成。",
+        expression,
+      })),
+      {
+        decision: "offer",
+        speech: "任务已经完成。",
+        expression: "curious",
+      },
+    );
+  }
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: "excited",
+    }), false),
+    { speech: null, expression: "curious" },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: null,
+    }), false),
+    { speech: null, expression: "curious" },
+  );
+  assert.deepEqual(
+    parseDirectProjection(JSON.stringify({
+      speech: null,
+      expression: "idle",
+    }), false),
+    { speech: null, expression: "curious" },
   );
   for (const invalid of [
-    "skip",
-    "English only",
-    Array.from({ length: 201 }, () => "完成").join(" "),
-    `中${"a".repeat(1_000)}`,
+    JSON.stringify({
+      decision: "offer",
+      speech: "English only",
+      expression: "pleased",
+    }),
+    JSON.stringify({
+      decision: "offer",
+      speech: "任务已经完成。",
+      expression: [],
+    }),
   ]) {
     assert.equal(parseSpokenProjection(invalid), null);
   }

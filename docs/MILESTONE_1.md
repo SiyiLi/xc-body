@@ -16,8 +16,9 @@ deterministically, safely, and with an automatic return to idle.
 - Device unavailability and command failures are reported honestly.
 - Visible expression requires physical evidence; command success is not enough.
 
-The tracked contract is `contracts/embodiment-intent.schema.json`.
-Its optional `speech` field accepts only JSON `null`.
+The accepted contract was `contracts/embodiment-intent.schema.json`, now
+preserved in Git history rather than the active runtime tree. Its optional
+`speech` field accepts only JSON `null`.
 
 ## Calibrated Vocabulary
 

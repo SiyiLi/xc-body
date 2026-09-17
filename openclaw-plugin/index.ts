@@ -8,8 +8,8 @@ import {
 import { DirectConversationService } from "./direct-conversation.ts";
 import { registerCompletionHooks } from "./hooks.ts";
 import {
-  createNvidiaAudioTranscriber,
-  createNvidiaProjectionCompleter,
+  createAudioTranscriber,
+  createProjectionCompleter,
 } from "./projection-client.ts";
 
 const TRANSCRIPTION_TIMEOUT_MS = 60_000;
@@ -17,7 +17,7 @@ const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 export default definePluginEntry({
   id: "xc-body-native",
   name: "XC Body Native Integration",
-  description: "Offers selected background completions through XC Body.",
+  description: "Connects OpenClaw conversation and expression to XC Body.",
   register(api) {
     let config: ReturnType<typeof parsePluginConfig>;
     try {
@@ -28,11 +28,11 @@ export default definePluginEntry({
       );
       return;
     }
-    const completeProjection = createNvidiaProjectionCompleter({
+    const completeProjection = createProjectionCompleter({
       apiKeyFile: config.projectionApiKeyFile,
       timeoutMs: config.timeoutMs,
     });
-    const transcribeAudio = createNvidiaAudioTranscriber({
+    const transcribeAudio = createAudioTranscriber({
       apiKeyFile: config.projectionApiKeyFile,
       timeoutMs: Math.min(config.timeoutMs, TRANSCRIPTION_TIMEOUT_MS),
     });

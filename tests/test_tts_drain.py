@@ -56,9 +56,17 @@ class TtsDrainTests(unittest.IsolatedAsyncioTestCase):
         connection = ESP32Connection(websocket, "device-session-1")
         connection.tts_drain_ack = True
 
-        with patch.object(esp32_client, "RESPONSE_TIMEOUT", 0.01):
+        with self.assertLogs(
+            "stackchan_mcp.esp32_client",
+            level="WARNING",
+        ) as captured, patch.object(
+            esp32_client,
+            "TTS_DRAIN_TIMEOUT_S",
+            0.01,
+        ):
             waiting = asyncio.create_task(stop_tts_after_drain(connection))
             await asyncio.wait_for(websocket.stop_sent.wait(), timeout=1)
+            drain_id = websocket.drain_id()
             connection.handle_tts_drained({"drain_id": []})
             connection.handle_tts_drained(
                 {"drain_id": "wrong", "ok": True}
@@ -68,6 +76,30 @@ class TtsDrainTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(connection.connected)
         self.assertTrue(websocket.closed)
+        timeout_log = captured.output[-1]
+        self.assertIn("session=device-session-1", timeout_log)
+        self.assertIn(f"drain_id={drain_id}", timeout_log)
+
+    def test_unmatched_drain_retains_session_and_metrics_in_log(self) -> None:
+        websocket = _WebSocket()
+        connection = ESP32Connection(websocket, "device-session-1")
+        connection.device_id = "stackchan-1"
+
+        with self.assertLogs(
+            "stackchan_mcp.esp32_client",
+            level="WARNING",
+        ) as captured:
+            connection.handle_tts_drained({
+                "drain_id": "late-drain-1",
+                "ok": False,
+                "max_codec_write_gap_ms": 4260,
+            })
+
+        message = captured.output[0]
+        self.assertIn("device=stackchan-1", message)
+        self.assertIn("session=device-session-1", message)
+        self.assertIn('"drain_id":"late-drain-1"', message)
+        self.assertIn('"max_codec_write_gap_ms":4260', message)
 
     async def test_malformed_matching_drain_reply_fences_the_session(self) -> None:
         websocket = _WebSocket()
@@ -104,16 +136,20 @@ class TtsDrainTests(unittest.IsolatedAsyncioTestCase):
         waiting = asyncio.create_task(stop_tts_after_drain(connection))
         await asyncio.wait_for(websocket.stop_sent.wait(), timeout=1)
         self.assertFalse(waiting.done())
-        connection.handle_tts_drained(
-            {"drain_id": websocket.drain_id(), "ok": False}
-        )
+        reply = {
+            "drain_id": websocket.drain_id(),
+            "ok": False,
+            "stall_pcm_ready_to_dequeue_ms": 8000,
+        }
+        connection.handle_tts_drained(reply)
 
         with self.assertRaisesRegex(
             RuntimeError,
             "Firmware TTS drain did not complete",
-        ):
+        ) as raised:
             await waiting
 
+        self.assertEqual(raised.exception.result, reply)
         self.assertFalse(connection.connected)
         self.assertTrue(websocket.closed)
         with self.assertRaises(ConnectionError):

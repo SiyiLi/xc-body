@@ -6,12 +6,28 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from stackchan_mcp.esp32_client import ESP32Connection
+from stackchan_mcp.esp32_client import ESP32Connection, TtsDrainError
 from stackchan_mcp.tts.orchestrator import (
     PcmStreamError,
     send_pcm_audio,
     send_pcm_stream,
 )
+
+
+_DIRECT_AUDIO_DIAGNOSTICS = {
+    "stall_pcm_underrun_ms": 5,
+    "stall_pcm_ready_to_dequeue_ms": 4200,
+    "stall_enable_output_ms": 0,
+    "stall_pre_output_ms": 1,
+    "stall_output_data_ms": 60,
+    "stall_opus_dequeue_latency_ms": 12,
+    "stall_decode_resample_ms": 16,
+    "stall_decode_queue_depth": 39,
+    "stall_playback_queue_depth": 4,
+    "stall_terminal": False,
+    "stall_decode_in_flight": False,
+    "stall_output_in_flight": False,
+}
 
 
 class _Encoder:
@@ -51,6 +67,7 @@ class _Connection:
             "rejected_frames": 0,
             "codec_output_frames": frames,
             "max_codec_write_gap_ms": 0,
+            **_DIRECT_AUDIO_DIAGNOSTICS,
         }
 
 
@@ -423,6 +440,8 @@ class StreamingPcmTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(sender=sender.__name__):
                 result, send_times = await measure(sender)
                 self.assertEqual(result["frame_count"], 16)
+                for name, value in _DIRECT_AUDIO_DIAGNOSTICS.items():
+                    self.assertEqual(result[name], int(value))
                 for previous, current in zip(
                     send_times[:11],
                     send_times[1:12],
@@ -563,6 +582,46 @@ class StreamingPcmTests(unittest.IsolatedAsyncioTestCase):
             "gateway_playback_completed_ms",
             raised.exception.metrics,
         )
+
+    async def test_failed_drain_preserves_firmware_stall_snapshot(self):
+        async def one_frame():
+            yield b"\x00" * 1920
+
+        class StalledConnection(_Connection):
+            async def stop_tts_and_wait_for_drain(self, *, transfer_id=None):
+                del transfer_id
+                await self.send_tts_state("stop")
+                result = {
+                    "ok": False,
+                    "accepted_frames": 1,
+                    "rejected_frames": 0,
+                    "codec_output_frames": 0,
+                    "max_codec_write_gap_ms": 8000,
+                    **_DIRECT_AUDIO_DIAGNOSTICS,
+                    "stall_pcm_ready_to_dequeue_ms": 8000,
+                    "stall_terminal": True,
+                }
+                raise TtsDrainError(result)
+
+        esp32 = _Esp32()
+        esp32.connection = StalledConnection(esp32)
+        gateway = SimpleNamespace(esp32=esp32)
+        opuslib = types.SimpleNamespace(
+            Encoder=_Encoder,
+            APPLICATION_VOIP=object(),
+        )
+        with patch.dict(sys.modules, {"opuslib": opuslib}), patch(
+            "stackchan_mcp.tts.orchestrator.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            with self.assertRaises(PcmStreamError) as raised:
+                await send_pcm_stream(gateway, one_frame())
+
+        self.assertEqual(
+            raised.exception.metrics["stall_pcm_ready_to_dequeue_ms"],
+            8000,
+        )
+        self.assertEqual(raised.exception.metrics["stall_terminal"], 1)
 
     async def test_session_replacement_never_receives_streamed_pcm(self):
         async def chunks():

@@ -29,23 +29,28 @@ turning it off should make the room feel a little emptier.
   authenticated VM service.
 - The source implements a 30-minute in-process offer lifetime, bounded
   submission retries, robot-session recovery, supervisor recovery, and
-  connected idle display dimming. OpenClaw, route, robot, gateway, pending
+  connected idle display dimming. OpenClaw, route, robot, gateway, Interaction
   service, and offer-expiry recovery passed the physical matrix.
 - OpenClaw and StackChan connect outbound to an isolated deployment on the
   configured cloud rendezvous host; raw service ports remain private.
 - Milestone 4 direct conversation and appliance UX have physical acceptance.
   Exact candidate identifiers and the real-user acceptance record are in the
   milestone document.
-- Milestone 5 is active. Its replacement candidate removes the layered avatar
-  and uses the saved expression runner for idle presence, direct attention,
-  offer knocks, touch reactions, and speaking animation. Direct and background
-  behavior remain fixed to `curious`; there is no projection redesign. The
-  replacement integration still requires end-to-end physical acceptance.
-- Milestone 6 is reserved for explicit bounded camera observation.
+- Milestone 5 expression and presence has real-user physical acceptance. The
+  accepted candidate removes the layered avatar and uses the saved expression
+  runner for idle presence, direct responses, offer cues, touch reactions, and
+  speaking animation. Compound transcription may select a silent expression
+  when it is a complete response; questions, actions, and uncertain cases run
+  the agent. Answer and offer projection use the same seven-expression
+  vocabulary; idle remains an internal ambient and safe-return state. Exact
+  candidate identifiers and tested paths are in the milestone document.
+- Milestone 6 owns future perception-guided ambient presence, including sparse
+  idle behavior and explicit bounded camera observation.
 
-The active scope is in [`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current
-system structure is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future
-milestone direction is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The accepted expression scope is in
+[`docs/MILESTONE_5.md`](docs/MILESTONE_5.md). The current system structure is
+in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Future milestone direction
+is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Repository Checks
 
@@ -156,8 +161,7 @@ Read [`AGENTS.md`](AGENTS.md) before changing the repository. It owns the
 phase-aware read order, including when an active or historical milestone is
 relevant.
 
-The machine-readable boundaries are the
-[`embodiment intent contract`][intent-contract] and
+The machine-readable offer boundary is the
 [`pending-thought contract`][pending-thought-contract].
 
 ## Repository Layout
@@ -167,15 +171,13 @@ contracts/      Versioned OpenClaw-to-body contracts
 deploy/         VM image, Compose, proxy, and install definitions
 docs/           Current architecture and milestone acceptance
 firmware/       XC Body CoreS3 firmware
-gateway/        Semantic and pending-thought orchestration
+gateway/        Interaction and pending-offer orchestration
 openclaw-plugin/ Native OpenClaw completion integration
 scripts/        Checks, deployment controllers, and maintenance tools
-stackchan/      Deterministic recipes, calibration, and device adapter
-stackchan_mcp/  StackChan gateway
+stackchan_mcp/  XC Body gateway
 tests/          Standard-library contract and behavior tests
 ```
 
 Do not modify `xc-buddy` from this repository.
 
-[intent-contract]: contracts/embodiment-intent.schema.json
 [pending-thought-contract]: contracts/pending-thought.schema.json

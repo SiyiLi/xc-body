@@ -45,11 +45,16 @@ bootable only to repair the assets partition and retries on a later boot. A
 missing, corrupt, or undecodable named expression GIF is a critical assets
 integrity failure and blocks that expression before motor movement.
 
-StackChan's expression, listening, and speaking GIFs, idle-screen fonts, and
+XC Body's expression, listening, and speaking GIFs, idle-screen fonts, and
 RGB565A8 weather icons are packaged in that assets partition. They are not
 linked into the application slots. Expression recipes are stored in NVS
 through USB calibration. The checked-in `touch.json` is also embedded as the
 built-in touch default; a USB-saved `touch` recipe overrides it.
+
+The deterministic face generator normalizes every packaged GIF to one
+canonical background while retaining efficient delta frames. Tracked artwork
+sources and preparation instructions are under
+`main/boards/stackchan/face-assets/`.
 
 For local recovery, flash the StackChan application and generated assets
 together:

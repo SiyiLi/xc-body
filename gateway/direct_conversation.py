@@ -12,9 +12,9 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from threading import Condition
 
-from gateway.pending_thought_runtime import (
-    PendingThoughtRuntime,
-    PendingThoughtRuntimeError,
+from gateway.interaction_runtime import (
+    InteractionRuntime,
+    InteractionRuntimeError,
 )
 from gateway.speech_preparation import (
     EDGE_TTS_CONNECT_TIMEOUT_SECONDS,
@@ -487,23 +487,31 @@ def emit_direct_turn_metrics(report: Mapping[str, object]) -> None:
     )
 
 
-async def speak_direct_answer(
-    runtime: PendingThoughtRuntime,
+async def perform_direct_answer(
+    runtime: InteractionRuntime,
     turn_id: str,
-    answer: str,
+    expression: str,
+    speech: str | None,
     voice: str,
 ) -> dict[str, int]:
-    """Synthesize during attention, then stream speech to the robot."""
+    """Run the selected expression, followed by optional synthesized speech."""
 
-    answer = answer.strip()
-    if not answer:
-        raise DirectConversationError("direct answer is empty")
+    if speech is None:
+        started = time.monotonic()
+        await runtime.perform_expression(expression)
+        return {
+            "expression_ms": round((time.monotonic() - started) * 1000),
+            "expression_completed_ms": time.time_ns() // 1_000_000,
+        }
+    speech = speech.strip()
+    if not speech:
+        raise DirectConversationError("direct speech is empty")
     pcm = DirectPcmBuffer()
 
     async def produce() -> None:
         try:
             await stream_speech_pcm(
-                answer,
+                speech,
                 voice,
                 pcm.put,
                 on_failure=pcm.fail,
@@ -519,7 +527,11 @@ async def speak_direct_answer(
 
     producer = asyncio.create_task(produce())
     try:
-        body_metrics = await runtime.tell_direct_stream(turn_id, pcm)
+        body_metrics = await runtime.tell_direct_stream(
+            turn_id,
+            expression,
+            pcm,
+        )
         await producer
     except asyncio.CancelledError:
         pcm.abort()
@@ -529,7 +541,7 @@ async def speak_direct_answer(
         pcm.abort()
         await _cancel_producer(producer)
         metrics = pcm.metrics()
-        if isinstance(exc, PendingThoughtRuntimeError):
+        if isinstance(exc, InteractionRuntimeError):
             metrics.update(exc.metrics)
         if isinstance(exc, DirectConversationError):
             metrics.update(exc.metrics)

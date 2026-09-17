@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from gateway.pending_thought import (
-    KnockWaitTell,
+    OfferFlow,
     PendingThoughtError,
     decode_prepared_audio,
     parse_pending_thought,
@@ -18,17 +18,17 @@ _AUDIO = base64.b64encode(_FRAMED_OPUS).decode("ascii")
 
 
 class RecordingBody:
-    def __init__(self, *, fail_knock=False, fail_tell=False):
-        self.knocks = []
+    def __init__(self, *, fail_presentation=False, fail_tell=False):
+        self.presentations = []
         self.tells = []
         self.offer_states = []
-        self.fail_knock = fail_knock
+        self.fail_presentation = fail_presentation
         self.fail_tell = fail_tell
 
-    def knock(self, thought_id):
-        self.knocks.append(thought_id)
-        if self.fail_knock:
-            raise RuntimeError("synthetic knock failure")
+    def perform_expression(self, expression):
+        self.presentations.append(expression)
+        if self.fail_presentation:
+            raise RuntimeError("synthetic presentation failure")
 
     def tell(self, thought_id, audio_base64):
         self.tells.append((thought_id, audio_base64))
@@ -46,6 +46,7 @@ def offer(machine, thought_id="run:42"):
             "thought_id": thought_id,
             "decision": "offer",
             "audio_base64": _AUDIO,
+            "expression": "curious",
         }
     )
 
@@ -70,6 +71,7 @@ class PendingThoughtTests(unittest.TestCase):
                 "thought_id": "run:42",
                 "decision": "offer",
                 "audio_base64": _AUDIO,
+                "expression": "pleased",
             },
         )
         self.assertEqual(
@@ -117,20 +119,20 @@ class PendingThoughtTests(unittest.TestCase):
 
     def test_ignore_and_remember_have_no_body_side_effects(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         ignored = machine.submit(
             {"version": "v1", "thought_id": "a", "decision": "ignore"}
         )
         remembered = remember(machine, "b")
         self.assertEqual((ignored.state, remembered.state), ("ignored", "remembered"))
-        self.assertEqual((body.knocks, body.tells), ([], []))
+        self.assertEqual((body.presentations, body.tells), ([], []))
 
     def test_offer_waits_for_one_acknowledgment(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body, offer_display_port=body)
+        machine = OfferFlow(body, body, offer_display_port=body)
         payload_outcome = offer(machine)
         self.assertEqual(payload_outcome.state, "waiting")
-        self.assertEqual(body.knocks, ["run:42"])
+        self.assertEqual(body.presentations, ["curious"])
         self.assertEqual(body.tells, [])
         self.assertEqual(body.offer_states, [True])
 
@@ -138,7 +140,7 @@ class PendingThoughtTests(unittest.TestCase):
         self.assertEqual(told.state, "told")
         self.assertIsNone(machine.acknowledge_head_gesture())
         self.assertEqual(offer(machine).state, "told")
-        self.assertEqual(body.knocks, ["run:42"])
+        self.assertEqual(body.presentations, ["curious"])
         self.assertEqual(body.tells, [("run:42", _AUDIO)])
         self.assertEqual(body.offer_states, [True, False])
 
@@ -146,7 +148,7 @@ class PendingThoughtTests(unittest.TestCase):
         for subtype, action in (("tap", "head_pat"), ("stroke", "head_stroke")):
             with self.subTest(action=action):
                 body = RecordingBody()
-                machine = KnockWaitTell(body, body)
+                machine = OfferFlow(body, body)
                 offer(machine)
                 outcome = machine.handle_stackchan_event(
                     {
@@ -159,7 +161,7 @@ class PendingThoughtTests(unittest.TestCase):
                 self.assertEqual(body.tells, [("run:42", _AUDIO)])
 
     def test_unrelated_event_is_a_noop(self):
-        machine = KnockWaitTell(RecordingBody(), RecordingBody())
+        machine = OfferFlow(RecordingBody(), RecordingBody())
         self.assertIsNone(
             machine.handle_stackchan_event(
                 {
@@ -170,31 +172,31 @@ class PendingThoughtTests(unittest.TestCase):
             )
         )
 
-    def test_knock_failure_clears_offer_and_suppresses_retry(self):
-        body = RecordingBody(fail_knock=True)
-        machine = KnockWaitTell(body, body)
-        with self.assertRaisesRegex(RuntimeError, "knock failure"):
+    def test_presentation_failure_clears_offer_and_suppresses_retry(self):
+        body = RecordingBody(fail_presentation=True)
+        machine = OfferFlow(body, body)
+        with self.assertRaisesRegex(RuntimeError, "presentation failure"):
             offer(machine, "failed")
         self.assertIsNone(machine.pending_thought_id)
         self.assertEqual(offer(machine, "failed").state, "ignored")
-        self.assertEqual(body.knocks, ["failed"])
+        self.assertEqual(body.presentations, ["curious"])
         self.assertEqual(remember(machine, "retry").state, "remembered")
 
     def test_second_offer_is_ignored_without_replacing_pending_thought(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         offer(machine, "first")
 
         second = offer(machine, "second")
 
         self.assertEqual(second.state, "ignored")
         self.assertEqual(machine.pending_thought_id, "first")
-        self.assertEqual(body.knocks, ["first"])
+        self.assertEqual(body.presentations, ["curious"])
 
     def test_offer_expires_after_thirty_minutes(self):
         now = [0.0]
         body = RecordingBody()
-        machine = KnockWaitTell(
+        machine = OfferFlow(
             body,
             body,
             offer_display_port=body,
@@ -208,14 +210,14 @@ class PendingThoughtTests(unittest.TestCase):
         self.assertIsNone(machine.pending_thought_id)
         self.assertEqual(offer(machine, "expired").state, "expired")
         self.assertEqual(offer(machine, "fresh").state, "waiting")
-        self.assertEqual(body.knocks, ["expired", "fresh"])
+        self.assertEqual(body.presentations, ["curious", "curious"])
         self.assertEqual(body.tells, [])
         self.assertEqual(body.offer_states, [True, False, True])
 
     @patch("gateway.pending_thought._MAX_RECORDED_OUTCOMES", 2)
     def test_eviction_preserves_pending_but_allows_old_completed_id(self):
         body = RecordingBody()
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         offer(machine, "completed")
         machine.acknowledge_head_gesture()
         remember(machine, "recent:1")
@@ -223,16 +225,16 @@ class PendingThoughtTests(unittest.TestCase):
         self.assertEqual(offer(machine, "completed").state, "waiting")
 
         pending_body = RecordingBody()
-        pending_machine = KnockWaitTell(pending_body, pending_body)
+        pending_machine = OfferFlow(pending_body, pending_body)
         offer(pending_machine, "pending")
         remember(pending_machine, "new:1")
         remember(pending_machine, "new:2")
         self.assertEqual(offer(pending_machine, "pending").state, "waiting")
-        self.assertEqual(pending_body.knocks, ["pending"])
+        self.assertEqual(pending_body.presentations, ["curious"])
 
     def test_tell_failure_keeps_offer_pending_for_retry(self):
         body = RecordingBody(fail_tell=True)
-        machine = KnockWaitTell(body, body)
+        machine = OfferFlow(body, body)
         offer(machine)
         with self.assertRaisesRegex(RuntimeError, "tell failure"):
             machine.acknowledge_head_gesture()

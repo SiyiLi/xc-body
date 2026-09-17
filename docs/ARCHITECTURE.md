@@ -14,25 +14,26 @@ OpenClaw host                         Cloud rendezvous
                                      │                            │
                                      │ XC Body runtime image      │
 StackChan K151/CoreS3                │ - gateway service          │
-┌──────────────────────┐             │ - pending-thought service  │
+┌──────────────────────┐             │ - Interaction service      │
 │ XC Body firmware     │──WSS───────▶│ - summary and playback     │
 └──────────────────────┘             └────────────────────────────┘
 ```
 
 The OpenClaw plugin uses authenticated summary and voice HTTP routes. In the
-deployed path, the pending-thought service owns the MCP connection to the
+deployed path, the Interaction service owns the private MCP connection to the
 gateway.
 
-Caddy terminates public TLS at the configured rendezvous origin. Gateway,
-playback, summary, and XC Body MCP routes are proxied internally. Caddy also
-serves versioned OTA app images and the current manifest from the read-only
-`/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
-host unrelated workloads, so XC Body has its own containers, credentials,
-lifecycle, health checks, and resource limits.
+Caddy terminates public TLS for robot WSS, Interaction HTTP, and OTA files.
+Interaction reaches Gateway MCP and audio directly over the private Docker
+network. Caddy also serves versioned OTA app images and the current manifest
+from the read-only `/data/xc-body/firmware` mount. Raw service ports remain
+private. The VM may host unrelated workloads, so XC Body has its own
+containers, credentials, lifecycle, health checks, and resource limits.
 
-Gateway and pending-service stdout and stderr remain available through Docker
-and are also persisted across container replacement in
-`/data/xc-body/logs/gateway.log` and `/data/xc-body/logs/pending.log`.
+Gateway and Interaction stdout and stderr remain available through Docker and
+are also persisted across container replacement in
+`/data/xc-body/logs/gateway.log` and
+`/data/xc-body/logs/interaction.log`.
 
 ## Component Ownership
 
@@ -45,40 +46,35 @@ and are also persisted across container replacement in
   client.
 - Sends accepted bounded speech over authenticated HTTPS.
 
-### Completion plugin
+### Native OpenClaw plugin
 
 `openclaw-plugin/` observes typed completion hooks, including `agent_end`, and
-deduplicates the same run across hook boundaries. Spoken projection uses the
-fixed model with reasoning and thinking disabled. It does not own speech
-encoding, robot motion, pending-offer state, or device connectivity.
+deduplicates the same run across hook boundaries. Compound transcription and
+spoken projection use the fixed model with reasoning and thinking disabled.
+They choose from one fixed seven-expression semantic vocabulary. Idle is an
+internal presence and safe-return state, not a model choice. The plugin does
+not own speech encoding, robot motion, pending-offer state, or device
+connectivity.
 
-### Pending-thought service
+### Interaction service
 
-The VM summary boundary keeps plaintext in request scope, prepares normalized
-16 kHz mono Opus for pending offers, validates the packet profile, and submits
+The VM summary boundary keeps plaintext in request scope, prepares 16 kHz mono
+Opus for pending offers, validates the packet profile, and submits
 the existing pending-thought contract. Direct answers use the existing PCM
-streaming path after attention settles. Plaintext is not stored or logged.
+streaming path after the selected expression returns safely. Plaintext is not
+stored or logged.
 
-One process-owned runtime keeps at most one pending offer. It exposes only
-`consider_thought`, receives StackChan events through one persistent upstream
-MCP session, and owns the knock, wait, acknowledgment, and playback state.
+One process-owned runtime keeps at most one pending offer, receives StackChan
+events through one persistent private MCP session, and serializes direct and
+offer use of the body. It exposes authenticated HTTP only for the OpenClaw
+plugin's summary and direct-conversation paths.
 
-### Semantic embodiment layer
+### XC Body gateway
 
-The manual embodiment boundary validates the versioned intent contract and
-maps supported intentions to saved firmware expression names. Firmware owns
-their GIF, movement, timing, and safe return. The complete semantic mapping is
-validated before the first device call.
-
-OpenClaw cannot choose servo angles, speed, hold duration, LED sequences, or
-whether idle return occurs.
-
-### StackChan gateway
-
-`stackchan_mcp/` owns authenticated device WSS, loopback Streamable HTTP MCP,
+`stackchan_mcp/` owns authenticated device WSS, private Streamable HTTP MCP,
 allowed-host checks, command serialization, status, playback, and hardware
-tools. The semantic and pending-thought services use this shared device
-boundary instead of defining another device protocol.
+tools. The Interaction service uses this shared device boundary instead of
+defining another device protocol.
 
 When its private QWeather configuration is complete, the gateway reads
 firmware's cached approximate public-IP coordinates, polls current conditions,
@@ -127,26 +123,19 @@ supply motor parameters.
 
 ## Runtime Flows
 
-### Manual embodiment
-
-1. OpenClaw submits a versioned semantic intention, whether selected from a
-   user request or the model's own judgment.
-2. XC Body validates the contract and complete semantic-to-expression mapping.
-3. The service verifies that the same initialized device session remains ready.
-4. The adapter invokes one saved firmware expression by name.
-5. The firmware runner restores the reviewed idle pose before completion.
-
 ### Completion offer
 
 1. The OpenClaw plugin observes a successful eligible completion.
-2. The shared fast-model projection classifies it as `offer` or `skip`.
+2. The shared fast-model projection classifies it as `offer` or `skip` and
+   selects one non-idle expression for an offer.
 3. An accepted short plain result crosses authenticated HTTPS unchanged;
-   long or formatted results use the bounded Chinese projection.
+   long or formatted results use the bounded Chinese projection. The selected
+   expression crosses the same request.
 4. The VM prepares and validates Opus, then asks firmware to suppress the idle
    screensaver while the offer transition runs.
-5. Firmware performs one silent knock and returns to idle.
-6. Only after the knock completes does the VM create pending state. A failed
-   knock clears the display hint and drops the offer.
+5. Firmware performs the selected expression and returns safely to idle.
+6. Only after the expression completes does the VM create pending state. A
+   failed expression clears the display hint and drops the offer.
 7. When direct attention and speech are inactive, a deliberate head pat or
    stroke starts the local touch reaction. Its successful safe return emits a
    touch event. The VM acknowledges its current offer or discards the event
@@ -154,7 +143,7 @@ supply motor parameters.
 8. The VM sends the prepared audio for playback and clears the offer only
    after success.
 
-The knock never receives prepared audio. No text-to-`say` fallback exists.
+The expression never receives prepared audio. No text-to-`say` fallback exists.
 
 A root robot-originated completion is ineligible because its answer follows
 the direct path. A descendant subagent completion remains eligible, allowing a
@@ -164,21 +153,24 @@ eventual direct answer.
 ### Direct conversation
 
 1. Existing firmware touch and device-driven capture submit one bounded Opus
-   recording to the pending service mailbox.
-2. The native OpenClaw plugin claims it, sends the captured Ogg to fixed-model
-   audio transcription, and admits one user turn into the configured existing
-   session.
-3. The final visible answer returns to the pending service exactly once.
-4. The pending runtime requests a deterministic firmware-owned `attention`
-   behavior through the shared StackChan gateway behavior boundary.
-5. The gateway reuses its servo lane, correlated completion waiter, timeout,
-   and recovery path. Direct PCM playback starts only after the firmware
-   reports physical settle and neutral return.
+   recording to the Interaction service mailbox.
+2. The native OpenClaw plugin claims it and sends the captured Ogg to compound
+   transcription. The result contains the transcript and route, plus a named
+   expression when a silent expression is a natural and complete response.
+3. That expression-only route skips the agent. Questions, requests requiring
+   action or explanation, and uncertain cases enter the configured existing
+   OpenClaw session.
+4. Every completed answer is projected to select one of the seven named
+   expressions from its full meaning. A short answer keeps its exact speech; a
+   long or formatted answer is also projected into bounded speech.
+5. The plugin sends expression and optional speech once through the claimed
+   voice turn. Interaction holds its body lane while Gateway runs the firmware
+   expression through safe return and then starts PCM when speech is present.
 6. The pending offer, if any, is untouched. Head touch is ignored during
    direct attention and speech; after they end, a new successful touch
    reaction may acknowledge the offer.
 7. Each owner contributes content-free phase timings under the existing turn
-   ID. The pending service emits one JSON timeline when a turn is answered or
+   ID. Interaction emits one JSON timeline when a turn is answered or
    explicitly abandoned.
 
 Direct conversation is permanently bound to one fixed Telegram private chat.
@@ -192,7 +184,7 @@ the normal background-offer path independently.
 Extract completed timelines from production logs with:
 
 ```sh
-rg '"event":"xc_body.direct_turn"' server-logs/pending.log |
+rg '"event":"xc_body.direct_turn"' server-logs/interaction.log |
   tail -n 1 | jq .
 ```
 
@@ -236,7 +228,7 @@ without USB when an immediate update is needed. USB remains a recovery fallback.
    summary, and temperature.
 3. The idle-view fonts and RGB565A8 weather icons are mapped from the assets
    partition rather than linked into either application slot.
-4. The pending-thought runtime asks firmware to suppress the overlay during an
+4. The Interaction runtime asks firmware to suppress the overlay during an
    offer transition and pending wait, and restores that display hint after a
    device reconnect.
 5. Settings, transient behavior, listening, and speaking suppress the idle
@@ -254,13 +246,16 @@ this recovery.
 Expression assets ship in the firmware assets partition. Motor recipes are
 selected by name and stored in NVS through USB. The gateway never transfers
 face layers, checksums a runtime face package, or accepts raw recipe data.
+The deterministic asset generator gives every packaged GIF the same canonical
+opaque background and preserves efficient delta frames. A transition redraws
+the complete face once; subsequent frames redraw only their changed regions.
 The named GIF and motor recipe are one expression: a named-asset load or decode
 failure is a critical release fault, not a blank-face fallback.
 
 ## State and Recovery
 
 - One offer may wait at a time.
-- An offer expires 30 minutes after its knock completes.
+- An offer expires 30 minutes after its physical cue completes.
 - Duplicate suppression is bounded to retained IDs in the running process.
 - Robot reconnect recovery retains an unexpired offer in that process.
 - Pending-offer display state is resynchronized after robot reconnect.

@@ -5,16 +5,28 @@
 #include "display/lvgl_display/gif/lvgl_gif.h"
 #include "expression_recipe.h"
 
-#include <algorithm>
-
 #include <esp_log.h>
 
 #define TAG "XcBodyFace"
 
 XcBodyFaceAnimationPlayer::XcBodyFaceAnimationPlayer(LcdDisplay* display)
-    : display_(display) {}
+    : display_(display) {
+    DisplayLockGuard lock(display_);
+    face_request_timer_ = lv_timer_create(
+        &FaceRequestTimerCallback,
+        kFaceRequestIntervalMs,
+        this);
+    if (face_request_timer_ == nullptr) {
+        ESP_LOGE(TAG, "Could not create face request timer");
+    }
+}
 
-XcBodyFaceAnimationPlayer::~XcBodyFaceAnimationPlayer() = default;
+XcBodyFaceAnimationPlayer::~XcBodyFaceAnimationPlayer() {
+    DisplayLockGuard lock(display_);
+    if (face_request_timer_ != nullptr) {
+        lv_timer_delete(face_request_timer_);
+    }
+}
 
 bool XcBodyFaceAnimationPlayer::SameImageLayout(
         const lv_img_dsc_t* first,
@@ -40,20 +52,6 @@ void XcBodyFaceAnimationPlayer::InvalidateFaceAreaLocked(
         .y2 = face_area.y1 + relative_area.y2,
     };
     lv_obj_invalidate_area(image_, &dirty_area);
-}
-
-void XcBodyFaceAnimationPlayer::RecordDirtyAreaLocked(
-        const lv_area_t& area) {
-    if (!dirty_area_valid_) {
-        dirty_area_ = area;
-        dirty_area_valid_ = true;
-    } else {
-        dirty_area_.x1 = std::min(dirty_area_.x1, area.x1);
-        dirty_area_.y1 = std::min(dirty_area_.y1, area.y1);
-        dirty_area_.x2 = std::max(dirty_area_.x2, area.x2);
-        dirty_area_.y2 = std::max(dirty_area_.y2, area.y2);
-    }
-    InvalidateFaceAreaLocked(area);
 }
 
 bool XcBodyFaceAnimationPlayer::EnsureFaceObjectLocked() {
@@ -106,30 +104,22 @@ bool XcBodyFaceAnimationPlayer::ShowAssetLocked(
         gif_ != nullptr ? gif_->image_dsc() : nullptr;
     const bool reuse_source = image_source_installed_ &&
         SameImageLayout(previous_image, next_gif->image_dsc());
-    const bool was_hidden = lv_obj_has_flag(image_, LV_OBJ_FLAG_HIDDEN);
-    const bool previous_dirty_valid = dirty_area_valid_;
-    const lv_area_t previous_dirty = dirty_area_;
 
     gif_ = std::move(next_gif);
     paused_by_screensaver_ = false;
     image_source_ = *gif_->image_dsc();
-    dirty_area_valid_ = false;
     gif_->SetFrameCallback([this](const lv_area_t& area) {
-        RecordDirtyAreaLocked(area);
+        InvalidateFaceAreaLocked(area);
     });
     if (!reuse_source) {
         lv_image_set_src(image_, &image_source_);
         image_source_installed_ = true;
     }
     lv_obj_clear_flag(image_, LV_OBJ_FLAG_HIDDEN);
+    // The first frame is decoded before its callback is installed. Redraw the
+    // complete face once on transition; later frames invalidate only changes.
+    lv_obj_invalidate(image_);
     display_->PlaceBehindStatusBarLocked(image_);
-
-    // Every XC Body face begins at the same neutral frame. When layouts
-    // match, restoring only the region modified by the previous animation
-    // avoids a full-screen comparison and redraw.
-    if (reuse_source && previous_dirty_valid && !was_hidden) {
-        InvalidateFaceAreaLocked(previous_dirty);
-    }
     return true;
 }
 
@@ -150,17 +140,59 @@ bool XcBodyFaceAnimationPlayer::ShowListeningLocked() {
 
 bool XcBodyFaceAnimationPlayer::ShowIdle() {
     DisplayLockGuard lock(display_);
-    return ShowIdleLocked();
+    requested_face_.store(StateFace::IDLE, std::memory_order_release);
+    const bool shown = ShowIdleLocked();
+    applied_face_ = StateFace::IDLE;
+    return shown;
 }
 
-bool XcBodyFaceAnimationPlayer::ShowListening() {
-    DisplayLockGuard lock(display_);
-    return ShowListeningLocked();
+void XcBodyFaceAnimationPlayer::RequestFace(StateFace face) {
+    requested_face_.store(face, std::memory_order_release);
 }
 
-bool XcBodyFaceAnimationPlayer::ShowSpeaking() {
-    DisplayLockGuard lock(display_);
-    return ShowAssetLocked("speaking.gif", 0, true);
+void XcBodyFaceAnimationPlayer::RequestIdle() {
+    RequestFace(StateFace::IDLE);
+}
+
+void XcBodyFaceAnimationPlayer::RequestListening() {
+    RequestFace(StateFace::LISTENING);
+}
+
+void XcBodyFaceAnimationPlayer::RequestSpeaking() {
+    RequestFace(StateFace::SPEAKING);
+}
+
+void XcBodyFaceAnimationPlayer::FaceRequestTimerCallback(
+        lv_timer_t* timer) {
+    auto* player = static_cast<XcBodyFaceAnimationPlayer*>(
+        lv_timer_get_user_data(timer));
+    player->ApplyRequestedFaceLocked();
+}
+
+void XcBodyFaceAnimationPlayer::ApplyRequestedFaceLocked() {
+    const StateFace target = requested_face_.load(std::memory_order_acquire);
+    if (target == applied_face_) {
+        return;
+    }
+    switch (target) {
+        case StateFace::IDLE:
+            ShowIdleLocked();
+            break;
+        case StateFace::LISTENING:
+            ShowListeningLocked();
+            break;
+        case StateFace::SPEAKING:
+            ShowAssetLocked("speaking.gif", 0, true);
+            break;
+        case StateFace::NONE:
+            break;
+    }
+    applied_face_ = target;
+}
+
+void XcBodyFaceAnimationPlayer::CancelRequestedFaceLocked() {
+    requested_face_.store(StateFace::NONE, std::memory_order_release);
+    applied_face_ = StateFace::NONE;
 }
 
 bool XcBodyFaceAnimationPlayer::PrepareExpression(
@@ -169,6 +201,7 @@ bool XcBodyFaceAnimationPlayer::PrepareExpression(
         return false;
     }
     DisplayLockGuard lock(display_);
+    CancelRequestedFaceLocked();
     return ShowAssetLocked(
         "expression-" + animation + ".gif", 1, false);
 }
@@ -193,9 +226,9 @@ bool XcBodyFaceAnimationPlayer::ExpressionFailed() {
 }
 
 void XcBodyFaceAnimationPlayer::HideLocked() {
+    CancelRequestedFaceLocked();
     gif_.reset();
     paused_by_screensaver_ = false;
-    dirty_area_valid_ = false;
     if (image_ != nullptr && lv_obj_is_valid(image_)) {
         lv_obj_add_flag(image_, LV_OBJ_FLAG_HIDDEN);
     }

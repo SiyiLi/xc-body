@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir /tmp/xc-body-gateway "uvicorn>=0.30,<1" \
     && rm -rf /tmp/xc-body-gateway
 
 COPY app/gateway /opt/xc-body/gateway
-COPY app/stackchan /opt/xc-body/stackchan
 COPY app/contracts /opt/xc-body/contracts
 COPY app/deploy /opt/xc-body/deploy
 ARG GIT_COMMIT=unknown

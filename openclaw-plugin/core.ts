@@ -5,6 +5,7 @@ import {
   projectSpokenText,
   type LlmCompleteParams,
 } from "./spoken-text.ts";
+import type { OfferExpressionName } from "./expression.ts";
 
 export type CompletionSource = "agent" | "subagent" | "cron";
 export type CompletionOutcome =
@@ -17,6 +18,7 @@ export type SummaryPayload = {
   version: "v1";
   thought_id: string;
   summary: string;
+  expression: OfferExpressionName;
 };
 
 export type IntegrationDependencies = {
@@ -289,6 +291,7 @@ export class CompletionIntegration {
         version: "v1",
         thought_id: createThoughtId(source, sourceId),
         summary: needsSpeechProjection(result) ? projection.speech : result,
+        expression: projection.expression,
       });
     } catch {
       submitted = false;
