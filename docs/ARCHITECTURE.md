@@ -23,17 +23,17 @@ The OpenClaw plugin uses authenticated summary and voice HTTP routes. In the
 deployed path, the Interaction service owns the private MCP connection to the
 gateway.
 
-Caddy terminates public TLS for robot WSS, Interaction HTTP, and OTA files.
-Interaction reaches Gateway MCP and audio directly over the private Docker
-network. Caddy also serves versioned OTA app images and the current manifest
-from the read-only `/data/xc-body/firmware` mount. Raw service ports remain
-private. The VM may host unrelated workloads, so XC Body has its own
-containers, credentials, lifecycle, health checks, and resource limits.
+Caddy terminates public TLS for robot WSS, Interaction HTTP, the isolated XC
+Buddy status relay, and OTA files. Interaction reaches Gateway MCP and audio
+directly over the private Docker network. Caddy also serves versioned OTA app
+images and the current manifest from the read-only
+`/data/xc-body/firmware` mount. Raw service ports remain private. The VM may
+host unrelated workloads, so XC Body has its own containers, credentials,
+lifecycle, health checks, and resource limits.
 
-Gateway and Interaction stdout and stderr remain available through Docker and
-are also persisted across container replacement in
-`/data/xc-body/logs/gateway.log` and
-`/data/xc-body/logs/interaction.log`.
+Gateway, Interaction, and relay stdout and stderr remain available through
+Docker and are also persisted across container replacement in
+`/data/xc-body/logs/`.
 
 ## Component Ownership
 
@@ -87,6 +87,18 @@ A VPN or shared network exit may produce the wrong city; an empty or failed
 lookup falls back to central Shanghai.
 
 Raw movement tools remain behind the semantic boundary.
+
+### XC Buddy status relay
+
+The auxiliary relay connects one fixed XC Buddy sender to one fixed XC Buddy
+receiver over an authenticated WebSocket. It retains only the sender's current
+lifecycle state. Completion and error notices are live-only and are never
+replayed. Reconnecting receivers receive one silent current-state snapshot.
+
+The relay runs as a sibling service with its own two role-specific credentials.
+It receives no Gateway, Interaction, playback, OpenClaw, Telegram, or robot
+credential and imports none of those execution paths. It has no persistent
+queue, history, acknowledgements, or multi-client routing.
 
 ### StackChan firmware
 

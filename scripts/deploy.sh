@@ -33,6 +33,7 @@ status_only=0
 cleanup_images_only=0
 restart_service=""
 configure_weather=0
+provision_xc_buddy_relay=0
 trigger_ota_version=""
 build_root=""
 
@@ -45,6 +46,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/deploy.sh [--candidate] | --status | --cleanup-images |
        --restart-gateway | --restart-interaction | --configure-weather |
+       --provision-xc-buddy-relay |
        --trigger-ota VERSION
 
 Build linux/amd64 production images, push them to the configured registry,
@@ -60,6 +62,9 @@ service. They do not rebuild images or restart the proxy.
 
 --configure-weather updates the private QWeather host and key from
 XC_BODY_QWEATHER_API_HOST and XC_BODY_QWEATHER_API_KEY, then recreates gateway.
+
+--provision-xc-buddy-relay creates the two private relay credentials once. It
+refuses to replace an existing credential file and never prints the tokens.
 
 --trigger-ota invokes the authenticated gateway maintenance tool with the
 active firmware manifest. VERSION must match that manifest.
@@ -103,6 +108,8 @@ echo "[status] gateway"
 docker logs --tail 35 xc-body-gateway 2>&1 || true
 echo "[status] interaction"
 docker logs --tail 50 xc-body-interaction 2>&1 || true
+echo "[status] XC Buddy relay"
+docker logs --tail 35 xc-body-xc-buddy-relay 2>&1 || true
 REMOTE
 }
 
@@ -183,6 +190,47 @@ os.replace(temporary, path)
     -f /data/xc-body/deploy/compose.yaml \
     up -d --force-recreate gateway >/dev/null
   echo "weather_configuration=updated"
+}
+
+provision_vm_xc_buddy_relay() {
+  require_command ssh
+  [ -r "$IDENTITY" ] || die "SSH identity is missing: $IDENTITY" 64
+  ssh_vm python3 - <<'PY'
+import os
+import secrets
+
+path = "/data/xc-body/deploy/xc-buddy-relay.env"
+if os.path.lexists(path):
+    raise SystemExit(f"relay credential file already exists: {path}")
+
+sender = secrets.token_hex(32)
+receiver = secrets.token_hex(32)
+while receiver == sender:
+    receiver = secrets.token_hex(32)
+
+payload = (
+    f"XC_BUDDY_RELAY_SENDER_TOKEN={sender}\n"
+    f"XC_BUDDY_RELAY_RECEIVER_TOKEN={receiver}\n"
+)
+descriptor = os.open(
+    path,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+    0o600,
+)
+try:
+    with os.fdopen(descriptor, "w", encoding="ascii") as destination:
+        destination.write(payload)
+        destination.flush()
+        os.fsync(destination.fileno())
+except BaseException:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    raise
+
+print(f"relay_credentials=created path={path} mode=0600")
+PY
 }
 
 trigger_vm_ota() {
@@ -285,6 +333,7 @@ copy_runtime_inputs() {
   chmod 0755 \
     "$context/app/deploy/install.sh" \
     "$context/app/deploy/run-interaction-service.sh" \
+    "$context/app/deploy/run-xc-buddy-relay-service.sh" \
     "$context/app/deploy/run-service-with-persistent-log.sh"
 
 }
@@ -382,6 +431,7 @@ while [ "$#" -gt 0 ]; do
     --restart-gateway) restart_service=gateway ;;
     --restart-interaction) restart_service=interaction ;;
     --configure-weather) configure_weather=1 ;;
+    --provision-xc-buddy-relay) provision_xc_buddy_relay=1 ;;
     --trigger-ota)
       [ "$#" -ge 2 ] || die "--trigger-ota requires VERSION" 64
       trigger_ota_version=$2
@@ -406,6 +456,7 @@ if [ -n "$trigger_ota_version" ]; then
   [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
     && [ "$cleanup_images_only" = "0" ] && [ -z "$restart_service" ] \
     && [ "$configure_weather" = "0" ] \
+    && [ "$provision_xc_buddy_relay" = "0" ] \
     || die "deployment modes conflict" 64
   trigger_vm_ota "$trigger_ota_version"
   exit 0
@@ -414,8 +465,18 @@ fi
 if [ "$configure_weather" = "1" ]; then
   [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
     && [ "$cleanup_images_only" = "0" ] && [ -z "$restart_service" ] \
+    && [ "$provision_xc_buddy_relay" = "0" ] \
     || die "deployment modes conflict" 64
   configure_vm_weather
+  exit 0
+fi
+
+if [ "$provision_xc_buddy_relay" = "1" ]; then
+  [ "$candidate" = "0" ] && [ "$status_only" = "0" ] \
+    && [ "$cleanup_images_only" = "0" ] && [ -z "$restart_service" ] \
+    && [ "$configure_weather" = "0" ] && [ -z "$trigger_ota_version" ] \
+    || die "deployment modes conflict" 64
+  provision_vm_xc_buddy_relay
   exit 0
 fi
 
@@ -423,6 +484,7 @@ if [ -n "$restart_service" ]; then
   [ "$candidate" = "0" ] \
     && [ "$status_only" = "0" ] \
     && [ "$cleanup_images_only" = "0" ] \
+    && [ "$provision_xc_buddy_relay" = "0" ] \
     || die "deployment modes conflict" 64
   restart_vm_service "$restart_service"
   exit 0
@@ -430,12 +492,14 @@ fi
 
 if [ "$status_only" = "1" ]; then
   [ "$candidate" = "0" ] && [ "$cleanup_images_only" = "0" ] \
+    && [ "$provision_xc_buddy_relay" = "0" ] \
     || die "deployment modes conflict" 64
   deployment_status
   exit 0
 fi
 if [ "$cleanup_images_only" = "1" ]; then
-  [ "$candidate" = "0" ] || die "deployment modes conflict" 64
+  [ "$candidate" = "0" ] && [ "$provision_xc_buddy_relay" = "0" ] \
+    || die "deployment modes conflict" 64
   [[ "$REGISTRY_REPO" == */* ]] \
     || die "XC_BODY_REGISTRY_REPOSITORY is required" 64
   cleanup_vm_images

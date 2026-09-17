@@ -80,6 +80,42 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  xc-buddy-relay:
+    container_name: xc-body-xc-buddy-relay
+    image: ${XC_BODY_RUNTIME_IMAGE:?}
+    restart: unless-stopped
+    env_file:
+      - xc-buddy-relay.env
+    entrypoint:
+      - /opt/xc-body/deploy/run-service-with-persistent-log.sh
+      - xc-buddy-relay.log
+      - /opt/xc-body/deploy/run-xc-buddy-relay-service.sh
+    expose:
+      - "8781"
+    networks:
+      - xc-body
+    mem_limit: 128m
+    cpus: 0.10
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - /data/xc-body/logs:/logs
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request as u;
+          u.urlopen('http://127.0.0.1:8781/healthz', timeout=5)
+      interval: 10s
+      timeout: 6s
+      retries: 12
+
   proxy:
     container_name: xc-body-proxy
     image: ${XC_BODY_CADDY_IMAGE:?}
@@ -87,6 +123,7 @@ services:
     restart: unless-stopped
     depends_on:
       - gateway
+      - xc-buddy-relay
     environment:
       HOME: /state
       XC_BODY_PUBLIC_HOST: ${XC_BODY_PUBLIC_HOST:?}

@@ -38,6 +38,8 @@ exec 9>/tmp/xc-body-deploy.lock
 flock -n 9 || die "another XC Body deployment is running" 75
 test -r "$deploy_dir/gateway.env" \
   || die "missing private gateway environment" 66
+test -r "$deploy_dir/xc-buddy-relay.env" \
+  || die "missing private XC Buddy relay environment" 66
 install -d -m 0755 "$root/firmware" "$root/firmware/releases"
 mkdir -p "$log_dir"
 
@@ -48,10 +50,13 @@ docker tag "$runtime_image" "${runtime_image%@*}"
 docker tag "$caddy_image" "${caddy_image%@*}"
 docker run --rm --user 0:0 --entrypoint /bin/sh \
   -v "$log_dir:/logs" "$runtime_image" \
-  -c 'touch /logs/gateway.log /logs/interaction.log &&
-      chown 1000:1000 /logs /logs/gateway.log /logs/interaction.log &&
+  -c 'touch /logs/gateway.log /logs/interaction.log \
+        /logs/xc-buddy-relay.log &&
+      chown 1000:1000 /logs /logs/gateway.log /logs/interaction.log \
+        /logs/xc-buddy-relay.log &&
       chmod 0755 /logs &&
-      chmod 0644 /logs/gateway.log /logs/interaction.log'
+      chmod 0644 /logs/gateway.log /logs/interaction.log \
+        /logs/xc-buddy-relay.log'
 
 stage=$(mktemp -d /tmp/xc-body-config.XXXXXX)
 container_id=$(docker create "$runtime_image")
@@ -89,14 +94,15 @@ compose=(
 echo "[deploy] replacing legacy XC Body containers"
 for container in \
   xc-body-tunnel xc-body-pending xc-body-interaction \
-  xc-body-proxy xc-body-gateway; do
+  xc-body-proxy xc-body-gateway xc-body-xc-buddy-relay; do
   if docker inspect "$container" >/dev/null 2>&1; then
     docker rm -f "$container" >/dev/null
   fi
 done
 
-echo "[deploy] starting gateway and proxy"
-"${compose[@]}" up -d --force-recreate gateway proxy
+echo "[deploy] starting gateway, XC Buddy relay, and proxy"
+"${compose[@]}" up -d --force-recreate \
+  gateway xc-buddy-relay proxy
 
 echo "[deploy] starting Interaction service"
 "${compose[@]}" up -d --force-recreate interaction
@@ -111,6 +117,7 @@ import urllib.request as u
 base = sys.argv[1]
 urls = (
     f"{base}/xc-body/healthz",
+    f"{base}/xc-buddy/healthz",
 )
 raise SystemExit(
     0 if all(u.urlopen(url, timeout=5).status == 200 for url in urls) else 1
@@ -124,7 +131,8 @@ raise SystemExit(
 done
 [ "$attempt" -lt 90 ] || {
   for container in \
-    xc-body-interaction xc-body-gateway xc-body-proxy; do
+    xc-body-interaction xc-body-xc-buddy-relay \
+    xc-body-gateway xc-body-proxy; do
     echo "[deploy] $container logs"
     docker logs --tail 80 "$container" 2>&1 || true
   done
@@ -134,7 +142,8 @@ done
 unexpected=$(
   docker ps -a --format '{{.Names}}' \
     | awk '/^xc-body-/ && $0 != "xc-body-gateway" && \
-      $0 != "xc-body-interaction" && $0 != "xc-body-proxy"'
+      $0 != "xc-body-interaction" && $0 != "xc-body-proxy" && \
+      $0 != "xc-body-xc-buddy-relay"'
 )
 [ -z "$unexpected" ] \
   || die "unexpected XC Body containers remain: $unexpected" 68

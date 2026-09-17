@@ -11,6 +11,9 @@
 	handle_path /xc-body/* {
 		reverse_proxy interaction:8770
 	}
+	handle_path /xc-buddy/* {
+		reverse_proxy xc-buddy-relay:8781
+	}
 	handle_path /firmware/* {
 		root * /srv/firmware
 		file_server
