@@ -6,6 +6,10 @@ It first tries to connect to a Wi-Fi network using the credentials stored in the
 
 The URL to access the web server is `http://192.168.4.1`.
 
+XC Body always performs full-channel station discovery. With the default
+Remember BSSID setting disabled, same-SSID candidates remain unpinned and are
+tried in signal-strength order for multi-AP networks.
+
 ### Screenshot: Wi-Fi Configuration v3.2
 
 <img src="assets/ap_v3_2.jpg" width="320" alt="Wi-Fi Configuration v3.2">
@@ -15,11 +19,14 @@ The URL to access the web server is `http://192.168.4.1`.
 - Bound SSID/password copies into `wifi_config` so a full 32-byte SSID no longer overflows with `strcpy`.
 - Config portal and SmartConfig now handle a maximum-length SSID without truncating or reading past the buffer.
 
-## Changelog: v3.3.0
+## Upstream changelog: v3.3.0
 
 - Persist each saved AP's channel in NVS as `channel`, `channel1`, ... `channel9` (same indexing as `password` / `passwordN`). 2.4 GHz (1-14) and 5 GHz (36-177) share one `uint8` key because the channel numbers do not overlap.
 - The first station scan after start only visits those saved channels. If no matching AP is found, the next scan is a full-band scan.
 - After a successful connection, the current channel is written back so later boots stay accurate if the AP moved.
+
+XC Body deliberately overrides those upstream changes: it does not store AP
+channels and every station discovery scan covers all channels.
 
 ## Changelog: v3.2.0
 
@@ -74,7 +81,8 @@ The URL to access the web server is `http://192.168.4.1`.
 
 The Wi-Fi credentials are stored in the flash under the "wifi" namespace.
 
-The keys are "ssid", "ssid1", ... "ssid9", "password", "password1", ... "password9", and "channel", "channel1", ... "channel9". Channel is a `uint8` (0 = unknown; 1-14 = 2.4 GHz; 36-177 = 5 GHz).
+The keys are "ssid", "ssid1", ... "ssid9", "password", "password1", ...
+"password9".
 
 ## Usage
 

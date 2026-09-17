@@ -1,6 +1,5 @@
 #include "ssid_manager.h"
 
-#include <algorithm>
 #include <esp_log.h>
 #include <nvs_flash.h>
 
@@ -30,10 +29,9 @@ void SsidManager::Clear() {
 void SsidManager::LoadFromNvs() {
     ssid_list_.clear();
 
-    // Load ssid / password / channel from NVS namespace "wifi"
+    // Load ssid / password from NVS namespace "wifi"
     // ssid, ssid1, ... ssid9
     // password, password1, ... password9
-    // channel, channel1, ... channel9 (uint8, optional; missing means unknown)
     nvs_handle_t nvs_handle;
     auto ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (ret != ESP_OK) {
@@ -44,7 +42,6 @@ void SsidManager::LoadFromNvs() {
     for (int i = 0; i < MAX_WIFI_SSID_COUNT; i++) {
         auto ssid_key = MakeWifiKey("ssid", i);
         auto password_key = MakeWifiKey("password", i);
-        auto channel_key = MakeWifiKey("channel", i);
 
         char ssid[33];
         char password[65];
@@ -56,9 +53,7 @@ void SsidManager::LoadFromNvs() {
         if (nvs_get_str(nvs_handle, password_key.c_str(), password, &length) != ESP_OK) {
             continue;
         }
-        uint8_t channel = 0;
-        nvs_get_u8(nvs_handle, channel_key.c_str(), &channel);
-        ssid_list_.push_back({ssid, password, channel});
+        ssid_list_.push_back({ssid, password});
     }
     nvs_close(nvs_handle);
 }
@@ -69,32 +64,26 @@ void SsidManager::SaveToNvs() {
     for (int i = 0; i < MAX_WIFI_SSID_COUNT; i++) {
         auto ssid_key = MakeWifiKey("ssid", i);
         auto password_key = MakeWifiKey("password", i);
-        auto channel_key = MakeWifiKey("channel", i);
 
         if (i < ssid_list_.size()) {
             nvs_set_str(nvs_handle, ssid_key.c_str(), ssid_list_[i].ssid.c_str());
             nvs_set_str(nvs_handle, password_key.c_str(), ssid_list_[i].password.c_str());
-            nvs_set_u8(nvs_handle, channel_key.c_str(), ssid_list_[i].channel);
         } else {
             nvs_erase_key(nvs_handle, ssid_key.c_str());
             nvs_erase_key(nvs_handle, password_key.c_str());
-            nvs_erase_key(nvs_handle, channel_key.c_str());
         }
     }
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 }
 
-void SsidManager::AddSsid(const std::string& ssid, const std::string& password, uint8_t channel) {
+void SsidManager::AddSsid(const std::string& ssid, const std::string& password) {
     for (auto& item : ssid_list_) {
         ESP_LOGI(TAG, "compare [%s:%d] [%s:%d]", item.ssid.c_str(), item.ssid.size(), ssid.c_str(),
                  ssid.size());
         if (item.ssid == ssid) {
             ESP_LOGW(TAG, "SSID %s already exists, overwrite it", ssid.c_str());
             item.password = password;
-            if (channel != 0) {
-                item.channel = channel;
-            }
             SaveToNvs();
             return;
         }
@@ -105,25 +94,8 @@ void SsidManager::AddSsid(const std::string& ssid, const std::string& password, 
         ssid_list_.pop_back();
     }
     // Add the new ssid to the front of the list
-    ssid_list_.insert(ssid_list_.begin(), {ssid, password, channel});
+    ssid_list_.insert(ssid_list_.begin(), {ssid, password});
     SaveToNvs();
-}
-
-void SsidManager::UpdateSsidChannel(const std::string& ssid, uint8_t channel) {
-    if (channel == 0) {
-        return;
-    }
-    for (auto& item : ssid_list_) {
-        if (item.ssid != ssid) {
-            continue;
-        }
-        if (item.channel != channel) {
-            ESP_LOGI(TAG, "Updated channel for %s: %u -> %u", ssid.c_str(), item.channel, channel);
-            item.channel = channel;
-            SaveToNvs();
-        }
-        return;
-    }
 }
 
 void SsidManager::RemoveSsid(int index) {
@@ -145,17 +117,4 @@ void SsidManager::SetDefaultSsid(int index) {
     ssid_list_.erase(ssid_list_.begin() + index);
     ssid_list_.insert(ssid_list_.begin(), item);
     SaveToNvs();
-}
-
-std::vector<uint8_t> SsidManager::GetSavedChannels() const {
-    std::vector<uint8_t> channels;
-    for (const auto& item : ssid_list_) {
-        if (item.channel == 0) {
-            continue;
-        }
-        if (std::find(channels.begin(), channels.end(), item.channel) == channels.end()) {
-            channels.push_back(item.channel);
-        }
-    }
-    return channels;
 }

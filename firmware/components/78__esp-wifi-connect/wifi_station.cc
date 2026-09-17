@@ -5,7 +5,6 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
-#include <esp_idf_version.h>
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <nvs.h>
@@ -120,8 +119,6 @@ void WifiStation::Start() {
     // Clear stopped event bit so WaitForConnected works properly
     // Clear scan done bit so Stop() can wait for scan to complete
     xEventGroupClearBits(event_group_, WIFI_EVENT_STOPPED | WIFI_EVENT_SCAN_DONE_BIT);
-    use_saved_channels_scan_ = true;
-    last_scan_used_saved_channels_ = false;
     last_disconnect_reason_.store(-1);
     
     // Create the default WiFi station interface
@@ -179,51 +176,8 @@ bool WifiStation::WaitForConnected(int timeout_ms) {
 }
 
 void WifiStation::StartScan() {
-    std::vector<uint8_t> channels;
-    if (use_saved_channels_scan_) {
-        channels = SsidManager::GetInstance().GetSavedChannels();
-    }
-
-    if (channels.empty()) {
-        last_scan_used_saved_channels_ = false;
-        ESP_LOGI(TAG, "Scanning all channels");
-        esp_wifi_scan_start(nullptr, false);
-        return;
-    }
-
-    wifi_scan_config_t scan_config = {};
-    last_scan_used_saved_channels_ = true;
-
-    if (channels.size() == 1) {
-        scan_config.channel = channels[0];
-        ESP_LOGI(TAG, "Scanning saved channel %u", channels[0]);
-    } else {
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
-        for (uint8_t ch : channels) {
-            if (CHANNEL_TO_BIT_NUMBER(ch) == 0) {
-                continue;
-            }
-            if (ch >= 1 && ch <= 14) {
-                scan_config.channel_bitmap.ghz_2_channels |= CHANNEL_TO_BIT(ch);
-            } else {
-                scan_config.channel_bitmap.ghz_5_channels |= CHANNEL_TO_BIT(ch);
-            }
-        }
-        ESP_LOGI(TAG, "Scanning %d saved channels", static_cast<int>(channels.size()));
-#else
-        scan_config.channel = channels[0];
-        ESP_LOGI(TAG, "Scanning first saved channel %u", channels[0]);
-#endif
-    }
-
-    esp_err_t err = esp_wifi_scan_start(&scan_config, false);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Saved-channel scan failed: %s, falling back to full scan",
-                 esp_err_to_name(err));
-        last_scan_used_saved_channels_ = false;
-        use_saved_channels_scan_ = false;
-        esp_wifi_scan_start(nullptr, false);
-    }
+    ESP_LOGI(TAG, "Scanning all channels");
+    esp_wifi_scan_start(nullptr, false);
 }
 
 void WifiStation::HandleScanResult() {
@@ -263,13 +217,6 @@ void WifiStation::HandleScanResult() {
     free(ap_records);
 
     if (connect_queue_.empty()) {
-        if (last_scan_used_saved_channels_) {
-            ESP_LOGI(TAG, "No AP on saved channels, starting full scan");
-            use_saved_channels_scan_ = false;
-            last_scan_used_saved_channels_ = false;
-            StartScan();
-            return;
-        }
         ESP_LOGI(TAG, "No AP found, next scan in %d seconds", scan_current_interval_microseconds_ / 1000 / 1000);
         esp_timer_start_once(timer_handle_, scan_current_interval_microseconds_);
         UpdateScanInterval();
@@ -499,12 +446,6 @@ void WifiStation::IpEventHandler(void* arg, esp_event_base_t event_base, int32_t
     }
     this_->connect_queue_.clear();
     this_->reconnect_count_ = 0;
-    this_->use_saved_channels_scan_ = true;
-
-    wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-        SsidManager::GetInstance().UpdateSsidChannel(this_->ssid_, ap_info.primary);
-    }
 
     // Reset scan interval to minimum for fast reconnect if disconnected later
     this_->scan_current_interval_microseconds_ = this_->scan_min_interval_microseconds_;
