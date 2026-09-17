@@ -7,8 +7,7 @@
 - [Milestone 3: Continuity and Restraint](MILESTONE_3.md) — complete.
 - [Milestone 4: Direct Conversation and Appliance UX](MILESTONE_4.md) —
   complete.
-- [Milestone 5: Expression and Presence](MILESTONE_5.md) — implementation
-  complete; physical acceptance pending.
+- [Milestone 5: Expression and Presence](MILESTONE_5.md) — complete.
 - Milestone 6: Perception-Guided Ambient Presence — future.
 
 The milestone files own current scope and acceptance. This roadmap describes
@@ -32,6 +31,10 @@ preserving the accepted interaction behavior. See
 
 ## Milestone 5: Expression and Presence
 
+Completed on 2026-09-17 with real-user physical acceptance of firmware and
+assets `0.3.26`, Gateway and Interaction `0.3.8`, XC Body OpenClaw plugin
+`0.3.2`, OpenClaw `2026.7.1-2`, and source commit `ffb56f0`.
+
 The legacy layered renderer is replaced by saved expressions. Each expression
 combines deterministic face animation and reviewed head movement. The `agree`
 expression uses one restrained nod. `idle` is neutral presence, not an eighth
@@ -52,11 +55,11 @@ attention and speech.
 
 ## Milestone 6: Perception-Guided Ambient Presence
 
-Milestone 6 begins only after the expression milestone receives physical
-acceptance. It combines sparse local presence with bounded camera perception.
-For example, XC Body may occasionally look for Elise while idle and direct its
-gaze toward her, while the existing OpenClaw identity may also request one
-explicit bounded observation.
+Milestone 6 is next but remains future work until its scope is approved. It
+combines sparse local presence with bounded camera perception. For example, XC
+Body may occasionally look for Elise while idle and direct its gaze toward her,
+while the existing OpenClaw identity may also request one explicit bounded
+observation.
 
 Potential scope:
 

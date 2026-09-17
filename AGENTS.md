@@ -17,11 +17,11 @@ Before changing firmware, also read `firmware/README.md`.
 
 ## Current Phase
 
-Milestones 1 through 4 have physical acceptance. Milestone 5 implementation is
-complete and awaits versioned physical acceptance for expression-aware direct
-conversation.
+Milestones 1 through 5 have physical acceptance. Milestone 6 is the next phase
+and owns perception-guided ambient presence; its implementation scope is not
+yet authorized.
 
-Keep Milestone 5 constrained to:
+Preserve the accepted Milestone 5 boundary:
 
 - seven named expressions selected by projection, plus non-selectable idle
   ambient presence;
@@ -36,9 +36,9 @@ Keep Milestone 5 constrained to:
 
 Do not repeat expression motion during a pending-offer wait, add model-generated
 motion parameters, camera input, autonomous semantic moods, constant servo
-activity, or more expressions without evidence from real use during Milestone
-5. Milestone 6 owns camera-guided ambient presence. USB calibration must not
-create a second motion runner or expose raw motor parameters through the
+activity, or more expressions without a newly approved scope and evidence from
+real use. Milestone 6 owns camera-guided ambient presence. USB calibration must
+not create a second motion runner or expose raw motor parameters through the
 network.
 
 ## Known Deployment Fact
