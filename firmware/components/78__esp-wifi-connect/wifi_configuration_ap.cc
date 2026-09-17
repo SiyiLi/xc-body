@@ -129,7 +129,11 @@ void WifiConfigurationAp::Start()
     
     // Start scan immediately
     esp_wifi_scan_start(nullptr, false);
-    // Setup periodic WiFi scan timer
+    // Setup periodic WiFi scan timer.
+    // skip_unhandled_events = false so the timer can wake the CPU from light
+    // sleep on its own; otherwise the AP-mode scan list would stop refreshing
+    // whenever the user paused interacting with the config web UI. See
+    // esp_timer_get_next_alarm_for_wake_up in components/esp_timer/src/esp_timer.c.
     esp_timer_create_args_t timer_args = {
         .callback = [](void* arg) {
             auto* self = static_cast<WifiConfigurationAp*>(arg);
@@ -140,7 +144,7 @@ void WifiConfigurationAp::Start()
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "wifi_scan_timer",
-        .skip_unhandled_events = true
+        .skip_unhandled_events = false
     };
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &scan_timer_));
 }
@@ -433,9 +437,6 @@ void WifiConfigurationAp::StartWebServer()
         .handler = [](httpd_req_t *req) -> esp_err_t {
             char *buf;
             size_t buf_len = req->content_len;
-            // /submit only carries WiFi SSID + password (max 32 + 64
-            // bytes plus JSON overhead), so the legacy 1 KiB cap is
-            // sufficient for this endpoint.
             if (buf_len > 1024) { // 限制最大请求体大小
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
                 return ESP_FAIL;
@@ -622,6 +623,8 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddNumberToObject(json, "max_tx_power", this_->max_tx_power_);
             cJSON_AddBoolToObject(json, "remember_bssid", this_->remember_bssid_);
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
+            cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
+            cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);
@@ -848,11 +851,10 @@ void WifiConfigurationAp::StartWebServer()
             // (only its presence is reported) so a serial monitor capture
             // does not leak the bearer secret.
             ESP_LOGI(TAG,
-                "Saved settings: ota_url=%s, websocket_url=%s, websocket_fallback_url=%s, websocket_token=%s, max_tx_power=%d, remember_bssid=%d, sleep_mode=%d",
-                this_->ota_url_.c_str(), this_->websocket_url_.c_str(),
-                this_->websocket_fallback_url_.c_str(),
-                this_->websocket_token_.empty() ? "(empty)" : "(set)",
-                this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);
+                "Saved settings: ota_url=%s, max_tx_power=%d, remember_bssid=%d, sleep_mode=%d, websocket_url=%s, websocket_fallback_url=%s, websocket_token=%s",
+                this_->ota_url_.c_str(), this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_,
+                this_->websocket_url_.c_str(), this_->websocket_fallback_url_.c_str(),
+                this_->websocket_token_.empty() ? "(empty)" : "(set)");
             return ESP_OK;
         },
         .user_ctx = this
@@ -880,6 +882,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     }
     
     is_connecting_ = true;
+    last_connected_channel_ = 0;
 
     // Upper-level retry loop with delay between attempts.
     //
@@ -925,8 +928,17 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
 
         wifi_config_t wifi_config;
         bzero(&wifi_config, sizeof(wifi_config));
-        strlcpy((char *)wifi_config.sta.ssid, ssid.c_str(), 32);
-        strlcpy((char *)wifi_config.sta.password, password.c_str(), 64);
+        size_t ssid_len = ssid.size();
+        if (ssid_len > sizeof(wifi_config.sta.ssid)) {
+            ssid_len = sizeof(wifi_config.sta.ssid);
+        }
+        memcpy(wifi_config.sta.ssid, ssid.data(), ssid_len);
+
+        size_t password_len = password.size();
+        if (password_len > sizeof(wifi_config.sta.password)) {
+            password_len = sizeof(wifi_config.sta.password);
+        }
+        memcpy(wifi_config.sta.password, password.data(), password_len);
         wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
         wifi_config.sta.failure_retry_cnt = 1;
 
@@ -979,7 +991,11 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     is_connecting_ = false;
 
     if (connected) {
-        ESP_LOGI(TAG, "Connected to WiFi %s", ssid.c_str());
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            last_connected_channel_ = ap_info.primary;
+        }
+        ESP_LOGI(TAG, "Connected to WiFi %s, channel %u", ssid.c_str(), last_connected_channel_);
         esp_wifi_disconnect();
         return true;
     } else {
@@ -992,8 +1008,18 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
 
 void WifiConfigurationAp::Save(const std::string &ssid, const std::string &password)
 {
-    ESP_LOGI(TAG, "Save SSID %s %d", ssid.c_str(), ssid.length());
-    SsidManager::GetInstance().AddSsid(ssid, password);
+    uint8_t channel = last_connected_channel_;
+    if (channel == 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& rec : ap_records_) {
+            if (ssid == reinterpret_cast<const char*>(rec.ssid)) {
+                channel = rec.primary;
+                break;
+            }
+        }
+    }
+    ESP_LOGI(TAG, "Save SSID %s channel %u", ssid.c_str(), channel);
+    SsidManager::GetInstance().AddSsid(ssid, password, channel);
 }
 
 void WifiConfigurationAp::OnExitRequested(std::function<void()> callback)
@@ -1071,7 +1097,8 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
             ESP_LOGI(TAG, "Got SmartConfig credentials");
             smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
 
-            char ssid[32], password[64];
+            char ssid[33] = {0};
+            char password[65] = {0};
             memcpy(ssid, evt->ssid, sizeof(evt->ssid));
             memcpy(password, evt->password, sizeof(evt->password));
             ESP_LOGI(TAG, "SmartConfig SSID: %s, Password: %s", ssid, password);

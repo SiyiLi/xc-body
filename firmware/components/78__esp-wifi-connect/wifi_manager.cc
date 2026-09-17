@@ -136,6 +136,8 @@ void WifiManager::StartStation() {
     // Apply configuration
     station_->SetScanIntervalRange(config_.station_scan_min_interval_seconds,
                                    config_.station_scan_max_interval_seconds);
+    station_->SetFailureRetryCnt(config_.station_failure_retry_cnt);
+    station_->SetHostname(config_.station_hostname);
 
     // Setup callbacks
     station_->OnScanBegin([this]() {
@@ -246,6 +248,8 @@ void WifiManager::StartConfigAp(const std::string& ssid) {
     config_ap_->SetSsid(ssid);
     config_ap_->SetSsidPrefix(config_.ssid_prefix);
     config_ap_->SetLanguage(config_.language);
+    config_ap_->SetShowOtaConfig(config_.show_ota_config);
+    config_ap_->SetShowSleepConfig(config_.show_sleep_config);
 
     // Web handler calls this when user submits config
     config_ap_->OnExitRequested([this]() {

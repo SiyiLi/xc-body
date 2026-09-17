@@ -56,6 +56,13 @@ public:
     void OnDisconnected(std::function<void(int reason)> on_disconnected);
     void OnScanBegin(std::function<void()> on_scan_begin);
     void SetScanIntervalRange(int min_interval_seconds, int max_interval_seconds);
+    void SetHostname(const std::string& hostname) { hostname_ = hostname; }
+
+    // How many times to retry the strongest same-SSID AP before falling back to
+    // a weaker one. Only effective when remember_bssid is off (default). A value
+    // of 3 means the driver will attempt the best AP up to 3 extra times before
+    // giving up and trying the next-best BSSID.
+    void SetFailureRetryCnt(uint8_t cnt) { failure_retry_cnt_ = cnt; }
 
 private:
     EventGroupHandle_t event_group_;
@@ -66,10 +73,11 @@ private:
     std::string ssid_;
     std::string password_;
     std::string ip_address_;
+    std::string hostname_;
     int8_t max_tx_power_;
     uint8_t remember_bssid_;
+    uint8_t failure_retry_cnt_ = 3;  // Retries on strongest AP before falling back
     int reconnect_count_ = 0;
-    
     // Exponential backoff for scan interval
     int scan_min_interval_microseconds_ = 10 * 1000 * 1000;   // Default 10 seconds
     int scan_max_interval_microseconds_ = 300 * 1000 * 1000;  // Default 5 minutes
@@ -80,7 +88,10 @@ private:
     std::function<void()> on_scan_begin_;
     std::vector<WifiApRecord> connect_queue_;
     bool was_connected_ = false;  // Track if we were connected before disconnection
+    bool use_saved_channels_scan_ = true;       // First scan uses saved channels when known
+    bool last_scan_used_saved_channels_ = false;
 
+    void StartScan();
     void HandleScanResult();
     void StartConnect();
     void UpdateScanInterval();  // Exponential backoff for scan interval
