@@ -146,6 +146,57 @@ void AddOtaStatus(cJSON* response) {
         status.rollback_reset_reason);
 }
 
+const char* PowerSaveModeName(wifi_ps_type_t mode) {
+    switch (mode) {
+        case WIFI_PS_NONE:
+            return "none";
+        case WIFI_PS_MIN_MODEM:
+            return "min_modem";
+        case WIFI_PS_MAX_MODEM:
+            return "max_modem";
+    }
+    return "unknown";
+}
+
+void AddWifiLinkStatus(cJSON* response, const WifiLinkMetrics& metrics) {
+    if (metrics.ap_info_valid) {
+        cJSON_AddNumberToObject(response, "rssi", metrics.rssi);
+        cJSON_AddStringToObject(response, "bssid", metrics.bssid.c_str());
+        cJSON_AddNumberToObject(response, "channel", metrics.channel);
+    } else {
+        cJSON_AddNullToObject(response, "rssi");
+        cJSON_AddNullToObject(response, "bssid");
+        cJSON_AddNullToObject(response, "channel");
+    }
+
+    if (metrics.power_save_mode_valid) {
+        cJSON_AddStringToObject(
+            response,
+            "power_save_mode",
+            PowerSaveModeName(metrics.power_save_mode));
+    } else {
+        cJSON_AddNullToObject(response, "power_save_mode");
+    }
+
+    if (metrics.max_tx_power_valid) {
+        cJSON_AddNumberToObject(
+            response,
+            "max_tx_power_dbm",
+            metrics.max_tx_power_quarter_dbm / 4.0);
+    } else {
+        cJSON_AddNullToObject(response, "max_tx_power_dbm");
+    }
+
+    if (metrics.last_disconnect_reason >= 0) {
+        cJSON_AddNumberToObject(
+            response,
+            "last_disconnect_reason",
+            metrics.last_disconnect_reason);
+    } else {
+        cJSON_AddNullToObject(response, "last_disconnect_reason");
+    }
+}
+
 void SendStatus() {
     auto& app = Application::GetInstance();
     auto& wifi = WifiManager::GetInstance();
@@ -166,7 +217,7 @@ void SendStatus() {
     cJSON_AddBoolToObject(response, "wifi_connected", wifi.IsConnected());
     cJSON_AddStringToObject(response, "ssid", wifi.GetSsid().c_str());
     cJSON_AddStringToObject(response, "ip", wifi.GetIpAddress().c_str());
-    cJSON_AddNumberToObject(response, "rssi", wifi.GetRssi());
+    AddWifiLinkStatus(response, wifi.GetLinkMetrics());
     AddGatewayStatus(response);
     AddOtaStatus(response);
     SendResponse(response);

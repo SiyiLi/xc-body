@@ -203,6 +203,12 @@ int WifiManager::GetChannel() const {
     return station_->GetChannel();
 }
 
+WifiLinkMetrics WifiManager::GetLinkMetrics() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!station_) return {};
+    return station_->GetLinkMetrics();
+}
+
 std::string WifiManager::GetMacAddress() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mac_address_.empty()) {

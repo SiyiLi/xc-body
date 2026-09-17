@@ -87,6 +87,7 @@ public:
     std::string GetIpAddress() const;
     int GetRssi() const;
     int GetChannel() const;
+    WifiLinkMetrics GetLinkMetrics() const;
     std::string GetMacAddress() const;
 
     // ==================== Config AP Mode ====================

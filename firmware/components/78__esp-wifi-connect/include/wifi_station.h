@@ -1,6 +1,7 @@
 #ifndef _WIFI_STATION_H_
 #define _WIFI_STATION_H_
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <functional>
@@ -23,6 +24,18 @@ struct WifiApRecord {
     int channel;
     wifi_auth_mode_t authmode;
     uint8_t bssid[6];
+};
+
+struct WifiLinkMetrics {
+    bool ap_info_valid = false;
+    int8_t rssi = 0;
+    std::string bssid;
+    uint8_t channel = 0;
+    bool power_save_mode_valid = false;
+    wifi_ps_type_t power_save_mode = WIFI_PS_NONE;
+    bool max_tx_power_valid = false;
+    int8_t max_tx_power_quarter_dbm = 0;
+    int last_disconnect_reason = -1;
 };
 
 /**
@@ -49,6 +62,7 @@ public:
     std::string GetSsid() const { return ssid_; }
     std::string GetIpAddress() const { return ip_address_; }
     uint8_t GetChannel();
+    WifiLinkMetrics GetLinkMetrics();
     void SetPowerSaveLevel(WifiPowerSaveLevel level);
 
     void OnConnect(std::function<void(const std::string& ssid)> on_connect);
@@ -78,6 +92,7 @@ private:
     uint8_t remember_bssid_;
     uint8_t failure_retry_cnt_ = 3;  // Retries on strongest AP before falling back
     int reconnect_count_ = 0;
+    std::atomic<int> last_disconnect_reason_{-1};
     // Exponential backoff for scan interval
     int scan_min_interval_microseconds_ = 10 * 1000 * 1000;   // Default 10 seconds
     int scan_max_interval_microseconds_ = 300 * 1000 * 1000;  // Default 5 minutes

@@ -1,6 +1,7 @@
 #include "wifi_station.h"
 #include <cstring>
 #include <algorithm>
+#include <cstdio>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
@@ -121,6 +122,7 @@ void WifiStation::Start() {
     xEventGroupClearBits(event_group_, WIFI_EVENT_STOPPED | WIFI_EVENT_SCAN_DONE_BIT);
     use_saved_channels_scan_ = true;
     last_scan_used_saved_channels_ = false;
+    last_disconnect_reason_.store(-1);
     
     // Create the default WiFi station interface
     station_netif_ = esp_netif_create_default_wifi_sta();
@@ -363,6 +365,39 @@ uint8_t WifiStation::GetChannel() {
     return ap_info.primary;
 }
 
+WifiLinkMetrics WifiStation::GetLinkMetrics() {
+    WifiLinkMetrics metrics;
+    metrics.last_disconnect_reason = last_disconnect_reason_.load();
+
+    if (IsConnected()) {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            char bssid[18];
+            std::snprintf(
+                bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2],
+                ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5]);
+            metrics.ap_info_valid = true;
+            metrics.rssi = ap_info.rssi;
+            metrics.bssid = bssid;
+            metrics.channel = ap_info.primary;
+        }
+    }
+
+    wifi_ps_type_t power_save_mode;
+    if (esp_wifi_get_ps(&power_save_mode) == ESP_OK) {
+        metrics.power_save_mode_valid = true;
+        metrics.power_save_mode = power_save_mode;
+    }
+
+    int8_t max_tx_power = 0;
+    if (esp_wifi_get_max_tx_power(&max_tx_power) == ESP_OK) {
+        metrics.max_tx_power_valid = true;
+        metrics.max_tx_power_quarter_dbm = max_tx_power;
+    }
+    return metrics;
+}
+
 bool WifiStation::IsConnected() {
     return xEventGroupGetBits(event_group_) & WIFI_EVENT_CONNECTED;
 }
@@ -422,6 +457,7 @@ void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32
         bool was_connected = this_->was_connected_;
         this_->was_connected_ = false;
         wifi_event_sta_disconnected_t* event = static_cast<wifi_event_sta_disconnected_t*>(event_data);
+        this_->last_disconnect_reason_.store(event->reason);
         ESP_LOGI(TAG, "WiFi disconnected, reason: %d", event->reason);
         if (was_connected && this_->on_disconnected_) {
             this_->on_disconnected_(event->reason);
