@@ -31,8 +31,9 @@ Preserve the accepted Milestone 5 boundary:
 - local touch reactions that create no agent or Telegram traffic;
 - USB-only preview and persistence of robot-specific motor calibration;
 - exact safe return and existing body-operation serialization; and
-- expression-only direct turns when one supported silent expression is a
-  natural and complete response; uncertain cases remain conversation.
+- expression-only direct turns only for an English or Chinese request closely
+  matching the display-expression contract in Milestone 5; every other turn
+  remains conversation.
 
 Do not repeat expression motion during a pending-offer wait, add model-generated
 motion parameters, camera input, autonomous semantic moods, constant servo

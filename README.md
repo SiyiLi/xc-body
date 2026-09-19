@@ -39,10 +39,11 @@ turning it off should make the room feel a little emptier.
 - Milestone 5 expression and presence has real-user physical acceptance. The
   accepted candidate removes the layered avatar and uses the saved expression
   runner for idle presence, direct responses, offer cues, touch reactions, and
-  speaking animation. Compound transcription may select a silent expression
-  when it is a complete response; questions, actions, and uncertain cases run
-  the agent. Answer and offer projection use the same seven-expression
-  vocabulary; idle remains an internal ambient and safe-return state. Exact
+  speaking animation. Compound transcription selects a silent expression only
+  for a direct English or Chinese request matching the display-expression
+  contract; every other turn runs the agent. Answer and offer projection use
+  the same seven-expression vocabulary; idle remains an internal ambient and
+  safe-return state. Exact
   candidate identifiers and tested paths are in the milestone document.
 - Milestone 6 owns future perception-guided ambient presence, including sparse
   idle behavior and explicit bounded camera observation.

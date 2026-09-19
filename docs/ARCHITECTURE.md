@@ -167,11 +167,10 @@ eventual direct answer.
 1. Existing firmware touch and device-driven capture submit one bounded Opus
    recording to the Interaction service mailbox.
 2. The native OpenClaw plugin claims it and sends the captured Ogg to compound
-   transcription. The result contains the transcript and route, plus a named
-   expression when a silent expression is a natural and complete response.
-3. That expression-only route skips the agent. Questions, requests requiring
-   action or explanation, and uncertain cases enter the configured existing
-   OpenClaw session.
+   transcription. Only a direct English or Chinese request matching the
+   Milestone 5 display-expression contract takes the expression-only route and
+   skips the agent.
+3. Every other turn enters the configured existing OpenClaw session.
 4. Every completed answer is projected to select one of the seven named
    expressions from its full meaning. A short answer keeps its exact speech; a
    long or formatted answer is also projected into bounded speech.

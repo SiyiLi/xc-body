@@ -82,8 +82,10 @@ assets package repairs it. A blank face is not a substitute for an expression.
 ## Runtime Behavior
 
 - Compound transcription routes directly to one of the seven named silent
-  expressions when that is a natural and complete response. Questions,
-  requests requiring action or explanation, and uncertain cases run the agent
+  expressions only for a request closely matching one of these contract forms:
+  `Show me your <expression> expression`,
+  `给我看看你<expression>的表情`, or
+  `给我做一个<expression>的表情`. Every other turn runs the agent
   normally.
 - Every completed direct answer is projected to select one of the seven named
   expressions from its full meaning. A short answer keeps its exact speech; a
@@ -169,8 +171,7 @@ Real-user testing accepted these complete paths on the versioned candidate:
    no speech; and
 8. USB preview and persistence of `touch.json` with no second motion runner.
 9. expression-only utterance -> no agent run -> saved firmware expression ->
-   safe return -> no speech; verify both an explicit display request and a
-   self-contained social or emotional remark.
+   safe return -> no speech; verify the three display-request contract forms.
 
 ## Out of Scope
 

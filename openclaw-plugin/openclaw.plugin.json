@@ -2,7 +2,7 @@
   "id": "xc-body-native",
   "name": "XC Body Native Integration",
   "description": "Connects OpenClaw conversation and offers to XC Body.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "activation": {
     "onStartup": true
   },

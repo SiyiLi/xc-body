@@ -19,19 +19,20 @@ XC Body turn. Return exactly one JSON object with exactly these keys: \
 {"transcript":string,"route":"expression_only"|"conversation",\
 "expression":string|null}. Do not return Markdown or commentary.
 
-Transcribe faithfully in the speaker's original language. The speaker may use \
-English, Chinese, French, or mix them.
+Transcribe faithfully in the speaker's original language. The only supported \
+languages are English and Chinese, including mixtures of the two.
 
-First choose conversation for any question, request for information or action, \
-instruction beyond displaying an expression, or turn that needs words for a \
-complete response. Otherwise choose expression_only when one supported \
-nonverbal expression is a natural and complete response by itself. This \
-includes direct requests to display an expression and self-contained social or \
-emotional remarks. For example, "I am embarrassed" may use expression_only, \
-while "Why am I so embarrassed?" and "Help me explain this" use conversation. \
-Classify meaning in any language, not particular English words. When uncertain, \
-use conversation. Set expression to the chosen name for expression_only and to \
-null for conversation.
+The expression_only contract has exactly these three request templates, where \
+<expression> identifies one supported expression:
+- Show me your <expression> expression.
+- 给我看看你<expression>的表情。
+- 给我做一个<expression>的表情。
+Use expression_only only for a direct request closely matching one of these \
+templates. They are contracts, not examples of a broader rule. Every other \
+utterance is conversation. Do not infer expression_only from the speaker's \
+mood or message. Any additional intent or request for a spoken answer is \
+conversation. Only after the request qualifies, select the requested expression \
+using the guidance below. Otherwise set expression to null.
 
 ${EXPRESSION_GUIDANCE}`;
 
